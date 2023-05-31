@@ -556,8 +556,197 @@ create index idx_xxx on table_name(column('部分字符'));
 7. 如果索引列不能存储 NULL 值，请在创建表时使用 NOT NULL 约束。当优化器知道每列是否包含 NULL 值时，它能够更好地确定哪个索引最有效地用于查询。
 
 ### SQL优化
+#### 插入数据
+- 批量插入（最好最多一次插入500-1000条记录，数据量较大，可以多次批量插入）
+```sql
+insert into tb_test values(1, 'a'), (2, 'b'), (3, 'c');
+```
+
+- 手动提交事务
+```sql
+start transaction;
+insert into tb_test values(1, 'a'), (2, 'b'), (3, 'c');
+insert into tb_test values(4, 'a'), (5, 'b'), (6, 'c');
+insert into tb_test values(7, 'a'), (8, 'b'), (9, 'c');
+commit;
+```
+
+- 主键顺序插入（主键顺序插入效率优于乱序插入）
+```sql
+乱序：9 6 8 3 1 2 7 5 4
+顺序：1 2 3 4 5 6 7 8 9
+```
+
+- 大批量插入数据
+
+如果一次性需要擦黄如大批量数据，使用 insert 语句插入性能较低，此时可以使用MySQL提供的 load 指令进行插入，操作如下：
+
+![](../JavaGuide/image/mysql_大批量插入数据load指令.png)
+
+```sql
+load data local infile '/root/sql1.log' into table `tab_user` fields terminated by ',' lines terminated by '\n'
+
+load data local infile '本地文件路径' into table `表名` fields terminated by '每个字段用什么分割' lines terminated by '每一行用什么分割'
+```
+
+#### 主键优化
+- 数组组织方式
+
+在 InnoDB 存储引擎中，表数据都是根据主键顺序组织存放的，这种存储方式的表称为索引组织表（index organized table IOT）
+
+![](../JavaGuide/image/mysql_MySQLB+Tree结构.png)
+
+![](../JavaGuide/image/mysql_InnoDB逻辑存储结构.png)
+
+- 页分裂
+
+页可以为空，可以填充一半，也可以填充100%。每个页包含了2-N行数据（如果一行数据过大，会行溢出），根据主键排列。【为什么是2行，原因是如果一个页只包含1行那就是链表了】
+
+![](../JavaGuide/image/mysql_主键优化_主键顺序插入.png)
+
+![](../JavaGuide/image/mysql_主键优化_主键乱序插入.png)
+
+主键乱序插入涉及到链表指针变动、还要考虑将页的50%移动到新开辟的页中，效率没有顺序插入高。
+
+- 页合并
+
+当删除一行记录时，实际上记录并没有被物理删除，只是记录被标记（flaged）为删除并且它的空间会允许被其他记录声明使用。
+
+当页中删除的记录达到 MERGE_THRESHOLD（默认为页的50%），InnoDB 会开始寻找最靠近的页（前或后）看看是否可以将两个页合并以优化空间使用。
+
+![](../JavaGuide/image/mysql_主键优化_页合并1.png)
+
+![](../JavaGuide/image/mysql_主键优化_页合并2.png)
+
+MERGE_THRESHOLD：合并页的阈值，可以自行设置，也可以在创建表或者创建索引时指定。
+
+- 主键设计原则
+
+![](../JavaGuide/image/mysql_主键优化_主键设计原则.png)
+
+#### order by 优化
+1. Using filesort：通过表的索引或全表扫描，读取满足条件的数据行，然后在排序缓冲区 `sort buffer` 中完成排序操作，索引不是通过索引直接返回排序结果的排序都叫 FileSort 排序。
+2. Using index：通过有序索引顺序扫描直接返回有序数据，这种情况即为 Using index，不需要额外排序，执行效率高。
+3. 根据排序字段建立合适的索引，多字段排序时，也需要遵循最左前缀法则。
+4. 尽量使用覆盖索引。
+5. 多字段排序，一个升序一个降序，此时需要注意联合索引在创建时的排序规则（ASC/DESC）。
+6. 如果不可避免的出现 filesort，大数据量排序时，可以适当增大排序缓冲区大小 `sort_buffer_size`（默认256k）
+
+```sql
+-- 没有创建索引时，根据 age，phone 进行排序
+explain select id, age, phone from tb_user order by age, phone;
+
+-- 创建索引
+create index idx_user_age_phone on tb_user(age,phone);
+
+-- 创建索引后，根据 age，phone 进行升序排序
+explain select id, age, phone from tb_user order by age, phone;
+
+-- 创建索引后，根据 age，phone 进行降序排序
+explain select id, age, phone from tb_user order by age desc, phone desc;
+
+-- 根据age，phone进行排序，一个升序，一个降序（此时，phone 字段索引失效，只需针对排序规则再建立一个联合索引即可）
+explain select id, age, phone from tb_user order by age asc, phone desc;
+
+-- 创建索引
+create index idx_user_age_phone on tb_user(age,phone);
+
+-- 根据age，phone进行排序，一个升序，一个降序
+explain select id, age, phone from tb_user order by age asc, phone desc;
+
+show variables like 'sort_buffer_size';
+```
+
+- 不使用索引的情况下排序
+
+![](../JavaGuide/image/mysql_orderby1.png)
+  
+- 创建索引后，根据 age，phone 进行升序排序
+
+![](../JavaGuide/image/mysql_orderby2.png)
+  
+- 创建索引后，根据 age，phone 进行降序排序
+
+![](../JavaGuide/image/mysql_orderby3.png)
+  
+- 使用联合索引排序也需要遵循最左前缀法则，否则部分索引失效
+
+![](../JavaGuide/image/mysql_orderby4.png)
+
+Backward index scan：反向索引扫描，原因是B+树索引默认按照升序排列，而此时需要倒序，就是 Backward index scan。
+
+- 根据age，phone进行排序，一个升序，一个降序（此时 phone 索引失效）
+
+![](../JavaGuide/image/mysql_orderby7.png)
+  
+只需要根据一个升序，一个降序的排序规则再建立一个联合索引即可
+
+![](../JavaGuide/image/mysql_orderby6.png)
+
+- 索引排序结构
+
+![](../JavaGuide/image/mysql_orderby8.png)
+
+#### group by 优化
+1. 在分组操作时，可以通过索引来提高效率。
+2. 分组操作时，索引的使用也需要满足最左前缀法则。
+
+- 使用索引列进行 group by 前后对比
+
+![](../JavaGuide/image/mysql_groupby1.png)
+
+- 先使用 where 条件进行过滤，再 group by
+
+![](../JavaGuide/image/mysql_groupby2.png)
+
+#### limit 优化
+一个常见又非常头疼的问题就是 limit 2000000, 10，此时需要MySQL排序前 2000010 记录，但仅仅返回 2000000-2000010 的记录，其他记录丢弃，查询排序的代价非常大。
+
+官方的优化思路：一个分页查询时，通过覆盖索引和子查询能够比较好地提高性能。
+```sql
+select s.* from tb_sku s, (select id from tb_sku order by id limit 2000000, 10) c where s.id = c.id
+```
+
+#### count 优化
+count 没法做优化，因为它是基于存储引擎的。
+- MyISAM 引擎把一个表的总行数存储在磁盘上，因此执行`count(*)`时会直接返回这个数，效率很高。（如果存在 where 条件，效率依旧很慢）。
+- InnoDB 引擎执行`count(*)`时需要遍历整张表，然后累积计数。
+
+优化思路：自己计数，用Redis记录MySQL每插入一条记录，就+1；
+
+count()是一个聚合函数，对于返回的结果集，需要一行行地判断，如果count函数的参数不是 null 则累加，否则不加，最后返回累加值。
+
+- count 的几种用法
+    - count(主键)
+      
+        InnoDB 引擎会遍历整张表，把每一行的主键id值都取出来，返回给服务层。服务层拿到主键后，直接按行进行累加。
+    - count(字段)
+        
+        有 not null 约束：InnoDB 引擎会遍历整张表把每一行的字段值都取出来，返回给服务层，直接按行进行累加。
+      
+        没有 not null 约束：InnoDB 引擎会遍历整张表把每一行的字段值都取出来，返回给服务层，服务层判断是否为 null，不为 null 则计数累加。
+    - count(1)
+
+        InnoDB 引擎会遍历整张表，但不取值，用1代表代码行，直接按行进行累加。
+    - count(*)
+
+        InnoDB 引擎并不会把全部字段取出来，而是专门做了优化，不取值，服务层直接按行进行累加。
+    
+按照效率排序的话：count(字段) < count(主键) < count(1) ≈ `count(*)`，尽量使用 `count(*)`
+
+#### update 优化
+在 update 操作时，一定要按照索引字段进行 update，否则在并发情况下，两个线程如果按照没有索引的 name 字段进行 update，那么此时行锁会升级为表锁，并发性能降低。
+
+InnoDB的行锁是针对索引加的锁，不是针对记录加的锁，并且该索引不能失效，否则会从行锁升级为表锁。并发性能降低。
 
 ### 视图/存储过程/触发器
+#### 视图
+
+#### 存储过程
+
+#### 存储函数
+
+#### 触发器
 
 ### 锁
 
@@ -620,6 +809,11 @@ n 指代当前节点存储的 key 的数量，(n+1)*6 就是指针的数量乘�
 高度为2：
     1171 * 1171 * 16 = 21939856条数据
 ```
+
+#### 创建索引时默认是按照升序进行排序的
+A：ASC，D：DESC
+
+![](../JavaGuide/image/mysql_orderby5.png)
 
 
 
