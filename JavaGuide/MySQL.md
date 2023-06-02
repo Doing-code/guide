@@ -1,4 +1,6 @@
 ## 基础篇
+> 以下所有内容都能从官方文档获取：https://dev.mysql.com/doc/refman/8.0/en/
+> 
 > DML(data manipulation language)：SELECT、UPDATE、INSERT、DELETE
 > 
 > DDL(data definition language)：主要的命令有CREATE、ALTER、DROP等。DDL主要是用在定义或改变表(TABLE)的结构，数据类型，表之间的链接和约束等初始化工作上，他们大多在建立表时使用；
@@ -1193,6 +1195,99 @@ InnoDB 提供了两种类型的行锁：
 间隙锁的唯一目的是防止其他事务插入间隙（不包含间隙起止）。间隙锁可以共存，一个事务采用的间隙锁不会组织另一个事务在同一个间隙上采用间隙锁。
 
 ### InnoDB引擎
+#### 逻辑存储结构
+> innodb-architecture-8.0
+
+![](../JavaGuide/image/mysql_逻辑存储结构.png)
+
+- 表空间（ibd文件）：一个 MySQL 实例可以对应多个表空间，用于存储记录、索引等数据。（每一张表都是一个表空间）
+- 段：分为数据段（Leaf node segment）、索引段（Non-leaf node segment）、回滚段（Rollback segment）。InnoDB 时索引组织表，数据段就是B+树的叶子节点，索引段即为B+树的非叶子节点。段用来管理多个 Extent（区）。
+- 区：表空间的单元结构，每个区的大小为1M。默认情况下，InnoDB 存储引擎页大小为16K，一共有64个连续的页。
+- 页：InnoDB 存储引擎磁盘管理的最小单元，每个页的大小默认16KB。为了保证页的连续性，InnoDB 存储引擎每次从磁盘申请4-5个区。
+- 行：InnoDB 存储引擎数据是按行进行存放的。
+    - Trx_id：每次对某条记录进行改动时，都会把对应的事务id赋值给 trx_id（隐藏列） 。
+    - Roll_pointer：每次对某条记录进行改动时，都会把旧的版本写入到 undo 日志中，然后这个隐藏列就相当于一个指针，可以通过它来找到该记录修改前的信息。
+#### 架构
+MySQL5.5版本开始，默认使用 InnoDB 存储引擎，它擅长事务处理、具有崩溃恢复特性，在日常开发中使用非常广泛。以下时 InnoDB 架构图，左侧为内存结构，右侧为磁盘结构。
+
+![](../JavaGuide/image/mysql_innodb-architecture-8-0.png)
+
+##### in-memory-structures
+- Buffer Pool（缓冲池）
+    - 缓冲池是主内存中的一块区域，里面可以缓存磁盘上经常操作的真实数据（表和索引数据），在执行增删改查时，先操作缓冲池中的数据（若缓冲池没有数据，则从磁盘加载并缓存），然后再以一定频率刷新到磁盘，从而减少磁盘IO，加快处理速度。
+    - 缓冲池以Page页为单位，底层采用链表管理Page。根据状态，将Page分为三种类型：
+
+        - free page：空闲page，未被使用。
+  
+        - clean page：被使用page，数据没有被修改过。
+  
+        - dirty page：脏页，被使用page，数据被修改过，页中数据与磁盘的数据产生不一致。（还没有刷新到磁盘）
+    - 在专用服务器上，通常会将高达 80% 的物理内存分配给缓冲池。
+- Change Buffer（更改缓冲区）
+    - 针对于非唯一索引的二级索引页，在执行 DML 语句时，如果这些数据Page没有在Buffer Pool中，不会直接操作磁盘，而是会将数据的变更存储在Change Buffer中，在未来数据被读取时，将数据合并恢复到Buffer Pool中，再将合并后的数据刷新到磁盘中。
+    - Change Buffer的意义：与聚集索引不同，二级索引通常是非唯一的，并且以相对随机的顺序插入二级索引。同样，删除和更新可能会影响索引树中不相邻的二级索引页。当其他操作将受影响的页面读入缓冲池时，稍后合并缓存的更改可避免将二级索引页面从磁盘读入缓冲池所需的大量随机访问 I/O。
+- Adaptive Hash Index（自适应哈希索引）
+    - 用于优化对Buffer Pool数据的查询。InnoDB存储引擎会监控对表上各索引页的查询，如果观察到hash索引可以提升速度，则建立hash索引。自适应哈希索引无需人工干预，是系统根据情况自动完成。
+    - 通过系统变量`innodb_adaptive_hash_index`能够得知是否开启了自适应哈希索引。`SHOW VARIABLES LIKE 'innodb_adaptive_hash_index';`
+- Log Buffer（日志缓冲区）
+    - 用来保存要写入到磁盘中的log日志数据（redo log、undo log），默认大小为16MB（`innodb_log_buffer_size`），日志缓冲区的日志会定期刷新到磁盘中。如果需要更新、插入或删除许多行的事务，可以增加日志缓冲区的大小以节省磁盘I/O。
+    - `innodb_log_buffer_size`：缓冲区大小，
+    - `innodb_flush_log_at_trx_commit`：日志刷新到磁盘时机
+        - 1：日志在每次事务提交时写入并刷新到磁盘。
+        - 0：每`innodb_flush_log_at_timeout`秒将日志写入并刷新到磁盘一次。
+        - 2：日志在每次事务提交后写入，并每`innodb_flush_log_at_timeout`秒刷新到磁盘一次。
+    - `innodb_flush_log_at_timeout`：日志刷新频率。
+
+##### on-disk-structures
+- System Tablespace（系统表空间）
+    - 系统表空间是更改缓冲区的存储区域。如果表是在系统表空间而不是 file-per-table 或通用表空间中创建的，它还可能包含表和索引数据。在以前的 MySQL 版本中，系统表空间包含InnoDB数据字典。
+    - 系统表空间数据文件的大小和数量由`innodb_data_file_path`启动选项定义。`ibdata1`是系统表空间文件。
+- File-Per-Table Tablespaces（每个表文件）
+    - file-per-table 表空间包含单个 InnoDB表的数据和索引，并存储在文件系统中的单个数据文件中。可以理解为独立表空间（t1.ibd、t2.ibd...）
+    - InnoDB默认情况下在 file-per-table 表空间中创建表。此行为由变量控制`innodb_file_per_table`。禁用`innodb_file_per_table`会导致InnoDB在系统表空间中创建表。
+- General Tablespaces（通用表空间）
+    - 通用表空间是InnoDB 使用语法创建的共享表空间`CREATE TABLESPACE`。在创建表时，可以指定表空间。
+    ```sql
+    -- 创建表空间：mysql> CREATE TABLESPACE `表空间名称` ADD DATAFILE '关联的表空间文件' Engine=InnoDB;  
+    mysql> CREATE TABLESPACE `ts1` ADD DATAFILE 'ts1.ibd' Engine=InnoDB;  
+  
+    -- 将表添加到通用表空间（共享表空间包括InnoDB系统表空间和通用表空间。）
+    mysql> CREATE TABLE t1 (c1 INT PRIMARY KEY) TABLESPACE ts1;
+    -- 或者
+    mysql> ALTER TABLE t2 TABLESPACE ts1;
+    ```
+- Undo Tablespaces（撤消表空间）
+    - 撤消表空间包含撤消日志，这些记录是包含有关如何撤消事务对聚集索引记录的最新更改的信息的记录集合。
+    - MySQL会在初始化时自动创建两个默认的 undo 空间（初始大小为16M），用于存储 undo log 日志。默认撤消表空间数据文件名为 undo_001和undo_002。
+- Temporary Tablespaces（临时表空间）
+    - InnoDB使用会话临时表空间和全局临时表空间。存储用户创建的临时表等数据。
+- Doublewrite Buffer Files（双写缓冲区）
+    - InnoDB引擎将数据页从Buffer Pool刷新到磁盘之前，先将数据页写入双写缓冲区文件中，便于系统异常时恢复数据。
+    - 双写文件名：`#ib_16384_0.dblwr`、`#ib_16384_1.dblwr`。格式：#ib_page_size_file_number.dblwr.bdblwrDETECT_ONLYInnoDB
+- Redo Log（重做日志）
+    - 用来实现事务的持久性。该日志文件由两部分组成：redo log buffer（重做日志缓冲）、redo log（重做日志），前者是在内存中，后者在磁盘中。当事务提交后会把所有修改信息都存到该日志中，用于在刷新脏页到磁盘时，发生错误，进行数据恢复使用。
+    - 随着数据修改的发生，重做日志数据被追加，最旧的数据随着检查点的进行而被截断。以循环方式写入重做日志文件，涉及两个文件（ib_logfile0、ib_logfile1）
+
+思考：内存结构中的数据是如何刷新到磁盘中的？（通过后台线程实现）
+
+##### 后台线程
+后台线程的作用就是将InnoDB存储引擎缓冲池的数据在合适时机刷新到磁盘文件中。
+
+![](../JavaGuide/image/mysql_架构_后台线程.png)
+
+- Master Thread
+    - 核心后台线程，负责调度其他线程、负责将缓冲池中的数据异步刷新到磁盘中，保持数据的一致性，还包括脏页的刷新、合并插入缓冲、undo页的回收。
+- IO Thread
+    - 在 InnoDB 存储引擎中大量使用了 AIO 来处理 IO 请求，可以极大地提高数据库的性能，而 IO Thread 主要负责这些 IO 请求的回调。
+    ![](../JavaGuide/image/mysql_架构_后台线程——iothread.png)
+- Purge Thread
+    - 主要用于回收事务已经提交了的undo log，在事务提交之后，undo log可能没用了，就用 Purge Thread 来回收。
+- Page Cleaner Thread
+    - 协助 Master Thread 刷新脏页到磁盘的线程，减轻 Master Thread 的工作压力，减少阻塞。
+
+#### 事务原理
+
+#### MVCC
 
 ### MySQL管理
 
