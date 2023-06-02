@@ -1,4 +1,9 @@
 ## 基础篇
+> DML(data manipulation language)：SELECT、UPDATE、INSERT、DELETE
+> 
+> DDL(data definition language)：主要的命令有CREATE、ALTER、DROP等。DDL主要是用在定义或改变表(TABLE)的结构，数据类型，表之间的链接和约束等初始化工作上，他们大多在建立表时使用；
+> 
+> DCL(Data Control Language)：是数据库控制功能。是用来设置或更改数据库用户或角色权限的语句，包括(grant,deny,revoke等)语句。在默认状态下，只有sysadmin,dbcreator,db_owner或db_securityadmin等人员才有权力执行DCL；
 
 ### SQL
 
@@ -734,8 +739,8 @@ count()是一个聚合函数，对于返回的结果集，需要一行行地判�
     
 按照效率排序的话：count(字段) < count(主键) < count(1) ≈ `count(*)`，尽量使用 `count(*)`
 
-#### update 优化
-在 update 操作时，一定要按照索引字段进行 update，否则在并发情况下，两个线程如果按照没有索引的 name 字段进行 update，那么此时行锁会升级为表锁，并发性能降低。
+#### update 优化（避免行锁升级为表锁）
+在 update 操作时，一定要按照索引字段进行 update，否则在并发情况下，两个线程如果其中一个线程按照没有索引的 name 字段进行 update，而另一个线程也执行 update 操作，那么此时行锁会升级为表锁，并发性能降低。
 
 InnoDB的行锁是针对索引加的锁，不是针对记录加的锁，并且该索引不能失效，否则会从行锁升级为表锁。并发性能降低。
 
@@ -1065,6 +1070,127 @@ delete：
 ![](../JavaGuide/image/mysql_触发器_delete.png)
 
 ### 锁
+
+#### 全局锁
+全局锁典型的使用场景是做全库的逻辑备份。对所有表进行锁定，从而获取一致性视图，保证数据的完整性。
+
+![](../JavaGuide/image/mysql_锁_全局锁.png)
+
+- 语法
+```sql
+---------------------------- 命令行模式
+-- 打开锁
+mysql> flush tables with read lock;
+
+-- 执行备份操作不要在 MySQL 命令行下执行，因为是 MySQL 提供的命令，而不是 sql 语句。
+-- C:\Users\admin> mysqldump -h 192.168.0.130 -uroot -p123456 数据库名 > 存放备份sql的目录
+C:\Users\admin> mysqldump -h 192.168.0.130 -uroot -p123456 demo1 > D:/demo1.sql
+
+-- 释放锁
+unlock tables;
+```
+
+- 案例
+
+![](../JavaGuide/image/mysql_锁_全局锁案例.png)
+
+数据库中加全局锁，是一个比较重的操作，存在以下问题：
+1. 如果在主库上备份，那么在备份期间都不能执行更新，业务基本上就得停摆。
+2. 如果在从库上备份，那么在备份期间从库不能执行主库同步过来的二进制文件（binlog），会导致主从延迟。
+
+在InnoDB引擎中，可以在备份时加上参数`--single-transaction`来完成不加锁的一致性数据备份。（InnoDB底层是通过快照读来实现的）。
+```sql
+mysqldump --single-transaction -uroot -p 123456 demo1 > demo1.sql
+```
+
+#### 表级锁
+> 表锁通常用于对整张表进行修改或查询的场景。例如，在进行备份或恢复数据操作时，需要对整张表进行锁定，以保证数据的完整性。
+
+表级锁，每次操作锁住整张表。锁定粒度大，发生锁冲突的概率最高，并发度最低，应用在 MyISAM、InnoDB、BDB等存储引擎中。
+
+##### 表锁
+语法
+```sql
+-- 加锁
+lock tables 表名[可以一次锁多张表] read/write;
+-- 释放锁
+unlock tables / 客户端断开连接
+```
+对于表锁，分为两类：
+1. 表共享读锁（read lock）
+2. 表独占写锁（write lock）
+
+![](../JavaGuide/image/mysql_锁_表锁.png)
+
+读锁不会阻塞其他客户端的读，但是会阻塞写。写锁既会阻塞其他客户端的读，又会阻塞其他客户端的写。
+##### 元数据锁（meta data lock，MDL）
+MDL 加锁过程时系统自动控制，无需显示使用，在访问一张表的时候会自动加上。MDL 锁主要作用是维护表元数据的数据一致性，在表上有活动事务的时候，不可以对元数据进行写入操作。为了避免 DML 和 DDL 冲突，保证读写的正确性。（简单来说：如果某一张表存在未提交的事务，那么不能修改这张表的表结构）
+
+在 MySQL5.5中引入了 MDL，当对一张表进行增删改查的时候，加 MDL 读锁（共享）；当对表结构进行变更操作的时候，加 MDL 写锁（排它）。
+
+对于锁的验证测试，都需要在事务中进行。`begin; ... commit;`
+
+![](../JavaGuide/image/mysql_锁_表级锁_元数据锁.png)
+
+查看元数据锁：
+```sql
+select object_type, object_schema, object_name, lock_type, lock_duration from performance_schema.metadata_locks;
+```
+##### 意向锁
+为了避免 DML 在执行时，添加的行锁与表锁的冲突，InnoDB 中引入了意向锁，使得表锁不用检查每行数据是否加锁，使用意向锁来减少表锁的检查。
+
+
+1. 意向共享锁（IS）：由语句 select ... lock in share mode 添加。与表锁共享锁（read）兼容，与表锁排它锁（write）互斥。
+2. 意向排它锁（IX）：由 insert、update、delete、select ... 佛如 update 添加。与表锁共享锁（read）及排它锁（write）都互斥，意向锁之间不会互斥。
+
+![](../JavaGuide/image/mysql_锁_表级锁_意向锁.png)
+
+当线程A开启一个事务后，执行 update 操作（假设按照主键 update），会加一个行锁，再加一个意向锁。此时线程B需要加表锁，如果加的锁和意向锁不兼容，会阻塞，阻塞到线程A提交事务，释放锁后，才能够加表锁；如果兼容，那么直接加锁，不会阻塞。
+
+通过以下 SQL，查看意向锁及行锁的加锁情况：
+```sql
+SELECT object_schema, object_name, index_name, lock_type, lock_mode, lock_data FROM performance_schema.data_locks;
+```
+
+意向共享锁测试1：
+
+![](../JavaGuide/image/mysql_锁_表级锁_意向锁案例.png)
+
+意向排它锁测试2：
+
+![](../JavaGuide/image/mysql_锁_表级锁_意向锁案例2.png)
+
+意向锁主要解决的是 InnoDB 中行锁与表锁的冲突。
+#### 行级锁
+行级锁，每次操作锁住对应的行数据。锁的粒度最小，发生锁冲突的概率最低，并发度最高。应用在 InnoDB 存储引擎中。
+
+InnoDB 的数据是基于索引组织的（B+Tree，只有叶子节点会挂载数据，并且每个索引在叶子节点都存在），行锁是通过对索引上的索引项加锁来实现的，而不是对记录加的锁。对于行级锁，主要分为以下三类：
+1. 行锁（Record Lock）：锁定单个行记录，防止其他事务对此进行 update 和 delete。在 RC、RR 隔离级别下都支持。
+2. 间隙锁（Gap Lock）：锁定索引记录间隙（不含该记录），确保索引记录间隙不变，防止其他事务在这个间隙进行 insert，产生幻读。在 RR 隔离级别下支持。
+3. 临键锁（Next-Key Lock）：行锁和间隙锁组合，同时锁住数据，并锁住数据前面的间隙 Gap。在 RR 隔离级别下支持。
+
+![](../JavaGuide/image/mysql_锁_行级锁分类.png)
+
+##### 行锁
+InnoDB 提供了两种类型的行锁：
+1. 共享锁（S）：允许一个事务去读一行，阻止其他事务获得相同数据集的排它锁。（共享锁之间兼容，共享锁与排它锁互斥）
+2. 排它锁（X）：允许获取排它锁的事务更新数据，阻止其他事务获得相同数据集的共享锁和排它锁。
+
+![](../JavaGuide/image/mysql_锁_行锁_类型.png)
+
+![](../JavaGuide/image/mysql_锁_行锁_CRUD.png)
+
+默认情况下，InnoDB 在 REPEATABLE READ 事务隔离级别运行，InnoDB 使用 next-key 锁进行搜索和索引扫描，以防止幻读。
+1. 针对唯一索引进行检索时，对已存在的记录进行等值匹配时，将会自动优化为行锁。
+2. InnoDB 的行锁时针对于索引加的锁，如果不通过索引条件检索数据，那么 InnoDB 将对表中的索引记录加锁，此时就会升级为表锁。
+
+##### 间隙锁/临键锁
+默认情况下，InnoDB 在 REPEATABLE READ 事务隔离级别运行，InnoDB 使用 next-key 锁进行搜索和索引扫描，以防止幻读。
+1. 索引上的等值查询（唯一索引）：给不存在的记录加锁时，优化为间隙锁。
+2. 索引上的等值查询（普通索引）：向右遍历时，最后一个值不满足查询条件时，next-key lock 退化为间隙锁。（左右相邻的间隙）
+3. 索引上的范围查询（唯一索引）：next-key lock，间隙锁+行锁
+
+间隙锁的唯一目的是防止其他事务插入间隙（不包含间隙起止）。间隙锁可以共存，一个事务采用的间隙锁不会组织另一个事务在同一个间隙上采用间隙锁。
 
 ### InnoDB引擎
 
