@@ -1286,6 +1286,27 @@ MySQL5.5版本开始，默认使用 InnoDB 存储引擎，它擅长事务处理�
     - 协助 Master Thread 刷新脏页到磁盘的线程，减轻 Master Thread 的工作压力，减少阻塞。
 
 #### 事务原理
+![](../JavaGuide/image/mysql_事务原理1.png)
+
+##### redo log
+重做日志，记录的是事务提交时数据页的物理修改，是用来实现事务的持久性。
+
+该日志文件由两部分组成：重做日志缓冲（redo log buffer）以及重做日志文件（redo log file），前者是在内存中，后者在磁盘中。当事务提交后会把所有修改信息都存到该日志文件中，用于在刷新脏页到磁盘发生错误时，进行数据恢复使用。
+
+![](../JavaGuide/image/mysql_事务原理_rodolog.png)
+
+可以把 redo log 日志文件理解为 redis 中的快照。（并不会永久保存，每隔一段时间就会清理日志），用于在
+
+##### undo log
+undo log 日志解决事务的原子性。事务的原子性依赖于 undo log。
+
+回滚日志，用于记录数据被修改前的信息。作用包含两个：提供回滚和 MVCC（多版本并发控制）。
+
+undo log和redo log记录物理日志不一样，undo log是逻辑日志。可以认为当 delete 一条记录时，undo log中会记录一条对应的 insert 记录，反之亦然，当 update 一条记录时，它记录一条对应相反的 update 记录。当执行 rollback 时，就可以从 undo log 中的逻辑记录中读取到相应的内容并进行回滚。（undo log 记录的是变更前的数据）
+
+Undo log销毁：undo log在事务执行时产生，事务提交时，并不会立即删除 undo log，因为这些日志可能还用于 MVCC。
+
+Undo log存储：undo log采用段的方式进行管理和记录，存放在 rollback segment 回滚段中，内部包含 1024 个 undo log segment。
 
 #### MVCC
 
