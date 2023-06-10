@@ -9,20 +9,298 @@
 
 ### SQL
 
+```sql
+# 查询
+select * from tb_name;
+
+# 删除
+delete from tb_name where id = 1;
+
+# 插入
+insert into tb_name(id,name) values(1, 'a');
+
+# 修改
+update tb_name set name='b' where id=1;
+
+# 创建数据库
+create database forbearance;
+
+# 创建表
+create table user(
+id int(11),
+name varchar(10)
+)
+
+# 表修改-添加字段
+alter table tb_name add 字段名 类型(长度) [comment '注释'] [约束];
+
+# 表修改-修改字段类型
+alter table tb_name modify 字段名 新数据类型(长度);
+
+# 表修改-修改字段名和字段类型
+alter table tb_name change 旧字段名 新字段名 类型(长度) [comment '注释'] [约束];
+
+# 查询用户
+use mysql
+select * from user;
+
+# 创建用户
+create user '用户名'@'主机名' identified by '密码';
+
+# 修改用户密码
+alter user '用户名'@'主机名' identified with mysql_native_password by '密码';
+
+# 删除用户
+drop user '用户名'@'主机名';
+
+# 查询权限
+show grants for '用户名'@'主机名';
+
+# 赋予权限
+grant 权限列表 on 数据库名.表名 to '用户名'@'主机名';
+grant all on 数据库名.表名 to '用户名'@'主机名';
+grant select on 数据库名.表名 to '用户名'@'主机名';
+...
+
+# 撤销权限
+remove 权限列表 on 数据库名.表名 from '用户名'@'主机名';
+remove all on 数据库名.表名 from '用户名'@'主机名';
+remove select on 数据库名.表名 from '用户名'@'主机名';
+...
+```
+
+聚集函数（count，sum，max，min，avg等）只能用在select子句和group中的having子句中，所以一般group by和having搭配使用，having对group分组添加条件。
+> 使用顺序为 where > group by > having > order by
+
+DQL执行顺序
+
+![](../JavaGuide/image/mysql_DQL执行顺序.png)
+
+常用权限控制
+
+![](../JavaGuide/image/mysql_常用权限控制.png)
 ### 函数
+#### 字符串函数
+![](../JavaGuide/image/mysql_字符串函数.png)
+
+#### 数值函数
+![](../JavaGuide/image/mysql_数值函数.png)
+
+#### 日期函数
+![](../JavaGuide/image/mysql_日期函数.png)
+
+type 可以是 year、month、day。
+
+#### 流程函数
+![](../JavaGuide/image/mysql_流程函数.png)
 
 ### 约束
+约束是作用于表中字段上的规则，用于限制存储在表中的数据。
 
+保证数据库中数据的正确性、有效性和完整性。
+
+![](../JavaGuide/image/mysql_约束.png)
+
+```sql
+create table user(
+    id int primary key auto_increment comment '主键',
+    name varchar(10) not null unique comment '姓名',
+    age int check(age > 0 && age <= 120) comment '年龄',
+    status char(1) default '1' comment '状态',
+    gender char(1) comment '性别',
+) comment '用户表';
+```
+
+#### 外键约束
+```sql
+create table tb_name(
+    ...
+    [constraint] [外键名称] foreign key(外键字段) references 主表(主表列名)
+);
+
+alter table tb_name add constraint 外键名称 foreign key(外键字段) references 主表(主表列名);
+
+alter table tb_name drop foreign key 外键名称;
+```
+
+- 外键删除/更新行为
+
+![](../JavaGuide/image/mysql_外键删除更新行为.png)
+
+`no action`和`restrict`是默认行为
+
+```sql
+alter table tb_name add constraint 外键名称 foreign key(外键字段) references 主表(主表列名) on update cascade on delete cascade;
+```
 ### 多表查询
+> 笛卡尔积：笛卡尔乘积指在数学中，两个集合，A集合和B集合的所有组合情况。（在多表查询时，需要消除无效的笛卡尔积。）
+
+- 内连接：相当于查询A、B交集部分数据。
+- 左外连接：查询左表所有数据，以及两张表交集部分数据。
+- 右外连接：查询右表所有数据，以及两张表交集部分数据。
+- 自连接：当前表与自身的连接查询，自连接需要使用表别名。
+
+left join: 包含左表的所有行，对应的右表行可能为空
+
+right join: 包含右表的所有行，对应的左表行可能为空
+
+inner join: 只包含左右表都匹配并且不为空的行
+
+join: 只包含左右表都匹配并且不为空的行
+
+left outer join: 包含左表的所有行，对应的右表行可能为空。
+
+#### 内连接
+- 隐式内连接
+```sql
+select 字段... from 表1, 表2 where 条件...;
+```
+
+- 显式内连接
+```sql
+# inner join 或者 join
+select 字段... from 表1 [inner] join 表2 on 连接条件;
+```
+
+#### 外连接
+- `left join`
+```sql
+select 字段... from 表1 left join 表2 on 条件...
+```  
+
+- `right join`
+```sql
+select 字段... from 表1 right join 表2 on 条件...
+```  
+
+#### 自连接
+自连接查询，可以时内连接查询，也可以时外连接查询。
+```sql
+select 字段... from 表A 别名a join 表A 别名b on 条件...;
+```
+
+#### 联合查询（union、union all）
+对于 union 查询，就是把多次查询的结果合并起来，形成一个新的查询结果集。
+```sql
+select 字段... from 表A...
+union [all]
+select 字段... from 表B...
+```
+`注意：`对于联合查询的多张表的列数必须保持一致，字段类型也需要保持一致。
+
+union会对合并之后的数据去重。union all会将全部数据直接合并（不考虑去重）。
+
+#### 子查询
+SQL 语句中嵌套 select 语句，称为嵌套查询，又称子查询。
+```sql
+select * from t1 where column1 = (select column1 from t2);
+```
+子查询外部的语句可以是 `insert/update/delete/select`。
+
+子查询可在 where、from、select 之后。
+##### 标量子查询（子查询结果为单个值）
+常见的操作符：=、<>、>、>=、<、<=
+```sql
+select * from emp where dept_id = (select id from dept where name = '销售部');
+```
+
+##### 列子查询（子查询结果为一列，可以是单列多行）
+常见的操作符：in、not in、any、some、 all
+
+![](../JavaGuide/image/mysql_列子查询操作符.png)
+
+```sql
+# 满足大于所有子查询的值
+select * from emp where salary > all (select salary from emp where dept_id = (select id from dept where name = '财务部'));
+
+# 满足任意一个子查询的值
+select * from emp where salary > any (select salary from emp where dept_id = (select id from dept where name = '财务部'));
+```
+
+##### 行子查询（子查询结果为一行）
+常见的操作符：=、<>、in、not in
+```sql
+select * from emp where (salary, managerid) = (select salary, managerid from emp where name = '张无忌');
+```
+
+##### 表子查询（子查询结果为多行多列）
+常见的操作符：in
+```sql
+select * from emp where (job, salary) in (select job, salary from emp where name = '鹿杖客' or name = '宋远桥');
+
+select e.*, d.* from (select * from emp where entrydate > '2023-01-01') e left join dept on e.dept_id = d.id;
+```
 
 ### 事务
+事务是一组操作的集合，它是一个不可分割的工作单位，事务会把所有的操作作为一个整体一起向系统提交或撤销操作请求，要么同时成功，要么同时失败。
+
+默认MySQL的事务是自动提交的，也就是说，当执行一条 DML 语句，MySQL会立即隐式的提交事务。
+#### 事务操作
+- 查看/设置事务提交方式
+```sql
+# 1：自动提交，0=手动提交
+select @@autocommit;
+
+set @@autocommit = 0;
+```
+
+- 开启事务
+```sql
+start transaction;
+
+# 或者 
+
+begin;
+```
+
+- 提交事务
+```sql
+commit;
+```
+
+- 回滚事务
+```sql
+rollback;
+```
+
+#### 事务四大特性（ACID）
+- 原子性（Atomicity）：事务是不可分割的最小操作单元，要么全部成功，要么全部失败。
+- 一致性（Consistency）：事务完成时，必须使所有的数据都保持一致状态。
+- 隔离性（Isolation）：数据库系统提供的隔离机制，保证事务在不受外部并发操作影响的独立环境下运行。
+- 持久性（Durability）：事务一旦提交或回滚，它对数据库中的数据的改变就是永久的。
+
+#### 并发事务问题
+并发事务问题：多个事务在执行过程中，所出现的脏读、不可重复读、幻读。
+
+1. 脏读：一个事务读到另一个事务还没有提交的数据。
+2. 不可重复读：一个事务先后读取同一条记录，但两次读取的数据不同，称之为不可重复读。
+3. 幻读：一个事务按照条件查询数据时，没有对应的数据行，但是在插入数据时，又发现这行数据已经存在（B事务执行 insert 并提交）。
+
+#### 事务隔离级别
+> Oracle 默认事务隔离级别是读已提交（Read committed）
+
+|   隔离级别   |   脏读   |   不可重复读   |   幻读   |
+| ---- | ---- | ---- | ---- |
+|   Read uncommitted   |   √   |   √   |   √   |
+|   Read committed   |   ×   |   √   |   √   |
+|   Repeatable Read（默认）   |   ×   |   ×   |   √   |
+|   Serializable   |   ×   |   ×   |   ×   |
+
+`Serializable`串行化，所有事务按照次序依次执行。（事务一个一个地排队执行，不能进行并发操作，可以避免所有并发问题。但是效率低下，很消耗数据库性能。）
+
+查看事务隔离级别
+```sql
+select @@transaction_isolation;
+```
+
+设置事务隔离级别
+```sql
+set [session|gloabl] transaction isolation level READ UNCOMMITTED | READ COMMITTED | REPEATABLE READ | SERIALIZABLE
+```
 
 ## 进阶篇
-
 ### 存储引擎
-
 #### MySQL 体系结构
-
 `index`索引是在引擎层实现的，所以不同的存储引擎的索引实现是不一样的。
 
 ![](../JavaGuide/image/mysql_MySQL体系结构.png)
@@ -1405,19 +1683,464 @@ MVCC-实现原理
 ![](../JavaGuide/image/mysql_mvcc实现原理.png)
 
 ### MySQL管理
+#### 系统数据库
+MySQL 数据库安装完成后，自带四个数据库，具体作用如下：
+
+| 数据库     | 说明     | 
+| -------- | -------- | 
+| mysql | 存储 MySQL 服务器正常运行所需要的各种信息（时区、主从、用户、权限等） | 
+| information_schema | 提供访问数据库元数据的各种表和视图，包含数据库、表、字段类型及访问权限等 | 
+| performance_schema | 为 MySQL 服务器运行时状态提供底层监控功能，主要用于收集数据库服务器性能参数 | 
+| sys | 包含一系列方便 DBA 和开发人员利用 performance_schema 性能数据库进行性能调优和诊断的视图 | 
+
+#### 常用工具
+1. mysql
+
+mysql的客户端工具。
+
+语法：`mysql [options] [database]`
+```sql
+-u, --user=name          -- 指定用户名
+-p, --password[=name]    -- 指定密码
+-h, --host=name          -- 指定服务器IP或域名
+-P, --port=port          -- 指定连接端口
+-e, --execute=name       -- 执行 SQL 语句并退出
+```
+`-e`选项可以在 MySQL 客户端执行 SQL 语句，而不用连接 MySQL 数据库再执行，对于一些批处理脚本，这种方式尤为方便。
+```sql
+mysql -uroot -p123456 replication -e "select * from student";
+```
+
+2. mysqladmin
+
+mysqladmin是一个执行管理操作的客户端程序。可以用它来检查服务器的配置和当前状态，创建并删除数据库等。
+
+通过帮助文档查看选项及指令：
+```sql
+mysqladmin --help
+```
+![](../JavaGuide/image/mysql_mysqladmin_help.png)
+
+```linux
+mysqladmin -uroot -p123456 version;
+
+mysqladmin -uroot -p123456 drop 'db01';
+```
+mysqladmin 主要是在脚本中执行操作mysql服务器。
+
+3. mysqlbinlog
+
+可以将mysql二进制日志文件格式化为文本格式。
+
+语法：`mysqlbinlog [options] log-file1 log-file2 ...`
+```sql
+-d, --database=name                             # 指定数据库名称，只列出指定的数据库相关操作
+-o, --offset=#                                  # 忽略日志中的前 n 行命令
+-r, result-file=name                            # 将格式化的文本日志输出到指定文件
+-s, --short-from                                # 显示简单格式，省略掉一些信息
+-v                                              # 将行事件（数据变更）重构为 SQL 语句
+-vv                                             # 将行事件（数据变更）重构为 SQL 语句，并输出注释信息
+--start-datatime=date1 --stop-datatime=date2    # 指定日期间隔内的日志
+--start-postition=pos1 --stop-postition=pos2    # 指定位置间隔内的日志
+```
+示例：
+```linux
+mysqlbinlog binlog.000002
+```
+
+4. mysqlshow
+
+mysqlshow 客户带对象查找工具，用于查找某些数据库、数据库中的表、表中的列或索引。
+
+语法：`mysqlshow [options] [db_name[table_name[col_name]]]`
+```sql
+--count     # 显示数据库及表的统计信息（数据库、表 均可以不指定）
+-i          # 显示指定数据库或者表的状态信息
+```
+示例：
+```linux
+# 查询每个数据库的表的数量及表中记录的行数
+mysqlshow -uroot -p123456 --count
+
+# 执行结果
++--------------------+--------+--------------+
+|     Databases      | Tables |  Total Rows  |
++--------------------+--------+--------------+
+| db02               |      0 |            0 |
+| db03               |      0 |            0 |
+| information_schema |     65 |        21888 |
+| mysql              |     33 |         2908 |
+| performance_schema |    102 |       360658 |
+| replication        |      1 |            2 |
+| sys                |    101 |         4493 |
++--------------------+--------+--------------+
+
+# 查询 replication 库中每个表中的字段数及行数
+mysqlshow -uroot -p123456 replication --count
+
+# 执行结果
+Database: replication
++----------+----------+------------+
+|  Tables  | Columns  | Total Rows |
++----------+----------+------------+
+| student |        3 |          2 |
++----------+----------+------------+
+
+# 查询 replication 库中 student 表的详细信息
+mysqlshow -uroot -p123456 replication student --count
+
+# 执行结果
+Database: replication  Table: student  Rows: 2
++-------+---------------+-----------+------+-----+---------+-------+---------------------------------+---------+
+| Field | Type          | Collation | Null | Key | Default | Extra | Privileges                      | Comment |
++-------+---------------+-----------+------+-----+---------+-------+---------------------------------+---------+
+| id    | bigint(11)    |           | NO   | PRI |         |       | select,insert,update,references |         |
+| name  | varbinary(11) |           | YES  |     |         |       | select,insert,update,references |         |
+| age   | int(3)        |           | YES  |     |         |       | select,insert,update,references |         |
++-------+---------------+-----------+------+-----+---------+-------+---------------------------------+---------+
+```
+
+5. mysqldump
+
+mysqldump 客户端工具用来备份数据库或在不同数据库之家进行数据迁移。备份内容包含创建表以及插入表的 SQL 语句。
+```linux
+#语法
+    mysqldump [options] db_name[tables]
+    mysqldump [options] --database/-B db1 [db2 db3 ...]
+    mysqldump [options] --all-databases/-A
+    
+# 连接选项
+    -u, --user=name         # 指定用户名
+    -p, --password=[name]   # 指定密码
+    -h, --host=name         # 指定服务器ip或域名 
+    -P, --port=#            # 指定连接端口
+    
+# 输出选项
+    --add-drop-database     # 在每个数据库创建语句前加上 drop database 语句
+    --add-drop-table        # 在每个表创建语句前加上 drop table 语句，默认开启；不开启（--skip-add-drop-table）
+    -n, --no-create-db      # 不包含数据库的创建语句
+    -t, --no-create-info    # 不包含数据表的创建语句
+    -d, --no-data           # 不包含数据
+    -T, --tab=name          # 自动生成两个文件：一个 .sql 文件，创建表结构的语句。一个 .txt 文件，数据文件
+```
+示例：
+```linux
+# 备份 replication 数据库，并将 .sql 文件输出到当前目录下
+mysqldump -uroot -p123456 replication > replication.sql 
+
+mysqldump -uroot -p123456 -T /var/lib/mysql-files/ replication student
+```
+
+6. mysqlimport/source
+
+mysqlimport 是客户端数据导入工具，用来导入 mysqldump 加 ——T 参数后导出的文本文件。
+```linux
+语法
+    mysqlimport[options] db_name textfile1 [textfile2 ...]
+
+示例
+    mysqlimport -uroot -p123456 replication /var/lib/mysql-files/student.txt
+```
+
+若需要导入 sql 文件，可以使用 source 指令。
+```linux
+# 需要连接 mysql 执行命令
+source /var/lib/mysql-files/student.sql
+```
 
 ## 运维篇
-
 ### 日志
+#### 错误日志
+错误日志是 MySQL 中重要的日志之一，它记录了当 mysqld 启动和停止时，以及服务器在运行过程中发生任何严重错误时的相关信息。当数据库发生任何故障导致无法正常使用时，建议首先查看此日志。
+
+该日志默认时开启的，默认存放目录 /var/log/，默认日志文件名为 mysqld.log。
+```sql
+-- 查看日志位置
+show variables like '%log_error%'
+```
+
+##### 二进制日志
+二进制日志（binlog）记录了所有的DDL（数据定义语言）语句和DML（数据操纵语言）语句，但不包括（select、show）语句。
+
+作用：1、灾难时的数据恢复；2、MySQL的主从复制。
+
+在MySQL8版本中，默认二进制日志是开启的：
+```sql
+show variables like '%log_bin%'
+```
+
+- 日志格式
+
+MySQL服务器中提供多种格式来记录二进制日志。
+
+|  日志格式   | 说明  |
+|  ----  | ----  |
+| STATEMENT  | 基于 SQL 语句的日志记录，记录的是 SQL 语句，对数据进行修改的 SQL 都会记录在日志文件中。 |
+| ROW  | 基于行的日志记录，记录的是每一行的数据变更。（默认），比如一个update影响了5行，那么就记录5条 |
+| MIXED  | 混合STATEMENT、ROW，默认采用STATEMENT，在某些特殊情况会自动切换为ROW进行记录 |
+
+查看当前 MySQL 的日志格式
+```sql
+show variables like '%binlog_format%'
+```
+变更日志格式
+```sql
+-- 修改配置文件
+vim /etc/my.cnf
+
+-- 添加一条配置
+binlog_format=STATEMENT
+```
+日志格式变更后，二进制日志文件也会变更，会重新新建一个日志文件记录。
+
+- 日志删除
+
+|  指令   | 说明  |
+|  ----  | ----  |
+| reset master  | 删除全部 binlog 日志，删除之后，日志编号将从 binlog.000001 重新开始 |
+| purge master logs to 'binlog.xxxxxx'  | 删除编号 xxxxxx 之前的所有日志 |
+| purge master logs before 'yyyy-mm-dd  hh24:mi:ss'  | 删除 'yyyy-mm-dd  hh24:mi:ss' 之前产生的所有日志 |
+
+如果没有手动清理，MySQL 中也配置了自动过期时间，过期会自动删除。
+```sql
+show variables like '%binlog_expire_logs_seconds%'; （2592000秒）默认30天
+```
+也可以在配置文件中调整`binlog_expire_logs_seconds`参数。
+
+##### 查询日志
+查询日志中记录了客户端的所有操作语句（DDL、DML、DQL ...）。而二进制日志不包含查询语句的 SQL 语句。默认情况下，查询日志是关闭的，如果需要开启查询日志，可以设置如下配置。
+```sql
+SHOW VARIABLES LIKE '%general%';
+
+-- 修改MySQL的配置文件
+-- 开启查询日志，0=关闭，1=开启
+general_log=1
+
+-- 日志的文件名，若没有指定，默认文件名为 host_name.log
+general_log_file=mysql_query.log
+```
+
+##### 慢查询日志
+慢记录日志记录了所有执行时间超过参数 long_query_time 设置值并且扫描记录数不小于 min_examined_row_limit（默认为0） 的所有 SQL 语句的日志。
+```sql
+slow_query_log=1
+
+long_query_time=2
+```
+
+long_query_time 默认为10秒，精度可以到微妙。默认未开启。
+
+默认情况下，不会记录管理语句，也不会记录不使用索引进行查找的查询。可以使用如下配置更改此行为。
+```sql
+-- 记录执行慢的管理语句
+log_slow_admin_statements=1
+
+-- 记录执行慢的未使用索引的语句
+log_queries_not_using_index=1
+```
 
 ### 主从复制
+主从复制（主从同步）是指将主数据库的 DDL 和 DML 操作通过二进制文件传输刀从库服务器中，然后在从库上对这些日志重新执行，从而使得从库和主库的数据保持同步。
+
+MySQL 支持一台主库同时向多台从库进行复制，而从库也可以作为其他从服务器的主库，实现链状复制。主库称为 Master，从库称为 Salve。
+
+MySQL 主从复制的要点：
+1. 主库出现故障，可以快速切换到从库提供服务。
+2. 实现读写分离，降低主库的访问压力。（增删改访问主库，查访问从库）
+3. 可以在从库中执行备份，避免备份期间影响主库服务。（备份期间数据可能存在一定延迟）
+
+#### 原理
+![](../JavaGuide/image/mysql_主从复制原理.png)
+
+从上图来看，复制过程分成三步：
+1. Master 主库在事务提交后，会把数据变更记录在二进制日志文件（binlog）中。
+2. 从库读取（IO Thread）主库的二进制文件 binlog，写入（IO Thread）到从库的中继日志 Relay log。
+3. Slave 执行（SQL Thread）中继日志中的事件，将数据变更反映到自己的数据中。
+
+#### 搭建
+- 准备两台服务器（开放3306端口）
+```linux
+# 开放3306端口
+firewall-cmd --zone=public --add-port=3306/tcp-permanent
+firewall-cmd -reload
+
+# 或者关闭服务器防火墙
+systemctl stop firewall
+# 关闭开机自启
+systemctl disable firewall
+```
+
+##### 主库配置
+1. 修改配置文件（`vim /etc/my.cnf`）
+```cnf
+# MySQL 服务ID，保证整个集群环境中唯一。取值范围：1-2^32 -1，默认为1
+server-id=1
+
+# 是否只读，1=只读，0=读写
+read-only=0
+
+# 忽略的数据库，指不需要同步的数据库
+# binlog-ignore-db=mysql
+# 指定同步的数据库
+# binlog-do-db=test
+```
+2. 重启 MySQL 服务
+```linux
+systemctl restart mysqld
+```
+
+3. 登录 mysql，创建远程连接的账号，并赋予主从复制权限
+```sql
+# 创建 replication 用户，并设置密码，`@'%'`该用户可在任意主机上连接该 MySQL 服务
+create user 'replication'@'%' identified with mysql_native_password by 'Root@123456';
+
+# 为 'replication'@'%' 用户分配主从复制权限
+grant replication slave on *.* to 'replication'@'%';
+```
+
+4. 查看二进制日志坐标
+```sql
+show master status;
+
++---------------+----------+--------------+------------------+-------------------+
+| File          | Position | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
++---------------+----------+--------------+------------------+-------------------+
+| binlog.000002 |      668 |              |                  |                   |
++---------------+----------+--------------+------------------+-------------------+
+```
+字段说明：
+- file：从哪个日志文件开始推送日志文件。（当前已经写到哪个文件了）
+- position：从哪个位置开始推送日志
+- binlog_ignore_db：指定不需要同步的日志
+
+##### 从库配置
+1. 修改配置文件（`vim /etc/my.cnf`）
+```cnf
+# MySQL 服务ID，保证整个集群环境中唯一。取值范围：1-2^32 -1，和主库不一样即可
+server-id=2
+
+# 是否只读，1=只读（只对普通用户是只读，如果是超级管理员，依旧可以读），0=读写
+read-only=1
+
+# 设置超级管理员是只读
+# super-read-only=1
+```
+2. 重启 MySQL 服务
+```linux
+systemctl restart mysqld
+```
+
+3. 登录从库 mysql，设置主库配置
+```sql
+-- 8.0.23版本语法
+change replication source to source_host='',souce_user='',source_password='',source_log_file='',source_log_pos=xxx;
+
+-- 8.0.23版本之前的语法
+change master to master_host='',master_user='',master_password='',master_log_file='',master_log_pos=xxx;
+```
+![](../JavaGuide/image/mysql_主库配置参数.png)
+
+4. 开启同步操作
+```sql
+# 8.0.22 之后
+start replica;
+
+#8.0.22　之前
+start slave;
+```
+
+5．查看主从同步状态
+```sql
+# 8.0.22 之后
+show replica status;
+
+#8.0.22　之前
+show slave status;
+```
+![](../JavaGuide/image/mysql_主从同步状态.png)
+
+此时，主从复制的配置已经配置好了，现在在主库中执行的变更操作就会同步到从库中。
+
+如果中途添加的从库，可以把主库的sql文件在从库执行，保证主从的初始数一致，然后在进行同步操作。
+
+#### 多主多从
+![](../JavaGuide/image/mysql_双主双从.png)
+##### 主库配置
+1. 修改配置文件
+```cnf
+# 集群环境唯一即可
+server-id=1
+
+# 指定同步的数据库
+binlog-do-db=db01
+binlog-do-db=db02
+binlog-do-db=db03
+
+# 在作为从数据库的时候，有写入操作也要更新二进制日志文件
+log-slave-updates
+```
+`log-slave-updates`：从库作为其他从库的主库时 log-slave-updates参数是必须要添加的，因为从库要作为其他从库的主库，必须添加该参数。该参数就是为了让从库从主库复制数据时可以写入到binlog日志。
+
+`log-bin`：从库开启log-bin参数，如果直接往从库写数据，是可以记录log-bin日志的，但是从库通过I0线程读取主库二进制日志文件，然后通过SQL线程写入的数据，是不会记录binlog日志的。也就是说从库从主库上复制的数据，是不写入从库的binlog日志的。所以从库作为其他从库的主库时需要在配置文件中添加log-slave-updates参数。
+
+2. 重启 MySQL 服务器
+```cmd
+systemctl restart mysqld
+```
+
+3. 创建账户并授权，参考前文
+   
+4. 配置从库，参考前文
+   
+5. 配置从库关联的主库，参考前文
+   
+6. 启动从库主从复制，参考前文
+
+7. 主库相互复制
+```cmd
+# 主库1复制主库2，主库2复制主库1
+change master to master_host='',master_user='',master_password='',master_log_file='',master_log_pos=xxx;
+
+# 启动从库主从复制
+start slave;
+```
 
 ### 分库分表
+分库分表的中心思想都是将数据分散存储，使得单一数据库/表的数据量变小，来解决数据库的性能问题，从而达到提升数据库性能的目的。
 
-### 读写分离
+拆分策略
+
+![](../JavaGuide/image/mysql_分库分表_拆分方式.png)
+
+垂直拆分
+
+![](../JavaGuide/image/mysql_分库分表_垂直拆分.png)
+
+垂直分库（左图）：以表为依据，根据业务将不同表拆分到不同库中。
+1. 每个库的表结构都不一样。
+2. 每个库的数据也不一样。
+3. 所有库的并集构成全量数据。
+
+垂直分表（右图）：以字段为依据，根据字段属性将不同字段拆分到不同表中。
+1. 每个表的结构都不一样。
+2. 每个表的数据也不一样，一般通过（主键/外键）关联。
+3. 所有表的并集构成全量数据。
+
+水平拆分
+
+![](../JavaGuide/image/mysql_分库分表_水平拆分.png)
+
+水平分库（左图）：以字段为依据，按照拆分策略，将一个库的数据拆分到多个库中。
+1. 每个库的表结构都一样。
+2. 每个库的数据都不一样。
+3. 所有库的并集构成全量数据。
+
+水平分表（右图）：以字段为依据，按照拆分策略，将一个表的数据拆分到多个表中。
+1. 每个库的表结构都一样。
+2. 每个库的数据都不一样。
+3. 所有表的并集构成全量数据。
 
 ## 附录
-
 #### InnoDB引擎查看表空间文件
 
 Windows 查看 .ibd 文件
