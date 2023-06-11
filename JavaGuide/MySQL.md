@@ -29,7 +29,7 @@ create database forbearance;
 create table user(
 id int(11),
 name varchar(10)
-)
+);
 
 # 表修改-添加字段
 alter table tb_name add 字段名 类型(长度) [comment '注释'] [约束];
@@ -666,7 +666,7 @@ id 不同【子查询】
 ![](../JavaGuide/image/mysql_explain计划02.png)
 - select_type
   
-表示 select 的类型，常见的取值有 SIMPLE（简单表，即不适用表连接或者子查询）、PRIMARY（子查询，即外层的查询）、UNION（UNION中的第二个或者后面的查询语句）、SUBQUERY（select/where之后包含了子查询）等。
+表示 select 的类型，常见的取值有 SIMPLE（简单表，即不使用表连接或者子查询）、PRIMARY（子查询，即外层的查询）、UNION（UNION中的第二个或者后面的查询语句）、SUBQUERY（select/where之后包含了子查询）等。
 - type
   
 表示连接类型，性能由好到差的连接类型为：NULL、system、const（主键或唯一索引出现）、er_ref、ref（非唯一索引会出现）、range、index、all。
@@ -1611,7 +1611,7 @@ Undo log存储：undo log采用段的方式进行管理和记录，存放在 rol
         
 - MVCC
 
-    Multi-Version Concurrency Control，多版本并发控制。值维护一个数据的多个版本，使得读写操作没有冲突，快照读为 MySQL 实现 MVCC 提供了一个非阻塞读功能。MVCC 的具体实现，还需要依赖于数据库记录中的三个隐式字段、undo log日志、readView。
+    Multi-Version Concurrency Control，多版本并发控制。指维护一个数据的多个版本，使得读写操作没有冲突，快照读为 MySQL 实现 MVCC 提供了一个非阻塞读功能。MVCC 的具体实现，还需要依赖于数据库记录中的三个隐式字段、undo log日志、readView。
 
 ##### 隐藏字段
 ![](../JavaGuide/image/mysql_隐藏字段.png)
