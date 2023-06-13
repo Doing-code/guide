@@ -5,6 +5,7 @@
 ![](../image/dubbo_服务导出流程.png)
 
 ## Dubbo 服务导出时序图
+![](../image/dubbo_服务导出时序图.png)
 
 ## Dubbo 服务引用流程图
 
@@ -466,6 +467,11 @@ private static BeanDefinition parse(Element element, ParserContext parserContext
 ```
 
 ### 服务暴露
+
+服务暴露/导出是在 SpringIOC 容器完成刷新后开始暴露的。
+
+利用 Spring 自定义标签解析机制生成对应的 Bean，服务暴露/导出使用到的` Provider Sefvice` 使用的是 `ServiceBean`。
+
 服务导出思路：
 - 确定服务的参数。
 - 确定服务支持的协议。
@@ -1041,6 +1047,521 @@ protected void doOpen() throws Throwable {
 至此，Dubbo 的服务导出流程就走完了。
 ### 服务引用
 
+分为本地引入、直接引入、注册中心引入。
+
+`Consumer Reference` 使用的是 `ReferenceBean`。服务引用分为两种：饿汉式和懒汉式。
+
+饿汉式通过实现 InitializingBean 接口的 afterPropertiesSet() 方法实现，容器通过调用 ReferenceBean 的 afterPropertiesSet() 方法时引入服务。
+
+Dubbo 默认使用懒汉式引入策略，ReferenceBean 还实现了 FactoryBean，通过 FactoryBean 来实现懒汉式引用服务。
+
+如果需要饿汉式，需要在`<dubbo:reference/>`中配置init开启。
+
+URL 参数解析：
+```txt
+dubbo://192.168.44.1:20880/cn.forbearance.rpc.UserService
+  ?anyhost=true
+  &application=Lottery
+  &application.version=1.0.0
+  &check=false
+  &deprecated=false
+  &dubbo=2.0.2
+  &dynamic=true
+  &generic=false
+  &init=false
+  &interface=cn.forbearance.rpc.UserService
+  &methods=sayHi
+  &pid=11920
+  &qos.enable=false
+  &register.ip=192.168.44.1
+  &release=2.7.5
+  &remote.application=Lottery
+  &side=consumer
+  &sticky=false
+  &timestamp=1686627527865
+```
+
+1. 服务引用入口 `ReferenceBean#getObject()`
+```java
+public class ReferenceBean<T> extends ReferenceConfig<T> implements FactoryBean,
+        ApplicationContextAware, InitializingBean, DisposableBean {
+    @Override
+    public Object getObject() {
+        return get();
+    }
+}
+```
+2. `org.apache.dubbo.config.ReferenceConfig#get`
+```java
+public synchronized T get() {
+    if (destroyed) {
+        throw new IllegalStateException("The invoker of ReferenceConfig(" + url + ") has already destroyed!");
+    }
+    if (ref == null) {
+        init();
+    }
+    return ref;
+}
+```
+3. `org.apache.dubbo.config.ReferenceConfig#init`
+```java
+public synchronized void init() {
+    // 避免重复初始化
+    if (initialized) {
+        return;
+    }
+
+    /*
+      省略部分代码，配置检查、赋值等逻辑
+      checkAndUpdateSubConfigs()、init serivceMetadata、获取接口方法 methods等
+    */
+    
+    // 创建代理
+    ref = createProxy(map);
+
+    serviceMetadata.setTarget(ref);
+    serviceMetadata.addAttribute(PROXY_CLASS_REF, ref);
+    repository.lookupReferredService(serviceMetadata.getServiceKey()).setProxyObject(ref);
+
+    initialized = true;
+
+    // dispatch a ReferenceConfigInitializedEvent since 2.7.4
+    dispatch(new ReferenceConfigInitializedEvent(this, invoker));
+}
+```
+上述逻辑中，`createProxy()`方法是重要逻辑，它负责创建 Invoker 实例和创建代理对象。
+
+4. `org.apache.dubbo.config.ReferenceConfig#createProxy`
+```java
+private T createProxy(Map<String, String> map) {
+    // 判断是否为本地引用
+    if (shouldJvmRefer(map)) {
+        URL url = new URL(LOCAL_PROTOCOL, LOCALHOST_VALUE, 0, interfaceClass.getName()).addParameters(map);
+        invoker = REF_PROTOCOL.refer(interfaceClass, url);
+        if (logger.isInfoEnabled()) {
+            logger.info("Using injvm service " + interfaceClass.getName());
+        }
+        
+    // 远程引用
+    } else {
+        urls.clear();
+        
+        // url 不为空则代表是服务直连
+        if (url != null && url.length() > 0) { // user specified URL, could be peer-to-peer address, or register center's address.
+            String[] us = SEMICOLON_SPLIT_PATTERN.split(url);
+            if (us != null && us.length > 0) {
+                for (String u : us) {
+                    URL url = URL.valueOf(u);
+                    if (StringUtils.isEmpty(url.getPath())) {
+                        url = url.setPath(interfaceName);
+                    }
+                    if (UrlUtils.isRegistry(url)) {
+                        urls.add(url.addParameterAndEncoded(REFER_KEY, StringUtils.toQueryString(map)));
+                    } else {
+                        urls.add(ClusterUtils.mergeUrl(url, map));
+                    }
+                }
+            }
+            
+        // 加载注册中心的 url
+        } else { // assemble URL from register center's configuration
+            // if protocols not injvm checkRegistry
+            if (!LOCAL_PROTOCOL.equalsIgnoreCase(getProtocol())) {
+                checkRegistry();
+                List<URL> us = ConfigValidationUtils.loadRegistries(this, false);
+                if (CollectionUtils.isNotEmpty(us)) {
+                    for (URL u : us) {
+                        URL monitorUrl = ConfigValidationUtils.loadMonitor(this, u);
+                        if (monitorUrl != null) {
+                            map.put(MONITOR_KEY, URL.encode(monitorUrl.toFullString()));
+                        }
+                        urls.add(u.addParameterAndEncoded(REFER_KEY, StringUtils.toQueryString(map)));
+                    }
+                }
+                if (urls.isEmpty()) {
+                    throw new IllegalStateException("No such any registry to reference " + interfaceName + " on the consumer " + NetUtils.getLocalHost() + " use dubbo version " + Version.getVersion() + ", please config <dubbo:registry address=\"...\" /> to your spring config.");
+                }
+            }
+        }
+
+        // 单个注册中心
+        if (urls.size() == 1) {
+            invoker = REF_PROTOCOL.refer(interfaceClass, urls.get(0));
+        } else {
+            // 多个注册中心
+            
+            List<Invoker<?>> invokers = new ArrayList<Invoker<?>>();
+            URL registryURL = null;
+            for (URL url : urls) {
+                invokers.add(REF_PROTOCOL.refer(interfaceClass, url));
+                if (UrlUtils.isRegistry(url)) {
+                    registryURL = url; // use last registry url
+                }
+            }
+            if (registryURL != null) { // registry url is available
+                // for multi-subscription scenario, use 'zone-aware' policy by default
+                URL u = registryURL.addParameterIfAbsent(CLUSTER_KEY, ZoneAwareCluster.NAME);
+                // The invoker wrap relation would be like: ZoneAwareClusterInvoker(StaticDirectory) -> FailoverClusterInvoker(RegistryDirectory, routing happens here) -> Invoker
+                invoker = CLUSTER.join(new StaticDirectory(u, invokers));
+            } else { // not a registry url, must be direct invoke.
+                invoker = CLUSTER.join(new StaticDirectory(invokers));
+            }
+        }
+    }
+    
+    // 省略检查逻辑...
+    
+    // create service proxy
+    return (T) PROXY_FACTORY.getProxy(invoker);
+}
+```
+在服务暴露的时候，会分为本地暴露和远程暴露。服务引用也是如此，Dubbo 首先判断服务引用是本地引用还是远程引用，默认是远程引用，然后判断是否为直连服务，根据协议调用 `refer` 方法创建 `Invoker` 对象，最后创建代理对象并返回。
+
+逻辑流程大致分为两部分：创建 Invoker、创建代理。
+
+使用的是单机版，所以会走`invoker = REF_PROTOCOL.refer(interfaceClass, urls.get(0));`这行逻辑。
+```txt
+urls.get(0) 获取到的是注册中心的地址，内容如下：
+registry://127.0.0.1:2181/org.apache.dubbo.registry.RegistryService
+  ?application=Lottery
+  &application.version=1.0.0
+  &dubbo=2.0.2
+  &pid=14236
+  &qos.enable=false
+  &refer=application%3DLottery%26application.version%3D1.0.0%26dubbo%3D2.0.2%26init%3Dfalse%26interface%3Dcn.forbearance.rpc.UserService%26methods%3DsayHi%26pid%3D14236%26qos.enable%3Dfalse%26register.ip%3D192.168.44.1%26release%3D2.7.5%26side%3Dconsumer%26sticky%3Dfalse%26timestamp%3D1686632744577
+  &registry=zookeeper
+  &release=2.7.5
+  &timestamp=1686632744603
+```
+
+5. `org.apache.dubbo.registry.integration.RegistryProtocol#refer`
+
+获取注册中心并执行服务引用。
+```java
+public <T> Invoker<T> refer(Class<T> type, URL url) throws RpcException {
+    // 转换协议
+    url = getRegistryUrl(url);
+    
+    // 通过 Zookeeper 链接到注册中心 【ZookeeperRegistryFactory】
+    Registry registry = registryFactory.getRegistry(url);
+    if (RegistryService.class.equals(type)) {
+        return proxyFactory.getInvoker((T) registry, type, url);
+    }
+
+    // group="a,b" or group="*"
+    Map<String, String> qs = StringUtils.parseQueryString(url.getParameterAndDecoded(REFER_KEY));
+    String group = qs.get(GROUP_KEY);
+    if (group != null && group.length() > 0) {
+        if ((COMMA_SPLIT_PATTERN.split(group)).length > 1 || "*".equals(group)) {
+            return doRefer(getMergeableCluster(), registry, type, url);
+        }
+    }
+    return doRefer(cluster, registry, type, url);
+}
+```
+6. `org.apache.dubbo.registry.integration.RegistryProtocol#doRefer`
+```java
+private <T> Invoker<T> doRefer(Cluster cluster, Registry registry, Class<T> type, URL url) {
+    // 创建 RegistryDirectory 对象，并设置注册中心
+    RegistryDirectory<T> directory = new RegistryDirectory<T>(type, url);
+    directory.setRegistry(registry);
+    directory.setProtocol(protocol);
+    // all attributes of REFER_KEY
+    Map<String, String> parameters = new HashMap<String, String>(directory.getUrl().getParameters());
+    
+    // 创建订阅 URL
+    URL subscribeUrl = new URL(CONSUMER_PROTOCOL, parameters.remove(REGISTER_IP_KEY), 0, type.getName(), parameters);
+    if (!ANY_VALUE.equals(url.getServiceInterface()) && url.getParameter(REGISTER_KEY, true)) {
+        directory.setRegisteredConsumerUrl(getRegisteredConsumerUrl(subscribeUrl, url));
+        
+        // 向注册中心注册服务消费者
+        registry.register(directory.getRegisteredConsumerUrl());
+    }
+    directory.buildRouterChain(subscribeUrl);
+    
+    // 向注册中心订阅服务提供者
+    directory.subscribe(subscribeUrl.addParameter(CATEGORY_KEY,
+            PROVIDERS_CATEGORY + "," + CONFIGURATORS_CATEGORY + "," + ROUTERS_CATEGORY));
+
+    // 创建 Invoker 对象
+    Invoker invoker = cluster.join(directory);
+    return invoker;
+}
+```
+上述代码大致做了三件事：
+
+1）、向注册中心注册服务消费者（自身）。
+
+2）、向注册中心订阅服务提供者。
+
+3）、通过 Cluster 创建 Invoker 对象。
+
+重点在于`directory.subscribe()`，它通过订阅注册中心的服务提供者，调用相关协议的引用方法，最终会调用到`DubboProtocol#refer`。
+
+7. 省略订阅部分代码逻辑
+```java
+// 方法调用，最终会调用到 DubboProtocol#refer，但是 DubboProtocol 没有重写 refer 方法，所以执行父类方法。
+org.apache.dubbo.registry.integration.RegistryDirectory#subscribe
+    org.apache.dubbo.registry.ListenerRegistryWrapper#subscribe
+        org.apache.dubbo.registry.support.FailbackRegistry#subscribe
+            org.apache.dubbo.registry.zookeeper.ZookeeperRegistry#doSubscribe
+                org.apache.dubbo.registry.support.FailbackRegistry#notify
+                    org.apache.dubbo.registry.support.FailbackRegistry#doNotify
+                        org.apache.dubbo.registry.support.AbstractRegistry#notify(URL, NotifyListener, List<URL>)
+                            org.apache.dubbo.registry.integration.RegistryDirectory#notify
+                                org.apache.dubbo.registry.integration.RegistryDirectory#refreshOverrideAndInvoker
+                                    org.apache.dubbo.registry.integration.RegistryDirectory#refreshInvoker
+                                        org.apache.dubbo.registry.integration.RegistryDirectory#toInvokers
+                                            org.apache.dubbo.rpc.protocol.ProtocolListenerWrapper#refer
+                                                org.apache.dubbo.qos.protocol.QosProtocolWrapper#refer
+                                                    org.apache.dubbo.rpc.protocol.ProtocolFilterWrapper#refer
+                                                        org.apache.dubbo.rpc.protocol.AbstractProtocol#refer
+```
+
+8. `org.apache.dubbo.rpc.protocol.AbstractProtocol#refer`
+```java
+public <T> Invoker<T> refer(Class<T> type, URL url) throws RpcException {
+    return new AsyncToSyncInvoker<>(protocolBindingRefer(type, url));
+}
+```
+
+9. `org.apache.dubbo.rpc.protocol.dubbo.DubboProtocol#protocolBindingRefer`
+```java
+public <T> Invoker<T> protocolBindingRefer(Class<T> serviceType, URL url) throws RpcException {
+    optimizeSerialization(url);
+
+    // create rpc invoker.
+    DubboInvoker<T> invoker = new DubboInvoker<T>(serviceType, url, getClients(url), invokers);
+    invokers.add(invoker);
+
+    return invoker;
+}
+```
+
+10. `org.apache.dubbo.rpc.protocol.dubbo.DubboProtocol#getClients`
+
+创建通信客户端，默认创建共享连接客户端。
+```java
+private ExchangeClient[] getClients(URL url) {
+    // whether to share connection
+
+    // 共享连接标识符
+    boolean useShareConnect = false;
+
+    // 获取连接数，默认为 0 表示未配置
+    int connections = url.getParameter(Constants.CONNECTIONS_KEY, 0);
+    List<ReferenceCountExchangeClient> shareClients = null;
+    // if not configured, connection is shared, otherwise, one connection for one service
+    
+    // 如果未配置 connections 则共享连接.
+    if (connections == 0) {
+        useShareConnect = true;
+
+        /**
+         * The xml configuration should have a higher priority than properties.
+         */
+        String shareConnectionsStr = url.getParameter(Constants.SHARE_CONNECTIONS_KEY, (String) null);
+        connections = Integer.parseInt(StringUtils.isBlank(shareConnectionsStr) ? ConfigUtils.getProperty(Constants.SHARE_CONNECTIONS_KEY,
+                Constants.DEFAULT_SHARE_CONNECTIONS) : shareConnectionsStr);
+        shareClients = getSharedClient(url, connections);
+    }
+
+    ExchangeClient[] clients = new ExchangeClient[connections];
+    for (int i = 0; i < clients.length; i++) {
+        if (useShareConnect) {
+            // 获取共享客户端
+            clients[i] = shareClients.get(i);
+
+        } else {
+        
+            // 初始化新的客户端
+            clients[i] = initClient(url);
+        }
+    }
+
+    return clients;
+}
+```
+
+11. `org.apache.dubbo.rpc.protocol.dubbo.DubboProtocol#getSharedClient`
+```java
+private List<ReferenceCountExchangeClient> getSharedClient(URL url, int connectNum) {
+    // 服务地址    
+    String key = url.getAddress();
+    
+    // 查询缓存是不是已经创建了客户端
+    List<ReferenceCountExchangeClient> clients = referenceClientMap.get(key);
+
+    if (checkClientCanUse(clients)) {
+        batchClientRefIncr(clients);
+        return clients;
+    }
+
+    locks.putIfAbsent(key, new Object());
+    synchronized (locks.get(key)) {
+        clients = referenceClientMap.get(key);
+        // dubbo check
+        if (checkClientCanUse(clients)) {
+            batchClientRefIncr(clients);
+            return clients;
+        }
+
+        // connectNum must be greater than or equal to 1
+        connectNum = Math.max(connectNum, 1);
+
+        // If the clients is empty, then the first initialization is
+        if (CollectionUtils.isEmpty(clients)) {
+            // 1、初始化客户端；2、封装成 ReferenceCountExchangeClient 对象，用于引用计数.
+            clients = buildReferenceCountExchangeClientList(url, connectNum);
+            
+            // 放入缓存
+            referenceClientMap.put(key, clients);
+
+        } else {
+            for (int i = 0; i < clients.size(); i++) {
+                ReferenceCountExchangeClient referenceCountExchangeClient = clients.get(i);
+                // If there is a client in the list that is no longer available, create a new one to replace him.
+                if (referenceCountExchangeClient == null || referenceCountExchangeClient.isClosed()) {
+                    clients.set(i, buildReferenceCountExchangeClient(url));
+                    continue;
+                }
+
+                referenceCountExchangeClient.incrementAndGetCount();
+            }
+        }
+
+        /**
+         * I understand that the purpose of the remove operation here is to avoid the expired url key
+         * always occupying this memory space.
+         */
+        locks.remove(key);
+
+        return clients;
+    }
+}
+```
+
+12. `org.apache.dubbo.rpc.protocol.dubbo.DubboProtocol#buildReferenceCountExchangeClientList`
+```java
+private List<ReferenceCountExchangeClient> buildReferenceCountExchangeClientList(URL url, int connectNum) {
+    List<ReferenceCountExchangeClient> clients = new CopyOnWriteArrayList<>();
+
+    for (int i = 0; i < connectNum; i++) {
+        clients.add(buildReferenceCountExchangeClient(url));
+    }
+
+    return clients;
+}
+```
+
+13. `org.apache.dubbo.rpc.protocol.dubbo.DubboProtocol#buildReferenceCountExchangeClient`
+```java
+private ReferenceCountExchangeClient buildReferenceCountExchangeClient(URL url) {
+    ExchangeClient exchangeClient = initClient(url);
+
+    return new ReferenceCountExchangeClient(exchangeClient);
+}
+```
+
+14. `org.apache.dubbo.rpc.protocol.dubbo.DubboProtocol#initClient`
+```java
+/**
+ * Create new connection
+ *
+ * @param url
+ */
+private ExchangeClient initClient(URL url) {
+
+    // client type setting.
+    // 客户端类型，默认为 netty
+    String str = url.getParameter(Constants.CLIENT_KEY, url.getParameter(Constants.SERVER_KEY, Constants.DEFAULT_REMOTING_CLIENT));
+
+    // 编解码
+    url = url.addParameter(Constants.CODEC_KEY, DubboCodec.NAME);
+    // enable heartbeat by default
+    
+    // 心跳机制
+    url = url.addParameterIfAbsent(Constants.HEARTBEAT_KEY, String.valueOf(Constants.DEFAULT_HEARTBEAT));
+
+    // BIO is not allowed since it has severe performance issue.
+    if (str != null && str.length() > 0 && !ExtensionLoader.getExtensionLoader(Transporter.class).hasExtension(str)) {
+        throw new RpcException("Unsupported client type: " + str + "," +
+                " supported client type is " + StringUtils.join(ExtensionLoader.getExtensionLoader(Transporter.class).getSupportedExtensions(), " "));
+    }
+
+    ExchangeClient client;
+    try {
+        // connection should be lazy
+        if (url.getParameter(Constants.LAZY_CONNECT_KEY, false)) {
+            client = new LazyConnectExchangeClient(url, requestHandler);
+
+        } else {
+            // 创建连接客户端
+            client = Exchangers.connect(url, requestHandler);
+        }
+
+    } catch (RemotingException e) {
+        throw new RpcException("Fail to create remoting client for service(" + url + "): " + e.getMessage(), e);
+    }
+
+    return client;
+}
+```
+
+15. `org.apache.dubbo.remoting.exchange.Exchangers#connect(URL, ExchangeHandler)`
+```java
+public static ExchangeClient connect(URL url, ExchangeHandler handler) throws RemotingException {
+    if (url == null) {
+        throw new IllegalArgumentException("url == null");
+    }
+    if (handler == null) {
+        throw new IllegalArgumentException("handler == null");
+    }
+    url = url.addParameterIfAbsent(Constants.CODEC_KEY, "exchange");
+    return getExchanger(url).connect(url, handler);
+}
+```
+
+16. `org.apache.dubbo.remoting.exchange.support.header.HeaderExchanger#connect`
+```java
+@Override
+public ExchangeClient connect(URL url, ExchangeHandler handler) throws RemotingException {
+    return new HeaderExchangeClient(Transporters.connect(url, new DecodeHandler(new HeaderExchangeHandler(handler))), true);
+}
+```
+
+17. `org.apache.dubbo.remoting.Transporters#connect(URL, ChannelHandler...)`
+```java
+public static Client connect(URL url, ChannelHandler... handlers) throws RemotingException {
+    if (url == null) {
+        throw new IllegalArgumentException("url == null");
+    }
+    ChannelHandler handler;
+    if (handlers == null || handlers.length == 0) {
+        handler = new ChannelHandlerAdapter();
+    } else if (handlers.length == 1) {
+        handler = handlers[0];
+    } else {
+        handler = new ChannelHandlerDispatcher(handlers);
+    }
+    return getTransporter().connect(url, handler);
+}
+```
+
+18. `org.apache.dubbo.remoting.transport.netty4.NettyTransporter#connect`
+```java
+public Client connect(URL url, ChannelHandler listener) throws RemotingException {
+    return new NettyClient(url, listener);
+}
+```
+至此，dubbo 服务引用的大致流程分析完。而Dubbo默认使用 Javassist 创建代理。过程比较简单，就不再叙述。
+
+- 1、通过 FactoryBean 或者 afterPropertiesSet() 方法触发服务引用。
+- 2、连接注册中心，获取服务提供者列表，创建 Invoker。
+- 3、订阅服务提供者节点，数据变更时监听通知。
+- 4、连接通信服务器，获得客户端。
+- 5、创建代理并返回。
+- 6、此时 dubbo:reference 声明的对象就是这个代理对象
 ### 服务调用
 
 ### SPI
@@ -1322,8 +1843,127 @@ public void doRegister(URL url) {
 在`FailbackRegistry#register`方法中又会调用`doRegister()`模板方法，实际调用的是`ZookeeperRegistry`中的实现。
 
 
+#### shouldJvmRefer()
+```java
+// org.apache.dubbo.config.ReferenceConfig#shouldJvmRefer
 
+/**
+ * Figure out should refer the service in the same JVM from configurations. The default behavior is true
+ * 1. if injvm is specified, then use it
+ * 2. then if a url is specified, then assume it's a remote call
+ * 3. otherwise, check scope parameter
+ * 4. if scope is not specified but the target service is provided in the same JVM, then prefer to make the local
+ * call, which is the default behavior
+ */
+protected boolean shouldJvmRefer(Map<String, String> map) {
+    URL tmpUrl = new URL("temp", "localhost", 0, map);
+    boolean isJvmRefer;
+    if (isInjvm() == null) {
+        // if a url is specified, don't do local reference
+        if (url != null && url.length() > 0) {
+            isJvmRefer = false;
+        } else {
+            // by default, reference local service if there is
+            isJvmRefer = InjvmProtocol.getInjvmProtocol().isInjvmRefer(tmpUrl);
+        }
+    } else {
+        isJvmRefer = isInjvm();
+    }
+    return isJvmRefer;
+}
+```
 
+#### doSubscribe()
+```java
+// org.apache.dubbo.registry.zookeeper.ZookeeperRegistry#doSubscribe
+
+public void doSubscribe(final URL url, final NotifyListener listener) {
+    try {
+        if (ANY_VALUE.equals(url.getServiceInterface())) {
+            String root = toRootPath();
+            ConcurrentMap<NotifyListener, ChildListener> listeners = zkListeners.get(url);
+            if (listeners == null) {
+                zkListeners.putIfAbsent(url, new ConcurrentHashMap<>());
+                listeners = zkListeners.get(url);
+            }
+            ChildListener zkListener = listeners.get(listener);
+            if (zkListener == null) {
+                listeners.putIfAbsent(listener, (parentPath, currentChilds) -> {
+                    for (String child : currentChilds) {
+                        child = URL.decode(child);
+                        if (!anyServices.contains(child)) {
+                            anyServices.add(child);
+                            subscribe(url.setPath(child).addParameters(INTERFACE_KEY, child,
+                                    Constants.CHECK_KEY, String.valueOf(false)), listener);
+                        }
+                    }
+                });
+                zkListener = listeners.get(listener);
+            }
+            zkClient.create(root, false);
+            List<String> services = zkClient.addChildListener(root, zkListener);
+            if (CollectionUtils.isNotEmpty(services)) {
+                for (String service : services) {
+                    service = URL.decode(service);
+                    anyServices.add(service);
+                    subscribe(url.setPath(service).addParameters(INTERFACE_KEY, service,
+                            Constants.CHECK_KEY, String.valueOf(false)), listener);
+                }
+            }
+        } else {
+            List<URL> urls = new ArrayList<>();
+            
+            /*
+              toCategoriesPath(url) 获取注册中心除了消费者信息之外的所以节点
+              eg: configurators, routers, providers
+            */
+            for (String path : toCategoriesPath(url)) {
+            
+                // 获取节点监听器管理容器
+                ConcurrentMap<NotifyListener, ChildListener> listeners = zkListeners.get(url);
+                if (listeners == null) {
+                    zkListeners.putIfAbsent(url, new ConcurrentHashMap<>());
+                    listeners = zkListeners.get(url);
+                }
+                
+                // 获取节点监听器
+                ChildListener zkListener = listeners.get(listener);
+                
+                // 如果为空则创建一个监听器
+                if (zkListener == null) {
+                    listeners.putIfAbsent(listener, (parentPath, currentChilds) -> ZookeeperRegistry.this.notify(url, listener, toUrlsWithEmpty(url, parentPath, currentChilds)));
+                    zkListener = listeners.get(listener);
+                }
+                
+                // 创建节点
+                zkClient.create(path, false);
+                
+                // 订阅节点 path，如果数据变化，通知到 zkListener。即  ZookeeperRegistry.this.notify
+                List<String> children = zkClient.addChildListener(path, zkListener);
+                if (children != null) {
+                    urls.addAll(toUrlsWithEmpty(url, path, children));
+                }
+            }
+            // 通知
+            notify(url, listener, urls);
+        }
+    } catch (Throwable e) {
+        throw new RpcException("Failed to subscribe " + url + " to zookeeper " + getUrl() + ", cause: " + e.getMessage(), e);
+    }
+}
+```
+上述逻辑重点就是通过注册中心获取到服务提供者的 url，订阅服务提供者的节点数据变化，如果有变化则调用 notify() 方法，在 notify() 方法中，最终会根据 url 调用服务引用方法 refer，再封装成 InvokerDelegate 对象。
+```txt
+org.apache.dubbo.registry.integration.RegistryDirectory#toInvokers
+
+invoker = new InvokerDelegate<>(protocol.refer(serviceType, url), url, providerUrl);
+```
+这样不仅完成了本次的服务引用，而且当服务提供者上下线的时候，消费者也可以动态感知。
+
+#### Listener & Filter 扩展点
+ExporterListener(服务暴露监听) 与 InvokerListener(服务调用监听)
+
+通过 ProtocolFilterWrapper#export 与 ProtocolFilterWrapper#refer 构建 Filter 对服务暴露方与服务引用方的 Invoke 进行拦截。
 
 
 
