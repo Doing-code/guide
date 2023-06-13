@@ -254,7 +254,7 @@ key
 存储层
     主要是将数据存储再文件系统之上，并完成与存储引擎的交互。【持久化】
 ```
-![](JavaGuide/image/mysql_MySQL体系结构.png)
+![](image/mysql_MySQL体系结构.png)
 
 17. mysql设计索引的注意事项？ 
 ```txt
@@ -293,7 +293,9 @@ lock in share mode：为这一行加上行锁的共享锁，同时为 score 表�
 ### Zookeeper
 ### SpringCloud
 
-
+### 附录
+Java 实现 MySQL 读写分离
+> https://blog.csdn.net/Maxiao1204/article/details/87566166
 
 
 

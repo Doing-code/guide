@@ -74,32 +74,32 @@ remove select on 数据库名.表名 from '用户名'@'主机名';
 
 DQL执行顺序
 
-![](../JavaGuide/image/mysql_DQL执行顺序.png)
+![](../image/mysql_DQL执行顺序.png)
 
 常用权限控制
 
-![](../JavaGuide/image/mysql_常用权限控制.png)
+![](../image/mysql_常用权限控制.png)
 ### 函数
 #### 字符串函数
-![](../JavaGuide/image/mysql_字符串函数.png)
+![](../image/mysql_字符串函数.png)
 
 #### 数值函数
-![](../JavaGuide/image/mysql_数值函数.png)
+![](../image/mysql_数值函数.png)
 
 #### 日期函数
-![](../JavaGuide/image/mysql_日期函数.png)
+![](../image/mysql_日期函数.png)
 
 type 可以是 year、month、day。
 
 #### 流程函数
-![](../JavaGuide/image/mysql_流程函数.png)
+![](../image/mysql_流程函数.png)
 
 ### 约束
 约束是作用于表中字段上的规则，用于限制存储在表中的数据。
 
 保证数据库中数据的正确性、有效性和完整性。
 
-![](../JavaGuide/image/mysql_约束.png)
+![](../image/mysql_约束.png)
 
 ```sql
 create table user(
@@ -125,7 +125,7 @@ alter table tb_name drop foreign key 外键名称;
 
 - 外键删除/更新行为
 
-![](../JavaGuide/image/mysql_外键删除更新行为.png)
+![](../image/mysql_外键删除更新行为.png)
 
 `no action`和`restrict`是默认行为
 
@@ -207,7 +207,7 @@ select * from emp where dept_id = (select id from dept where name = '销售部')
 ##### 列子查询（子查询结果为一列，可以是单列多行）
 常见的操作符：in、not in、any、some、 all
 
-![](../JavaGuide/image/mysql_列子查询操作符.png)
+![](../image/mysql_列子查询操作符.png)
 
 ```sql
 # 满足大于所有子查询的值
@@ -303,7 +303,7 @@ set [session|gloabl] transaction isolation level READ UNCOMMITTED | READ COMMITT
 #### MySQL 体系结构
 `index`索引是在引擎层实现的，所以不同的存储引擎的索引实现是不一样的。
 
-![](../JavaGuide/image/mysql_MySQL体系结构.png)
+![](../image/mysql_MySQL体系结构.png)
 
 - 连接层
 
@@ -406,7 +406,7 @@ CREATE TABLE my_memory(
     - 支持表锁，不支持行锁
     - 访问速度快
     - 磁盘文件
-        - ![](../JavaGuide/image/mysql_MyISAM文件.png)
+        - ![](../image/mysql_MyISAM文件.png)
         - .sdi：存储表结构信息【是文本文件，可直接打开】
         - .MYD：存储数据
         - .MYI：存储索引
@@ -438,29 +438,29 @@ CREATE TABLE my_memory(
 
 - 介绍
 
-![](../JavaGuide/image/mysql_索引结构分类.png)
+![](../image/mysql_索引结构分类.png)
 
 不同存储引擎对索引的支持情况
 
-![](../JavaGuide/image/mysql_存储引擎对不同索引的支持.png)
+![](../image/mysql_存储引擎对不同索引的支持.png)
 
 - B-Tree(多路平衡查找树)
 
 以一颗最大度数为5的b-tree为例，每个节点最多存储4个key，5个指针。
 
-![](../JavaGuide/image/mysql_B-Tree.png)
+![](../image/mysql_B-Tree.png)
 
 `树的度数指的是一个节点的子节点个数`
 
 以下列数据为例，演示B-tree的结构
 
-![](../JavaGuide/image/mysql_b-tree结构体现.png)
+![](../image/mysql_b-tree结构体现.png)
 
 - B+Tree
 
 以一颗最大度数为4的b-tree为例
 
-![](../JavaGuide/image/mysql_B+Tree结构体现.png)
+![](../image/mysql_B+Tree结构体现.png)
 
 相对于B-Tree的区别：
 
@@ -471,13 +471,13 @@ CREATE TABLE my_memory(
 
 MySQL 对 B+Tree 进行了优化。在原 B+Tree 的基础上，增加一个指向相邻叶子节点的链表指针，就形成了带有顺序指针的 B+Tree，提高区间访问性能。
 
-![](../JavaGuide/image/mysql_MySQLB+Tree结构.png)
+![](../image/mysql_MySQLB+Tree结构.png)
 
 - Hash
 
 哈希索引采用一定的 hash 算法，将键值换算成新的 hash 值，映射到对应的槽位上，然后存储在 hash 表中。但是在大数据情况下，难免会出现 hash 冲突，可以通过链表来解决。
 
-![](../JavaGuide/image/mysql_mysql-hash索引结构.png)
+![](../image/mysql_mysql-hash索引结构.png)
 
 1. Hash 索引只能用于对等比较（=，in），不支持范围查询（between，>，<，...）
 2. 无法利用索引完成排序操作
@@ -487,11 +487,11 @@ MySQL 对 B+Tree 进行了优化。在原 B+Tree 的基础上，增加一个指�
 
 #### 分类
 
-![](../JavaGuide/image/mysql_索引分类.png)
+![](../image/mysql_索引分类.png)
 
 在 InnoDB 存储引擎中，根据索引的存储形式，又可以分为如下两种：
 
-![](../JavaGuide/image/mysql_索引存储形式分类.png)
+![](../image/mysql_索引存储形式分类.png)
 
 聚集索引选取规则：
 
@@ -499,7 +499,7 @@ MySQL 对 B+Tree 进行了优化。在原 B+Tree 的基础上，增加一个指�
 2. 如果不存在主键，将使用第一个唯一索引（UNIQUE）作为聚集索引。
 3. 如果没有主键或没有合适的唯一索引，InnoDB 会自动生成一个 rowid 作为隐藏的聚集索引。
 
-![](../JavaGuide/image/mysql_回表查询.png)
+![](../image/mysql_回表查询.png)
 
 #### 语法
 
@@ -659,11 +659,11 @@ select 查询的序列号，表示查询中执行 select 子句(子查询)或者
 
 id 相同：
 
-![](../JavaGuide/image/mysql_explain计划01.png)
+![](../image/mysql_explain计划01.png)
 
 id 不同【子查询】
 
-![](../JavaGuide/image/mysql_explain计划02.png)
+![](../image/mysql_explain计划02.png)
 - select_type
   
 表示 select 的类型，常见的取值有 SIMPLE（简单表，即不使用表连接或者子查询）、PRIMARY（子查询，即外层的查询）、UNION（UNION中的第二个或者后面的查询语句）、SUBQUERY（select/where之后包含了子查询）等。
@@ -754,13 +754,13 @@ EXPLAIN SELECT * FROM emp WHERE SUBSTRING(workno, 2, 1) = 1;
 
 3. 模糊查询：如果使用尾部模糊匹配，索引不会失效。如果使用头部模糊匹配，索引失效。
 
-![](../JavaGuide/image/mysql_索引失效情况_头部模糊匹配.png)
+![](../image/mysql_索引失效情况_头部模糊匹配.png)
 
 - 索引失效情况二
 
 1. 用 or 分隔开的条件，如果 or 前的条件中的列有索引，而后面的列中没有索引，那么涉及的索引都不会被用到。
 
-![](../JavaGuide/image/mysql_索引失效情况2_or.png)
+![](../image/mysql_索引失效情况2_or.png)
 
 如何解决？需要针对 or 右侧的列建立索引。
 
@@ -776,7 +776,7 @@ ignore index：不让 MySQL 使用某个索引
 
 force index：强制 MySQL 使用某个索引
 
-![](../JavaGuide/image/mysql_SQL提示.png)
+![](../image/mysql_SQL提示.png)
 
 - 覆盖索引&回表查询
 
@@ -786,7 +786,7 @@ force index：强制 MySQL 使用某个索引
 
 假如需要查询 id、name（id是主键，name有索引）字段，那么此时可以 `select id name from tab_name;`，因为是使用 InnoDB 存储引擎，使用的 B+树索引结果，叶子节点会存储数据。而叶子节点就是name，存储的数据是 id。可以直接拿来用，不用回表查询。
 
-![](../JavaGuide/image/mysql_覆盖索引.png)
+![](../image/mysql_覆盖索引.png)
 
 第一条和第二条 SQL 语句一次查询所有就可以找到所需要的字段，而第三条 SQL 语句中的 gender 字段在二级索引中没有，只能通过 id 回表查询聚集索引，得到 gender 字段。
 
@@ -803,15 +803,15 @@ create index idx_xxx on table_name(column('部分字符'));
 
 公式
 
-![](../JavaGuide/image/mysql_索引长度选择性计算.png)
+![](../image/mysql_索引长度选择性计算.png)
 
 案例
 
-![](../JavaGuide/image/mysql_前缀索引.png)
+![](../image/mysql_前缀索引.png)
 
 查询流程：将一行的数据取出来之后，会根据对应字段与传递的字段进行比较，如果是一样的，就将这一行返回。然后接着继续执行链表（B+树索引叶子节点是链表形式）
 
-![](../JavaGuide/image/mysql_前缀索引流程.png)
+![](../image/mysql_前缀索引流程.png)
 
 - 单列&联合索引
 
@@ -819,17 +819,17 @@ create index idx_xxx on table_name(column('部分字符'));
 
 单列索引多条件联合查询时，MySQL优化器会评估哪个字段的索引效率更高，会选择该索引完成本次查询。（并不会所有索引都会用到，只会用到某一个索引）
 
-![](../JavaGuide/image/mysql_单列索引.png)
+![](../image/mysql_单列索引.png)
 
 联合索引（即一个索引包含了多个列）：
 
-![](../JavaGuide/image/mysql_联合索引.png)
+![](../image/mysql_联合索引.png)
 
 在业务场景中，如果存在多个查询条件，考虑针对于查询字段建立索引时，建立建立联合索引，而非单列索引。
 
 联合索引结构
 
-![](../JavaGuide/image/mysql_联合索引结构.png)
+![](../image/mysql_联合索引结构.png)
 
 #### 设计原则
 1. 针对于数据量较大，且查询比较频繁的表建立索引。（百万以上的数据考虑建立索引）
@@ -866,7 +866,7 @@ commit;
 
 如果一次性需要擦黄如大批量数据，使用 insert 语句插入性能较低，此时可以使用MySQL提供的 load 指令进行插入，操作如下：
 
-![](../JavaGuide/image/mysql_大批量插入数据load指令.png)
+![](../image/mysql_大批量插入数据load指令.png)
 
 ```sql
 load data local infile '/root/sql1.log' into table `tab_user` fields terminated by ',' lines terminated by '\n'
@@ -879,17 +879,17 @@ load data local infile '本地文件路径' into table `表名` fields terminate
 
 在 InnoDB 存储引擎中，表数据都是根据主键顺序组织存放的，这种存储方式的表称为索引组织表（index organized table IOT）
 
-![](../JavaGuide/image/mysql_MySQLB+Tree结构.png)
+![](../image/mysql_MySQLB+Tree结构.png)
 
-![](../JavaGuide/image/mysql_InnoDB逻辑存储结构.png)
+![](../image/mysql_InnoDB逻辑存储结构.png)
 
 - 页分裂
 
 页可以为空，可以填充一半，也可以填充100%。每个页包含了2-N行数据（如果一行数据过大，会行溢出），根据主键排列。【为什么是2行，原因是如果一个页只包含1行那就是链表了】
 
-![](../JavaGuide/image/mysql_主键优化_主键顺序插入.png)
+![](../image/mysql_主键优化_主键顺序插入.png)
 
-![](../JavaGuide/image/mysql_主键优化_主键乱序插入.png)
+![](../image/mysql_主键优化_主键乱序插入.png)
 
 主键乱序插入涉及到链表指针变动、还要考虑将页的50%移动到新开辟的页中，效率没有顺序插入高。
 
@@ -899,15 +899,15 @@ load data local infile '本地文件路径' into table `表名` fields terminate
 
 当页中删除的记录达到 MERGE_THRESHOLD（默认为页的50%），InnoDB 会开始寻找最靠近的页（前或后）看看是否可以将两个页合并以优化空间使用。
 
-![](../JavaGuide/image/mysql_主键优化_页合并1.png)
+![](../image/mysql_主键优化_页合并1.png)
 
-![](../JavaGuide/image/mysql_主键优化_页合并2.png)
+![](../image/mysql_主键优化_页合并2.png)
 
 MERGE_THRESHOLD：合并页的阈值，可以自行设置，也可以在创建表或者创建索引时指定。
 
 - 主键设计原则
 
-![](../JavaGuide/image/mysql_主键优化_主键设计原则.png)
+![](../image/mysql_主键优化_主键设计原则.png)
 
 #### order by 优化
 1. Using filesort：通过表的索引或全表扫描，读取满足条件的数据行，然后在排序缓冲区 `sort buffer` 中完成排序操作，索引不是通过索引直接返回排序结果的排序都叫 FileSort 排序。
@@ -944,33 +944,33 @@ show variables like 'sort_buffer_size';
 
 - 不使用索引的情况下排序
 
-![](../JavaGuide/image/mysql_orderby1.png)
+![](../image/mysql_orderby1.png)
   
 - 创建索引后，根据 age，phone 进行升序排序
 
-![](../JavaGuide/image/mysql_orderby2.png)
+![](../image/mysql_orderby2.png)
   
 - 创建索引后，根据 age，phone 进行降序排序
 
-![](../JavaGuide/image/mysql_orderby3.png)
+![](../image/mysql_orderby3.png)
   
 - 使用联合索引排序也需要遵循最左前缀法则，否则部分索引失效
 
-![](../JavaGuide/image/mysql_orderby4.png)
+![](../image/mysql_orderby4.png)
 
 Backward index scan：反向索引扫描，原因是B+树索引默认按照升序排列，而此时需要倒序，就是 Backward index scan。
 
 - 根据age，phone进行排序，一个升序，一个降序（此时 phone 索引失效）
 
-![](../JavaGuide/image/mysql_orderby7.png)
+![](../image/mysql_orderby7.png)
   
 只需要根据一个升序，一个降序的排序规则再建立一个联合索引即可
 
-![](../JavaGuide/image/mysql_orderby6.png)
+![](../image/mysql_orderby6.png)
 
 - 索引排序结构
 
-![](../JavaGuide/image/mysql_orderby8.png)
+![](../image/mysql_orderby8.png)
 
 #### group by 优化
 1. 在分组操作时，可以通过索引来提高效率。
@@ -978,11 +978,11 @@ Backward index scan：反向索引扫描，原因是B+树索引默认按照升�
 
 - 使用索引列进行 group by 前后对比
 
-![](../JavaGuide/image/mysql_groupby1.png)
+![](../image/mysql_groupby1.png)
 
 - 先使用 where 条件进行过滤，再 group by
 
-![](../JavaGuide/image/mysql_groupby2.png)
+![](../image/mysql_groupby2.png)
 
 #### limit 优化
 一个常见又非常头疼的问题就是 limit 2000000, 10，此时需要MySQL排序前 2000010 记录，但仅仅返回 2000000-2000010 的记录，其他记录丢弃，查询排序的代价非常大。
@@ -1058,11 +1058,11 @@ drop view[if exists] 视图名称[(列名列表)];
 
     - cascaded 是级联的意思：如果一个视图基于另一个视图创建，那么当使用 cascaded 时，也会递归检查依赖的视图是否符合视图的定义。（如果用到了`with cascaded check option`会向下传递）
     
-        ![](../JavaGuide/image/mysql_cascaded.png)
+        ![](../image/mysql_cascaded.png)
 
     - local 不会向下传递检查选项
     
-        ![](../JavaGuide/image/mysql_local.png)
+        ![](../image/mysql_local.png)
 
 - 视图的更新
 
@@ -1155,7 +1155,7 @@ end if;
 
 - 参数（in、out、inout）
 
-![](../JavaGuide/image/mysql_存储过程_参数.png)
+![](../image/mysql_存储过程_参数.png)
 
 ```sql
 -- 语法
@@ -1215,7 +1215,7 @@ end case;
 ```
 案例
 
-![](../JavaGuide/image/mysql_存储过程_case.png)
+![](../image/mysql_存储过程_case.png)
 
 - while 循环
  
@@ -1228,7 +1228,7 @@ end while;
 ```
 案例
 
-![](../JavaGuide/image/mysql_存储过程_while.png)
+![](../image/mysql_存储过程_while.png)
 
 - repeat 循环
 
@@ -1242,7 +1242,7 @@ end repeat;
 ```
 案例
 
-![](../JavaGuide/image/mysql_存储过程_repeat.png)
+![](../image/mysql_存储过程_repeat.png)
 
 - loop 循环
 
@@ -1262,8 +1262,8 @@ iterate label;  进入下一次循环
 ```
 案例
 
-![](../JavaGuide/image/mysql_存储过程_loop1.png)
-![](../JavaGuide/image/mysql_存储过程_loop2.png)
+![](../image/mysql_存储过程_loop1.png)
+![](../image/mysql_存储过程_loop2.png)
 
 - 游标 cursor
 
@@ -1283,11 +1283,11 @@ close 游标名称;
 ```
 案例
 
-![](../JavaGuide/image/mysql_存储过程_cursor.png)
+![](../image/mysql_存储过程_cursor.png)
 
 - 条件处理程序（handler）
 
-![](../JavaGuide/image/mysql_存储过程_异常捕获.png)
+![](../image/mysql_存储过程_异常捕获.png)
 
 #### 存储函数
 存储函数是有返回值的存储过程，存储函数的参数只能是 in 输入类型
@@ -1305,7 +1305,7 @@ characteristic 说明
     reads sql data：包含读取数据的语句，但不包含写入数据的语句
 ```
 
-![](../JavaGuide/image/mysql_存储过程_存储函数.png)
+![](../image/mysql_存储过程_存储函数.png)
 
 #### 触发器
 > Oracle支持三种类型的触发器:行级触发器,语句级触发器和事件触发器
@@ -1316,7 +1316,7 @@ characteristic 说明
 
 可以使用别名 old 和 new 来引用触发器中发生变化的记录内容，MySQL触发器只支持行级触发，不支持语句级触发。
 
-![](../JavaGuide/image/mysql_触发器_类型.png)
+![](../image/mysql_触发器_类型.png)
 
 语法
 ```sql
@@ -1339,22 +1339,22 @@ drop trigger [schema_name].trigger_name;
 
 insert：
 
-![](../JavaGuide/image/mysql_触发器_insert.png)
+![](../image/mysql_触发器_insert.png)
 
 update：
 
-![](../JavaGuide/image/mysql_触发器_update.png)
+![](../image/mysql_触发器_update.png)
 
 delete：
 
-![](../JavaGuide/image/mysql_触发器_delete.png)
+![](../image/mysql_触发器_delete.png)
 
 ### 锁
 
 #### 全局锁
 全局锁典型的使用场景是做全库的逻辑备份。对所有表进行锁定，从而获取一致性视图，保证数据的完整性。
 
-![](../JavaGuide/image/mysql_锁_全局锁.png)
+![](../image/mysql_锁_全局锁.png)
 
 - 语法
 ```sql
@@ -1372,7 +1372,7 @@ unlock tables;
 
 - 案例
 
-![](../JavaGuide/image/mysql_锁_全局锁案例.png)
+![](../image/mysql_锁_全局锁案例.png)
 
 数据库中加全局锁，是一个比较重的操作，存在以下问题：
 1. 如果在主库上备份，那么在备份期间都不能执行更新，业务基本上就得停摆。
@@ -1400,7 +1400,7 @@ unlock tables / 客户端断开连接
 1. 表共享读锁（read lock）
 2. 表独占写锁（write lock）
 
-![](../JavaGuide/image/mysql_锁_表锁.png)
+![](../image/mysql_锁_表锁.png)
 
 读锁不会阻塞其他客户端的读，但是会阻塞写。写锁既会阻塞其他客户端的读，又会阻塞其他客户端的写。
 ##### 元数据锁（meta data lock，MDL）
@@ -1410,7 +1410,7 @@ MDL 加锁过程时系统自动控制，无需显示使用，在访问一张表�
 
 对于锁的验证测试，都需要在事务中进行。`begin; ... commit;`
 
-![](../JavaGuide/image/mysql_锁_表级锁_元数据锁.png)
+![](../image/mysql_锁_表级锁_元数据锁.png)
 
 查看元数据锁：
 ```sql
@@ -1423,7 +1423,7 @@ select object_type, object_schema, object_name, lock_type, lock_duration from pe
 1. 意向共享锁（IS）：由语句 select ... lock in share mode 添加。与表锁共享锁（read）兼容，与表锁排它锁（write）互斥。
 2. 意向排它锁（IX）：由 insert、update、delete、select ... 佛如 update 添加。与表锁共享锁（read）及排它锁（write）都互斥，意向锁之间不会互斥。
 
-![](../JavaGuide/image/mysql_锁_表级锁_意向锁.png)
+![](../image/mysql_锁_表级锁_意向锁.png)
 
 当线程A开启一个事务后，执行 update 操作（假设按照主键 update），会加一个行锁，再加一个意向锁。此时线程B需要加表锁，如果加的锁和意向锁不兼容，会阻塞，阻塞到线程A提交事务，释放锁后，才能够加表锁；如果兼容，那么直接加锁，不会阻塞。
 
@@ -1434,11 +1434,11 @@ SELECT object_schema, object_name, index_name, lock_type, lock_mode, lock_data F
 
 意向共享锁测试1：
 
-![](../JavaGuide/image/mysql_锁_表级锁_意向锁案例.png)
+![](../image/mysql_锁_表级锁_意向锁案例.png)
 
 意向排它锁测试2：
 
-![](../JavaGuide/image/mysql_锁_表级锁_意向锁案例2.png)
+![](../image/mysql_锁_表级锁_意向锁案例2.png)
 
 意向锁主要解决的是 InnoDB 中行锁与表锁的冲突。
 #### 行级锁
@@ -1449,16 +1449,16 @@ InnoDB 的数据是基于索引组织的（B+Tree，只有叶子节点会挂载�
 2. 间隙锁（Gap Lock）：锁定索引记录间隙（不含该记录），确保索引记录间隙不变，防止其他事务在这个间隙进行 insert，产生幻读。在 RR 隔离级别下支持。
 3. 临键锁（Next-Key Lock）：行锁和间隙锁组合，同时锁住数据，并锁住数据前面的间隙 Gap。在 RR 隔离级别下支持。
 
-![](../JavaGuide/image/mysql_锁_行级锁分类.png)
+![](../image/mysql_锁_行级锁分类.png)
 
 ##### 行锁
 InnoDB 提供了两种类型的行锁：
 1. 共享锁（S）：允许一个事务去读一行，阻止其他事务获得相同数据集的排它锁。（共享锁之间兼容，共享锁与排它锁互斥）
 2. 排它锁（X）：允许获取排它锁的事务更新数据，阻止其他事务获得相同数据集的共享锁和排它锁。
 
-![](../JavaGuide/image/mysql_锁_行锁_类型.png)
+![](../image/mysql_锁_行锁_类型.png)
 
-![](../JavaGuide/image/mysql_锁_行锁_CRUD.png)
+![](../image/mysql_锁_行锁_CRUD.png)
 
 默认情况下，InnoDB 在 REPEATABLE READ 事务隔离级别运行，InnoDB 使用 next-key 锁进行搜索和索引扫描，以防止幻读。
 1. 针对唯一索引进行检索时，对已存在的记录进行等值匹配时，将会自动优化为行锁。
@@ -1476,7 +1476,7 @@ InnoDB 提供了两种类型的行锁：
 #### 逻辑存储结构
 > innodb-architecture-8.0
 
-![](../JavaGuide/image/mysql_逻辑存储结构.png)
+![](../image/mysql_逻辑存储结构.png)
 
 - 表空间（ibd文件）：一个 MySQL 实例可以对应多个表空间，用于存储记录、索引等数据。（每一张表都是一个表空间）
 - 段：分为数据段（Leaf node segment）、索引段（Non-leaf node segment）、回滚段（Rollback segment）。InnoDB 时索引组织表，数据段就是B+树的叶子节点，索引段即为B+树的非叶子节点。段用来管理多个 Extent（区）。
@@ -1488,7 +1488,7 @@ InnoDB 提供了两种类型的行锁：
 #### 架构
 MySQL5.5版本开始，默认使用 InnoDB 存储引擎，它擅长事务处理、具有崩溃恢复特性，在日常开发中使用非常广泛。以下时 InnoDB 架构图，左侧为内存结构，右侧为磁盘结构。
 
-![](../JavaGuide/image/mysql_innodb-architecture-8-0.png)
+![](../image/mysql_innodb-architecture-8-0.png)
 
 ##### in-memory-structures
 - Buffer Pool（缓冲池）
@@ -1551,13 +1551,13 @@ MySQL5.5版本开始，默认使用 InnoDB 存储引擎，它擅长事务处理�
 ##### 后台线程
 后台线程的作用就是将InnoDB存储引擎缓冲池的数据在合适时机刷新到磁盘文件中。
 
-![](../JavaGuide/image/mysql_架构_后台线程.png)
+![](../image/mysql_架构_后台线程.png)
 
 - Master Thread
     - 核心后台线程，负责调度其他线程、负责将缓冲池中的数据异步刷新到磁盘中，保持数据的一致性，还包括脏页的刷新、合并插入缓冲、undo页的回收。
 - IO Thread
     - 在 InnoDB 存储引擎中大量使用了 AIO 来处理 IO 请求，可以极大地提高数据库的性能，而 IO Thread 主要负责这些 IO 请求的回调。
-    ![](../JavaGuide/image/mysql_架构_后台线程——iothread.png)
+    ![](../image/mysql_架构_后台线程——iothread.png)
 - Purge Thread
     - 主要用于回收事务已经提交了的undo log，在事务提交之后，undo log可能没用了，就用 Purge Thread 来回收。
 - Page Cleaner Thread
@@ -1572,14 +1572,14 @@ MySQL5.5版本开始，默认使用 InnoDB 存储引擎，它擅长事务处理�
 > 
 > 隔离性：锁 + MVCC
 
-![](../JavaGuide/image/mysql_事务原理1.png)
+![](../image/mysql_事务原理1.png)
 
 ##### redo log
 重做日志，记录的是事务提交时数据页的物理修改，是用来实现事务的持久性。
 
 该日志文件由两部分组成：重做日志缓冲（redo log buffer）以及重做日志文件（redo log file），前者是在内存中，后者在磁盘中。当事务提交后会把所有修改信息都存到该日志文件中，用于在刷新脏页到磁盘发生错误时，进行数据恢复使用。
 
-![](../JavaGuide/image/mysql_事务原理_rodolog.png)
+![](../image/mysql_事务原理_rodolog.png)
 
 可以把 redo log 日志文件理解为 redis 中的快照。（并不会永久保存，每隔一段时间就会清理日志），用于在
 
@@ -1614,7 +1614,7 @@ Undo log存储：undo log采用段的方式进行管理和记录，存放在 rol
     Multi-Version Concurrency Control，多版本并发控制。指维护一个数据的多个版本，使得读写操作没有冲突，快照读为 MySQL 实现 MVCC 提供了一个非阻塞读功能。MVCC 的具体实现，还需要依赖于数据库记录中的三个隐式字段、undo log日志、readView。
 
 ##### 隐藏字段
-![](../JavaGuide/image/mysql_隐藏字段.png)
+![](../image/mysql_隐藏字段.png)
 
 在 InnoDB 存储引擎中，每一张表都会有2-3个隐藏字段。
 - DB_TRX_ID：最近修改事务ID，记录插入这条记录或最后一次修改该记录的事务ID。（默认为1，自增）
@@ -1630,11 +1630,11 @@ Undo log存储：undo log采用段的方式进行管理和记录，存放在 rol
 
 原始记录
 
-![](../JavaGuide/image/mysql_undolog版本链_原始记录.png)
+![](../image/mysql_undolog版本链_原始记录.png)
 
 undo log版本链
 
-![](../JavaGuide/image/mysql_undolog版本链.png)
+![](../image/mysql_undolog版本链.png)
 
 不同事务或相同事务对同一条记录进行修改，会导致该记录的 undo log生成一条记录版本链表，链表的头部是最新的旧记录，链表的尾部是最早的旧记录。
 
@@ -1649,7 +1649,7 @@ ReadView中包含四个核心字段：
 - `max_trx_id`：预分配事务ID，当前最大事务ID+1（事务ID是自增的）。
 - `creator_trx_id`：ReadView 创建者的事务ID。
 
-![](../JavaGuide/image/mysql_mvcc_访问规则.png)
+![](../image/mysql_mvcc_访问规则.png)
 
 不同的隔离级别，生成ReadView的时机不同：
 - READ COMMITTED：在事务中每一次执行快照读时生成ReadView。
@@ -1662,25 +1662,25 @@ ReadView中包含四个核心字段：
 
 第一次执行快照读时，因为隔离级别是RC，读已提交，那么通过trx_id匹配访问规则得知，最近一次已提交是事务2。
 
-![](../JavaGuide/image/mysql_mvcc_readview1.png)
+![](../image/mysql_mvcc_readview1.png)
 
 第二次执行快照读时生成ReadView，从undo log版本链的头部用trx_id依次匹配四个规则。
 
 第二次执行快照读时，因为隔离级别是RC，读已提交，那么通过trx_id匹配访问规则得知，最近一次已提交是事务3。
 
-![](../JavaGuide/image/mysql_mvcc_readview2.png)
+![](../image/mysql_mvcc_readview2.png)
 
 ##### 原理分析（RR级别）
 > REPEATABLE READ 可重复读隔离级别下，仅在事务中第一次执行快照读时生成ReadView，后续复用该ReadView。
 > 
 > 同一个事务当中，读取两次相同的数据，结果都是一样的。
 
-![](../JavaGuide/image/mysql_mvcc_rr.png)
+![](../image/mysql_mvcc_rr.png)
 
 MVCC-实现原理
 > MVCC + 锁 实现隔离性。redo log + undo log 实现一致性。
 
-![](../JavaGuide/image/mysql_mvcc实现原理.png)
+![](../image/mysql_mvcc实现原理.png)
 
 ### MySQL管理
 #### 系统数据库
@@ -1719,7 +1719,7 @@ mysqladmin是一个执行管理操作的客户端程序。可以用它来检查�
 ```sql
 mysqladmin --help
 ```
-![](../JavaGuide/image/mysql_mysqladmin_help.png)
+![](../image/mysql_mysqladmin_help.png)
 
 ```linux
 mysqladmin -uroot -p123456 version;
@@ -1950,7 +1950,7 @@ MySQL 主从复制的要点：
 3. 可以在从库中执行备份，避免备份期间影响主库服务。（备份期间数据可能存在一定延迟）
 
 #### 原理
-![](../JavaGuide/image/mysql_主从复制原理.png)
+![](../image/mysql_主从复制原理.png)
 
 从上图来看，复制过程分成三步：
 1. Master 主库在事务提交后，会把数据变更记录在二进制日志文件（binlog）中。
@@ -2038,7 +2038,7 @@ change replication source to source_host='',souce_user='',source_password='',sou
 -- 8.0.23版本之前的语法
 change master to master_host='',master_user='',master_password='',master_log_file='',master_log_pos=xxx;
 ```
-![](../JavaGuide/image/mysql_主库配置参数.png)
+![](../image/mysql_主库配置参数.png)
 
 4. 开启同步操作
 ```sql
@@ -2057,14 +2057,14 @@ show replica status;
 #8.0.22　之前
 show slave status;
 ```
-![](../JavaGuide/image/mysql_主从同步状态.png)
+![](../image/mysql_主从同步状态.png)
 
 此时，主从复制的配置已经配置好了，现在在主库中执行的变更操作就会同步到从库中。
 
 如果中途添加的从库，可以把主库的sql文件在从库执行，保证主从的初始数一致，然后在进行同步操作。
 
 #### 多主多从
-![](../JavaGuide/image/mysql_双主双从.png)
+![](../image/mysql_双主双从.png)
 ##### 主库配置
 1. 修改配置文件
 ```cnf
@@ -2110,11 +2110,11 @@ start slave;
 
 拆分策略
 
-![](../JavaGuide/image/mysql_分库分表_拆分方式.png)
+![](../image/mysql_分库分表_拆分方式.png)
 
 垂直拆分
 
-![](../JavaGuide/image/mysql_分库分表_垂直拆分.png)
+![](../image/mysql_分库分表_垂直拆分.png)
 
 垂直分库（左图）：以表为依据，根据业务将不同表拆分到不同库中。
 1. 每个库的表结构都不一样。
@@ -2128,7 +2128,7 @@ start slave;
 
 水平拆分
 
-![](../JavaGuide/image/mysql_分库分表_水平拆分.png)
+![](../image/mysql_分库分表_水平拆分.png)
 
 水平分库（左图）：以字段为依据，按照拆分策略，将一个库的数据拆分到多个库中。
 1. 每个库的表结构都一样。
@@ -2149,15 +2149,15 @@ Windows 查看 .ibd 文件
 C:\ProgramData\MySQL\MySQL Server 8.0\Data\test>ibd2sdi emp.ibd
 ```
 
-![](../JavaGuide/image/mysql_ibd2sdi1.png)
+![](../image/mysql_ibd2sdi1.png)
 
 #### InnoDB 表空间逻辑存储结构
 
-![](../JavaGuide/image/mysql_InnoDB逻辑存储结构.png)
+![](../image/mysql_InnoDB逻辑存储结构.png)
 
 #### 常见存储引擎的区别
 
-![](../JavaGuide/image/mysql_常见存储引擎的区别.png)
+![](../image/mysql_常见存储引擎的区别.png)
 
 #### 思考：为什么 InnoDB 存储引擎选择使用 B+Tree 索引结构？
 
@@ -2165,13 +2165,13 @@ C:\ProgramData\MySQL\MySQL Server 8.0\Data\test>ibd2sdi emp.ibd
 2. 对于 B-Tree，无论是叶子节点还是非叶子节点，都会保存数据，这样导致一页中存储的键值减少，指针跟着减少，要同样保存大量数据，只能增加树的高度，导致性能降低。
 3. 相对于hash索引，B+Tree支持范围查询及排序操作；
 
-![](../JavaGuide/image/mysql_为什么InnoDB存储引擎选择B+Tree索引结构.png)
+![](../image/mysql_为什么InnoDB存储引擎选择B+Tree索引结构.png)
 
 #### 思考：InnoDB主键索引的B+tree高度为多高呢？
 
-![](../JavaGuide/image/mysql_InnoDB逻辑存储结构.png)
+![](../image/mysql_InnoDB逻辑存储结构.png)
 
-![](../JavaGuide/image/mysql_为什么InnoDB存储引擎选择B+Tree索引结构.png)
+![](../image/mysql_为什么InnoDB存储引擎选择B+Tree索引结构.png)
 
 假设：一行数据数据大小为1k，一页中可以存储16行这样的数据。InnoDB 的指针占用6个字节，键值占用空间和主键类型有关，主键为 bigint，占用字节为8.
 
@@ -2188,7 +2188,7 @@ n 指代当前节点存储的 key 的数量，(n+1)*6 就是指针的数量乘�
 #### 创建索引时默认是按照升序进行排序的
 A：ASC，D：DESC
 
-![](../JavaGuide/image/mysql_orderby5.png)
+![](../image/mysql_orderby5.png)
 
 
 
