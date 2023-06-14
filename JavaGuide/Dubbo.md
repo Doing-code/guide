@@ -8,12 +8,10 @@
 ![](../image/dubbo_服务导出时序图.png)
 
 ## Dubbo 服务引用流程图
-
-## Dubbo 服务引用时序图
+![](../image/dubbo_服务引用流程图.png)
 
 ## Dubbo 服务调用流程图
-
-## Dubbo 服务调用时序图
+![](../image/dubbo-extension.jpg)
 
 ## 基础知识
 RPC（Remote Procedure Call 远程过程调用）
@@ -1302,20 +1300,20 @@ private <T> Invoker<T> doRefer(Cluster cluster, Registry registry, Class<T> type
 ```java
 // 方法调用，最终会调用到 DubboProtocol#refer，但是 DubboProtocol 没有重写 refer 方法，所以执行父类方法。
 org.apache.dubbo.registry.integration.RegistryDirectory#subscribe
-    org.apache.dubbo.registry.ListenerRegistryWrapper#subscribe
-        org.apache.dubbo.registry.support.FailbackRegistry#subscribe
-            org.apache.dubbo.registry.zookeeper.ZookeeperRegistry#doSubscribe
-                org.apache.dubbo.registry.support.FailbackRegistry#notify
-                    org.apache.dubbo.registry.support.FailbackRegistry#doNotify
-                        org.apache.dubbo.registry.support.AbstractRegistry#notify(URL, NotifyListener, List<URL>)
-                            org.apache.dubbo.registry.integration.RegistryDirectory#notify
-                                org.apache.dubbo.registry.integration.RegistryDirectory#refreshOverrideAndInvoker
-                                    org.apache.dubbo.registry.integration.RegistryDirectory#refreshInvoker
-                                        org.apache.dubbo.registry.integration.RegistryDirectory#toInvokers
-                                            org.apache.dubbo.rpc.protocol.ProtocolListenerWrapper#refer
-                                                org.apache.dubbo.qos.protocol.QosProtocolWrapper#refer
-                                                    org.apache.dubbo.rpc.protocol.ProtocolFilterWrapper#refer
-                                                        org.apache.dubbo.rpc.protocol.AbstractProtocol#refer
+  ➡ org.apache.dubbo.registry.ListenerRegistryWrapper#subscribe
+    ➡ org.apache.dubbo.registry.support.FailbackRegistry#subscribe
+      ➡ org.apache.dubbo.registry.zookeeper.ZookeeperRegistry#doSubscribe
+        ➡ org.apache.dubbo.registry.support.FailbackRegistry#notify
+          ➡ org.apache.dubbo.registry.support.FailbackRegistry#doNotify
+            ➡ org.apache.dubbo.registry.support.AbstractRegistry#notify(URL, NotifyListener, List<URL>)
+              ➡ org.apache.dubbo.registry.integration.RegistryDirectory#notify
+                ➡ org.apache.dubbo.registry.integration.RegistryDirectory#refreshOverrideAndInvoker
+                  ➡ org.apache.dubbo.registry.integration.RegistryDirectory#refreshInvoker
+                    ➡ org.apache.dubbo.registry.integration.RegistryDirectory#toInvokers
+                     ➡ org.apache.dubbo.rpc.protocol.ProtocolListenerWrapper#refer
+                      ➡ org.apache.dubbo.qos.protocol.QosProtocolWrapper#refer
+                        ➡ org.apache.dubbo.rpc.protocol.ProtocolFilterWrapper#refer
+                          ➡ org.apache.dubbo.rpc.protocol.AbstractProtocol#refer
 ```
 
 8. `org.apache.dubbo.rpc.protocol.AbstractProtocol#refer`
@@ -1563,6 +1561,313 @@ public Client connect(URL url, ChannelHandler listener) throws RemotingException
 - 5、创建代理并返回。
 - 6、此时 dubbo:reference 声明的对象就是这个代理对象
 ### 服务调用
+> Dubbo 默认使用 Javassist 框架为服务接口生成动态代理类
+
+dubbo 服务调用入口`String info = userService.sayHi("hello world");`
+
+1. `org.apache.dubbo.rpc.proxy.InvokerInvocationHandler#invoke`
+```java
+public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+    if (method.getDeclaringClass() == Object.class) {
+        return method.invoke(invoker, args);
+    }
+    String methodName = method.getName();
+    Class<?>[] parameterTypes = method.getParameterTypes();
+    if (parameterTypes.length == 0) {
+        if ("toString".equals(methodName)) {
+            return invoker.toString();
+        } else if ("$destroy".equals(methodName)) {
+            invoker.destroy();
+            return null;
+        } else if ("hashCode".equals(methodName)) {
+            return invoker.hashCode();
+        }
+    } else if (parameterTypes.length == 1 && "equals".equals(methodName)) {
+        return invoker.equals(args[0]);
+    }
+    RpcInvocation rpcInvocation = new RpcInvocation(method, invoker.getInterface().getName(), args);
+    rpcInvocation.setTargetServiceUniqueName(invoker.getUrl().getServiceKey());
+
+    // 将 method、args 封装成 RpcInvocation 并执行后续调用
+    return invoker.invoke(rpcInvocation).recreate();
+}
+```
+InvokerInvocationHandler 中的 invoker 成员变量类型是 MockClusterInvoker，其内部封装服务降级的逻辑。
+
+2. `org.apache.dubbo.rpc.cluster.support.wrapper.MockClusterInvoker#invoke`
+```java
+public Result invoke(Invocation invocation) throws RpcException {
+    Result result = null;
+
+    // 获取 mock 配置值
+    String value = directory.getUrl().getMethodParameter(invocation.getMethodName(), MOCK_KEY, Boolean.FALSE.toString()).trim();
+    
+    // no mock，直接调用其他 Invoker 对象的 invoke 方法，默认是 FailoverClusterInvoker
+    if (value.length() == 0 || "false".equalsIgnoreCase(value)) {
+        //no mock
+        result = this.invoker.invoke(invocation);
+    } else if (value.startsWith("force")) {
+    
+        // force:xxx 不发起远程调用，直接执行 mock 逻辑
+        if (logger.isWarnEnabled()) {
+            logger.warn("force-mock: " + invocation.getMethodName() + " force-mock enabled , url : " + directory.getUrl());
+        }
+        //force:direct mock
+        result = doMockInvoke(invocation, null);
+    } else {
+    
+        // fail:xxx 表示消费方对调用服务失败后，再执行 mock 逻辑，不抛出异常
+        //fail-mock
+        try {
+            result = this.invoker.invoke(invocation);
+
+            //fix:#4585
+            if(result.getException() != null && result.getException() instanceof RpcException){
+                RpcException rpcException= (RpcException)result.getException();
+                if(rpcException.isBiz()){
+                    throw  rpcException;
+                }else {
+                
+                    // 用失败，执行 mock 逻辑
+                    result = doMockInvoke(invocation, rpcException);
+                }
+            }
+
+        } catch (RpcException e) {
+            if (e.isBiz()) {
+                throw e;
+            }
+
+            if (logger.isWarnEnabled()) {
+                logger.warn("fail-mock: " + invocation.getMethodName() + " fail-mock enabled , url : " + directory.getUrl(), e);
+            }
+            result = doMockInvoke(invocation, e);
+        }
+    }
+    return result;
+}
+```
+3. 省略部分调用
+```java
+org.apache.dubbo.rpc.cluster.support.wrapper.AbstractCluster.InterceptorInvokerNode#invoke
+  ➡ org.apache.dubbo.rpc.cluster.interceptor.ClusterInterceptor#intercept
+    ➡ org.apache.dubbo.rpc.cluster.support.AbstractClusterInvoker#invoke
+      ➡ org.apache.dubbo.rpc.cluster.support.FailoverClusterInvoker#doInvoke
+        ➡ org.apache.dubbo.rpc.protocol.InvokerWrapper#invoke
+          ➡ org.apache.dubbo.rpc.Invoker#invoke [org.apache.dubbo.rpc.protocol.ProtocolFilterWrapper#buildInvokerChain() 匿名内部类]
+            ➡ org.apache.dubbo.rpc.filter.ConsumerContextFilter#invoke
+              ➡ org.apache.dubbo.rpc.Invoker#invoke [org.apache.dubbo.rpc.protocol.ProtocolFilterWrapper#buildInvokerChain() 匿名内部类]
+                ➡ org.apache.dubbo.rpc.protocol.dubbo.filter.FutureFilter#invoke
+                  ➡ org.apache.dubbo.rpc.Invoker#invoke [org.apache.dubbo.rpc.protocol.ProtocolFilterWrapper#buildInvokerChain() 匿名内部类]
+                    ➡ org.apache.dubbo.monitor.support.MonitorFilter#invoke
+                      ➡ org.apache.dubbo.rpc.listener.ListenerInvokerWrapper#invoke
+                        ➡ org.apache.dubbo.rpc.protocol.AsyncToSyncInvoker#invoke
+                          ➡ org.apache.dubbo.rpc.protocol.AbstractInvoker#invoke
+```
+4. `org.apache.dubbo.rpc.protocol.AbstractInvoker#invoke`
+```java
+public Result invoke(Invocation inv) throws RpcException {
+    // if invoker is destroyed due to address refresh from registry, let's allow the current invoke to proceed
+    if (destroyed.get()) {
+        logger.warn("Invoker for service " + this + " on consumer " + NetUtils.getLocalHost() + " is destroyed, "
+                + ", dubbo version is " + Version.getVersion() + ", this invoker should not be used any longer");
+    }
+    RpcInvocation invocation = (RpcInvocation) inv;
+    
+    // 设置 Invoker
+    invocation.setInvoker(this);
+    if (CollectionUtils.isNotEmptyMap(attachment)) {
+        
+        // 设置 attachment
+        invocation.addAttachmentsIfAbsent(attachment);
+    }
+    Map<String, String> contextAttachments = RpcContext.getContext().getAttachments();
+    if (CollectionUtils.isNotEmptyMap(contextAttachments)) {
+        
+        // 添加 contextAttachments 到 RpcInvocation#attachment 变量中
+        invocation.addAttachments(contextAttachments);
+    }
+
+    // 置异步信息到 RpcInvocation#attachment 中
+    invocation.setInvokeMode(RpcUtils.getInvokeMode(url, invocation));
+    RpcUtils.attachInvocationIdIfAsync(getUrl(), invocation);
+
+    AsyncRpcResult asyncResult;
+    try {
+        
+        // 模板方法，由子类实现
+        asyncResult = (AsyncRpcResult) doInvoke(invocation);
+    } catch (InvocationTargetException e) { // biz exception
+        // ... 省略
+    }
+    RpcContext.getContext().setFuture(new FutureAdapter(asyncResult.getResponseFuture()));
+    return asyncResult;
+}
+```
+5. `org.apache.dubbo.rpc.protocol.dubbo.DubboInvoker#doInvoke`
+```java
+protected Result doInvoke(final Invocation invocation) throws Throwable {
+    RpcInvocation inv = (RpcInvocation) invocation;
+    final String methodName = RpcUtils.getMethodName(invocation);
+    
+    // 设置 path 和 version 到 attachment 中
+    inv.setAttachment(PATH_KEY, getUrl().getPath());
+    inv.setAttachment(VERSION_KEY, version);
+
+    ExchangeClient currentClient;
+    
+    // 获取客户端，服务引用时将 clients 传入DubboInvoker构造函数的.
+    if (clients.length == 1) {
+        currentClient = clients[0];
+    } else {
+        currentClient = clients[index.getAndIncrement() % clients.length];
+    }
+    try {
+    
+        // isOneway 为 true，表示“单向”通信
+        boolean isOneway = RpcUtils.isOneway(getUrl(), invocation);
+        int timeout = getUrl().getMethodPositiveParameter(methodName, TIMEOUT_KEY, DEFAULT_TIMEOUT);
+        if (isOneway) {
+            boolean isSent = getUrl().getMethodParameter(methodName, Constants.SENT_KEY, false);
+            currentClient.send(inv, isSent);
+            return AsyncRpcResult.newDefaultAsyncResult(invocation);
+        } else {
+            ExecutorService executor = getCallbackExecutor(getUrl(), inv);
+            CompletableFuture<AppResponse> appResponseFuture =
+                    currentClient.request(inv, timeout, executor).thenApply(obj -> (AppResponse) obj);
+            // save for 2.6.x compatibility, for example, TraceFilter in Zipkin uses com.alibaba.xxx.FutureAdapter
+            FutureContext.getContext().setCompatibleFuture(appResponseFuture);
+            AsyncRpcResult result = new AsyncRpcResult(appResponseFuture, inv);
+            result.setExecutor(executor);
+            return result;
+        }
+    } catch (TimeoutException e) {
+        throw new RpcException(RpcException.TIMEOUT_EXCEPTION, "Invoke remote method timeout. method: " + invocation.getMethodName() + ", provider: " + getUrl() + ", cause: " + e.getMessage(), e);
+    } catch (RemotingException e) {
+        throw new RpcException(RpcException.NETWORK_EXCEPTION, "Failed to invoke remote method: " + invocation.getMethodName() + ", provider: " + getUrl() + ", cause: " + e.getMessage(), e);
+    }
+}
+```
+6. `org.apache.dubbo.rpc.protocol.dubbo.ReferenceCountExchangeClient#request(Object, int, jExecutorService)`
+```java
+public CompletableFuture<Object> request(request, timeout, executor) throws RemotingException {
+    return client.request(request, timeout, executor);
+}
+```
+5. `org.apache.dubbo.remoting.exchange.support.header.HeaderExchangeClient#request(Object, int, ExecutorService)`
+```java
+public CompletableFuture<Object> request(Object request, int timeout, ExecutorService executor) throws RemotingException {
+    return channel.request(request, timeout, executor);
+}
+```
+6. `org.apache.dubbo.remoting.exchange.support.header.HeaderExchangeChannel#request(Object, int, ExecutorService)`
+```java
+public CompletableFuture<Object> request(Object request, int timeout, ExecutorService executor) throws RemotingException {
+    if (closed) {
+        throw new RemotingException(this.getLocalAddress(), null, "Failed to send request " + request + ", cause: The channel " + this + " is closed!");
+    }
+    // create request.
+    Request req = new Request();
+    req.setVersion(Version.getProtocolVersion());
+    
+    // 设置双向通信标志为 true
+    req.setTwoWay(true);
+    
+    // 这里的 request 变量类型为 RpcInvocation
+    req.setData(request);
+    DefaultFuture future = DefaultFuture.newFuture(channel, req, timeout, executor);
+    try {
+        // 调用 NettyClient#send 方法发送请求
+        channel.send(req);
+    } catch (RemotingException e) {
+        future.cancel();
+        throw e;
+    }
+    return future;
+}
+```
+7. `org.apache.dubbo.remoting.transport.AbstractPeer#send`
+```java
+public void send(Object message) throws RemotingException {
+    // 该方法由  AbstractClient 实现
+    send(message, url.getParameter(Constants.SENT_KEY, false));
+}
+```
+8. `org.apache.dubbo.remoting.transport.AbstractClient#send`
+```java
+public void send(Object message, boolean sent) throws RemotingException {
+    if (needReconnect && !isConnected()) {
+        connect();
+    }
+    
+    // 获取 Channel，是一个模板方法，由具体子类实现
+    Channel channel = getChannel();
+    //TODO Can the value returned by getChannel() be null? need improvement.
+    if (channel == null || !channel.isConnected()) {
+        throw new RemotingException(this, "message can not send, because channel is closed . url:" + getUrl());
+    }
+    channel.send(message, sent);
+}
+```
+
+9. `org.apache.dubbo.remoting.transport.netty4.NettyChannel#send`
+```java
+public void send(Object message, boolean sent) throws RemotingException {
+    // whether the channel is closed
+    super.send(message, sent);
+
+    boolean success = true;
+    int timeout = 0;
+    try {
+    
+        // 发送消息（包含请求和相应消息）
+        ChannelFuture future = channel.writeAndFlush(message);
+        
+        /* sent 的值源于 <dubbo:method sent="true/false" /> 中 sent 的配置值，有两种配置值：
+             1. true: 等待消息发出，消息发送失败将抛出异常
+             2. false: 不等待消息发出，将消息放入 IO 队列，即刻返回
+           默认情况下 sent = false；
+        */ 
+        if (sent) {
+            // wait timeout ms
+            timeout = getUrl().getPositiveParameter(TIMEOUT_KEY, DEFAULT_TIMEOUT);
+            success = future.await(timeout);
+        }
+        Throwable cause = future.cause();
+        if (cause != null) {
+            throw cause;
+        }
+    } catch (Throwable e) {
+        removeChannelIfDisconnected(channel);
+        throw new RemotingException(this, "Failed to send message " + PayloadDropper.getRequestWithoutData(message) + " to " + getRemoteAddress() + ", cause: " + e.getMessage(), e);
+    }
+    if (!success) {
+        throw new RemotingException(this, "Failed to send message " + PayloadDropper.getRequestWithoutData(message) + " to " + getRemoteAddress()
+                + "in timeout(" + timeout + "ms) limit");
+    }
+}
+```
+至此，请求数据的发送过程就结束了，后续就是提供方接受请求并处理，提供方相应请求，消费方接受调用结果。
+
+如下是整个调用路径：
+```txt
+proxy0#sayHi(String)
+  —> InvokerInvocationHandler#invoke(Object, Method, Object[])
+    —> MockClusterInvoker#invoke(Invocation)
+      —> AbstractClusterInvoker#invoke(Invocation)
+        —> FailoverClusterInvoker#doInvoke(Invocation, List<Invoker<T>>, LoadBalance)
+          —> Filter#invoke(Invoker, Invocation)  // 包含多个 Filter 调用
+            —> ListenerInvokerWrapper#invoke(Invocation) 
+              —> AbstractInvoker#invoke(Invocation) 
+                —> DubboInvoker#doInvoke(Invocation)
+                  —> ReferenceCountExchangeClient#request(Object, int)
+                    —> HeaderExchangeClient#request(Object, int)
+                      —> HeaderExchangeChannel#request(Object, int)
+                        —> AbstractPeer#send(Object)
+                          —> AbstractClient#send(Object, boolean)
+                            —> NettyChannel#send(Object, boolean)
+                              —> NioClientSocketChannel#write(Object)
+```
 
 ### SPI
 
@@ -1965,7 +2270,49 @@ ExporterListener(服务暴露监听) 与 InvokerListener(服务调用监听)
 
 通过 ProtocolFilterWrapper#export 与 ProtocolFilterWrapper#refer 构建 Filter 对服务暴露方与服务引用方的 Invoke 进行拦截。
 
+#### getChannel()
+```java
+// org.apache.dubbo.remoting.transport.netty4.NettyClient#getChannel
 
+protected org.apache.dubbo.remoting.Channel getChannel() {
+    Channel c = channel;
+    if (c == null) {
+        return null;
+    }
+    
+    // 获取一个 NettyChannel 对象
+    return NettyChannel.getOrAddChannel(c, getUrl(), this);
+}
+```
+
+#### getOrAddChannel()
+```java
+// org.apache.dubbo.remoting.transport.netty4.NettyChannel#getOrAddChannel
+
+static NettyChannel getOrAddChannel(Channel ch, URL url, ChannelHandler handler) {
+    if (ch == null) {
+        return null;
+    }
+    
+    // 尝试从缓存中获取 NettyChannel 实例
+    NettyChannel ret = CHANNEL_MAP.get(ch);
+    if (ret == null) {
+    
+        // 如果没找到则创建一个 NettyChannel 实例
+        NettyChannel nettyChannel = new NettyChannel(ch, url, handler);
+        if (ch.isActive()) {
+            nettyChannel.markActive(true);
+            
+            // 缓存
+            ret = CHANNEL_MAP.putIfAbsent(ch, nettyChannel);
+        }
+        if (ret == null) {
+            ret = nettyChannel;
+        }
+    }
+    return ret;
+}
+```
 
 
 
