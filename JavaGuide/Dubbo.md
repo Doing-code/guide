@@ -20,7 +20,7 @@ RPC（Remote Procedure Call 远程过程调用）
 
 常见的 RPC 框架：Dubbo、gRPC、Thrift、HSF（High Speed Service Framework）。
 
-Dubbo 提供了三个核心能力：面向接口的远程方法调用、只能容错和负载均衡、服务自动注册和发现。
+Dubbo 提供了三个核心能力：面向接口的远程方法调用、智能容错和负载均衡、服务自动注册和发现。
 ### 基本原理
 #### RPC 简介
 ![](../image/RPC_基本原理.png)
@@ -183,10 +183,23 @@ public class DubboConsumeTest {
 当某一台提供者宕机时，原本发往该提供者的请求，基于虚拟节点，会平坦到其他提供者，不会引起剧烈变动。
 
 默认只对第一个参数 Hash，默认用 160 份虚拟节点
-```xml
+```txt
 <!--通过如下配置进行修改默认匹配中-->
 <dubbo:parameter key="hash.arguments" value="0,1"/>
 <dubbo:parameter key="hash.nodes" value="320"/>
+```
+配置负载均衡
+```txt
+使用 xml 配置负载均衡
+<dubbo:service interface="..." loadbalance="roundrobin" />
+
+SpringBoot配置
+dubbo:
+  provider:
+    loadbalance: roundrobin
+
+基于注解
+@Service(version = "${product.service.version}",loadbalance="roundrobin")
 ```
 
 ### 服务降级
@@ -201,8 +214,21 @@ public class DubboConsumeTest {
 
     当消费方对该服务方法的调用失败后，再返回 null，不抛异常。用来容忍不重要服务不稳定时对调用方的影响。
 
+服务降级配置
+```txt
+1、xml（服务调用方）
+<dubbo:reference id="xxxService" interface="com.x..service.xxxxService" check="false" mock="return 123456..." />
+
+2、实现接口（在业务接口所在的包中定义一个类，该类的命名需要满足以下规则：业务接口简单类名 + Mock同时实现mock接口，类名要注意命名规范：接口名+Mock后缀。此时如果调用失败会调用Mock实现，需要有无参构造）
+eg：public class FooServiceMock implements FooService
+<dubbo:reference id="fooService" interface="com.test.service.FooService" ?timeout="10000" check="false" mock="true">
+```
+
 ### 服务容错&Hystrix
 在集群调用失败时，Dubbo 提供了多种容错方案，默认为 failover 重试。
+```xml
+<dubbo:reference cluster="failfast" />
+```
 
 ## Dubbo 原理
 > Dubbo Version 2.7.5
