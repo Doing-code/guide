@@ -1068,6 +1068,15 @@ protected void doOpen() throws Throwable {
 ```
 - `getTransporter()`获取的 Transporter 是在运行时动态创建的，类名为 TransporterAdaptive，也就是自适应扩展类。TransporterAdaptive 运行时根据传入的 URL 参数决定加载什么类型的 Transporter，默认是 NettyTransporter。
 
+1. 服务提供者初始化Dubbo框架，并加载相关配置。
+2. Dubbo框架创建服务导出器，用于将服务导出。
+3. 服务提供者标记要导出的服务接口和实现类。
+4. Dubbo框架创建服务实例，并与服务接口关联。
+5. Dubbo框架生成服务暴露对象，描述要导出的服务。
+6. Dubbo框架加载指定的协议实现类。
+7. 协议实现类将服务注册到注册中心，并监听指定的IP和端口。
+8. 协议实现类使用网络通信组件监听IP和端口，等待远程调用请求。
+
 至此，Dubbo 的服务导出流程就走完了。
 ### 服务引用
 
@@ -1894,8 +1903,17 @@ proxy0#sayHi(String)
                             —> NettyChannel#send(Object, boolean)
                               —> NioClientSocketChannel#write(Object)
 ```
+1. Dubbo框架根据服务接口生成一个服务引用对象，包含了服务接口、协议等信息。（代理对象）
+2. Dubbo框架根据服务引用对象中的配置，选择合适的负载均衡策略和集群容错机制。
+3. 服务消费者发起远程调用请求，Dubbo框架根据服务引用对象的信息构建调用请求。
+4. Dubbo框架选择一个可用的服务提供者，通过网络通信组件向其发送调用请求。
+5. 服务提供者接收到调用请求，Dubbo框架根据请求的接口名、方法名找到对应的服务实例，并调用相应的方法。
+6. 服务实例执行方法逻辑，并返回执行结果。
+7. Dubbo框架将执行结果封装成响应对象，并通过网络通信组件发送给服务消费者。
+8. 服务消费者接收响应对象，解析并处理响应结果。
 
 ### SPI
+https://juejin.cn/post/6944733434593935391#heading-14
 
 ## 附录
 #### checkAndUpdateSubConfigs()
@@ -2339,6 +2357,9 @@ static NettyChannel getOrAddChannel(Channel ch, URL url, ChannelHandler handler)
     return ret;
 }
 ```
+
+#### 消费方发送请求
+https://blog.csdn.net/wuyangyang555/article/details/122566485
 
 
 
