@@ -2,7 +2,6 @@
 
 
 - [x] [Dubbo](JavaGuide/Dubbo.md)
-- [x] [HashMap](JavaGuide/HashMap.md)
 - [ ] [JavaGuide](JavaGuide/JavaGuide.md)
 - [ ] [JUC](JavaGuide/JUC.md)
 - [ ] [JVM](JavaGuide/JVM.md)
