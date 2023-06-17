@@ -2,7 +2,7 @@
 
 
 - [x] [Dubbo](JavaGuide/Dubbo.md)
-- [ ] [JavaGuide](JavaGuide/JavaGuide.md)
+- [x] [JavaGuide](JavaGuide/JavaGuide.md)
 - [ ] [JUC](JavaGuide/JUC.md)
 - [ ] [JVM](JavaGuide/JVM.md)
 - [ ] [Kafka](JavaGuide/Kafka.md)
