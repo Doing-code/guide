@@ -620,8 +620,274 @@ final Node<K,V> getNode(int hash, Object key) {
    2. 如果后续节点是链表节点，则通过遍历链表根据 key 获取 value。
 
 ## ArrayList
+### 继承关系
+![](../image/arraylist_继承关系.png)
 
-## NIO & BIO & AIO
+### 常见成员变量
+#### DEFAULT_CAPACITY 初始容量
+```java
+/**
+* Default initial capacity.
+*/
+private static final int DEFAULT_CAPACITY = 10;
+```
+
+#### EMPTY_ELEMENTDATA
+指定大小的构造函数里可能使用到的空数组。
+```java
+/**
+* Shared empty array instance used for empty instances.
+*/
+private static final Object[] EMPTY_ELEMENTDATA = {};
+```
+
+#### DEFAULTCAPACITY_EMPTY_ELEMENTDATA
+默认构造函数的空数组。
+```java
+/**
+* Shared empty array instance used for default sized empty instances. We
+* distinguish this from EMPTY_ELEMENTDATA to know how much to inflate when
+* first element is added.
+*/
+private static final Object[] DEFAULTCAPACITY_EMPTY_ELEMENTDATA = {};
+```
+
+#### elementData
+真正存放元素的数组。
+```java
+/**
+  * The array buffer into which the elements of the ArrayList are stored.
+  * The capacity of the ArrayList is the length of this array buffer. Any
+  * empty ArrayList with elementData == DEFAULTCAPACITY_EMPTY_ELEMENTDATA
+  * will be expanded to DEFAULT_CAPACITY when the first element is added.
+  */
+transient Object[] elementData; // non-private to simplify nested class access
+```
+
+#### size
+数组中包含元素的个数。
+```java
+/**
+  * The size of the ArrayList (the number of elements it contains).
+  *
+  * @serial
+  */
+private int size;
+```
+
+#### MAX_ARRAY_SIZE 数组最大容量
+```java
+/**
+ * The maximum size of array to allocate.
+ * Some VMs reserve some header words in an array.
+ * Attempts to allocate larger arrays may result in
+ * OutOfMemoryError: Requested array size exceeds VM limit
+ */
+private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
+```
+
+### add()
+```java
+/**
+ * Appends the specified element to the end of this list.
+ *
+ * @param e element to be appended to this list
+ * @return <tt>true</tt> (as specified by {@link Collection#add})
+ */
+public boolean add(E e) {
+
+    // 判断添加元素后的数组长度是否需要扩容
+    ensureCapacityInternal(size + 1);  // Increments modCount!!
+    elementData[size++] = e;
+    return true;
+}
+
+private void ensureCapacityInternal(int minCapacity) {
+    ensureExplicitCapacity(calculateCapacity(elementData, minCapacity));
+}
+
+private static int calculateCapacity(Object[] elementData, int minCapacity) {
+    
+    // 判断是不是第一次初始化数组
+    if (elementData == DEFAULTCAPACITY_EMPTY_ELEMENTDATA) {
+        return Math.max(DEFAULT_CAPACITY, minCapacity);
+    }
+    return minCapacity;
+}
+
+// 判断扩容的方法
+private void ensureExplicitCapacity(int minCapacity) {
+    
+    // 当前列表结构被修改的次数，扩容就会modCount++;
+    modCount++;
+
+    // overflow-conscious code
+    
+    // 判断当前数据量是否大于数组的长度
+    if (minCapacity - elementData.length > 0)
+    
+        // 如果大于则进行扩容操作
+        grow(minCapacity);
+}
+```
+
+add(index, element)：指定索引添加的方法，和普通添加方法本质上没有区别，只是多了一个元素拷贝的过程，以及 index check 的逻辑。
+```java
+public void add(int index, E element) {
+    rangeCheckForAdd(index);
+
+    // 是否需要扩容，同add(element)方法一样
+    ensureCapacityInternal(size + 1);  // Increments modCount!!
+    
+    // 拷贝数组，将下标后面的元素全部向后移动一位
+    System.arraycopy(elementData, index, elementData, index + 1,
+                     size - index);
+    elementData[index] = element;
+    size++;
+}
+
+private void rangeCheckForAdd(int index) {
+    if (index > size || index < 0)
+        throw new IndexOutOfBoundsException(outOfBoundsMsg(index));
+}
+```
+`addAll(Collection<? extends E> c)`和`addAll(int index, Collection<? extends E> c)`在逻辑上和普通`add()`方法没有区别。拷贝数组移动的次数就是需要添加集合的length。
+
+### grow()
+```java
+/**
+ * Increases the capacity to ensure that it can hold at least the
+ * number of elements specified by the minimum capacity argument.
+ *
+ * @param minCapacity the desired minimum capacity
+ */
+private void grow(int minCapacity) {
+    // overflow-conscious code
+    // 记录扩容前的数组长度
+    int oldCapacity = elementData.length;
+    
+    // 将原数组的长度扩大1.5倍作为扩容后新数组的长度（若扩容器容量为 10，扩容后就是15，右移1位等同于 10/2）
+    int newCapacity = oldCapacity + (oldCapacity >> 1);
+    
+    // 如果扩容后的长度小于当前数据量，则将当前数据量作为本次扩容的长度
+    if (newCapacity - minCapacity < 0)
+        newCapacity = minCapacity;
+        
+    // 如果新扩容长度大于可分配数组的最大容量
+    if (newCapacity - MAX_ARRAY_SIZE > 0)
+        
+        // 如果当前数据量大于数组最大容量，则设置为Integer最大值，否则设置为当前数据量
+        newCapacity = hugeCapacity(minCapacity);
+    // minCapacity is usually close to size, so this is a win:
+    
+    // 构建一个新的数组，拷贝原数组元素
+    elementData = Arrays.copyOf(elementData, newCapacity);
+}
+
+private static int hugeCapacity(int minCapacity) {
+    if (minCapacity < 0) // overflow
+        throw new OutOfMemoryError();
+    return (minCapacity > MAX_ARRAY_SIZE) ? Integer.MAX_VALUE : MAX_ARRAY_SIZE;
+}
+```
+### remove()
+删除指定索引。
+```java
+public E remove(int index) {
+
+    // 判断索引下标是否越界
+    rangeCheck(index);
+
+    modCount++;
+    
+    // 获取要删除的值
+    E oldValue = elementData(index);
+
+    // 计算要移动的元素数量
+    int numMoved = size - index - 1;
+    if (numMoved > 0)
+    
+        // 拷贝数组，覆盖数组数据
+        System.arraycopy(elementData, index+1, elementData, index,
+                         numMoved);
+                         
+    // 置空原尾部数据 不再强引用， 可以GC掉
+    elementData[--size] = null; // clear to let GC do its work
+
+    return oldValue;
+}
+```
+remove(Object)删除指定对象，删除该元素在数组中第一次出现的位置上的数据。 如果有该元素返回true，如果false。
+```java
+public boolean remove(Object o) {
+    if (o == null) {
+        for (int index = 0; index < size; index++)
+            if (elementData[index] == null) {
+                fastRemove(index);
+                return true;
+            }
+    } else {
+        for (int index = 0; index < size; index++)
+            if (o.equals(elementData[index])) {
+                fastRemove(index);
+                return true;
+            }
+    }
+    return false;
+}
+
+// 不会越界 不用判断 ，也不需要取出该元素
+private void fastRemove(int index) {
+    modCount++;
+    
+    // 计算要移动的元素数量
+    int numMoved = size - index - 1;
+    if (numMoved > 0)
+    
+        // 以复制覆盖元素 完成删除
+        System.arraycopy(elementData, index+1, elementData, index,
+                         numMoved);
+     
+    // 置空 不再强引用
+    elementData[--size] = null; // clear to let GC do its work
+}
+```
+
+### get()
+```java
+public E get(int index) {
+    
+    // 检查索引
+    rangeCheck(index);
+
+    return elementData(index);
+}
+
+E elementData(int index) {
+    return (E) elementData[index];
+}
+```
+### set()
+替换index位置的元素值，并返回该位置上的旧值。
+```java
+public E set(int index, E element) {
+    rangeCheck(index);
+
+    E oldValue = elementData(index);
+    elementData[index] = element;
+    return oldValue;
+}
+```
+
+总结：
+1. ArrayList内部基于动态数组实现，所以可以进行扩容操作，每一次扩容增量都是50%，即原数组的1.5倍。
+2. 基于数组实现的，所以内部多个API都避免不了对数组的copy操作，比如set和remove操作，所以导致ArrayList插入和删除效率低下
+3. 基于数组实现，并且实现了RandomAccess，所以可以随机访问，根据index来找到元素的值，所以ArrayList获取元素的效率很高
+4. 提供了多个迭代器，都是基于内部类实现的
+5. 底层源码中没有做同步处理，所以是线程不安全的，之前的版本Vector原理基本一直，但是Vector在方法的实现上都会加上synchronized关键字
+6. modeCount会在适当的时候进行++操作，可以实现快速失败
+
+## NIO
 ### Channel
 `DatagramChannel`和`SocketChannel`实现定义读和写功能的接口，而`ServerSocketChannel`不实现。`ServerSocketChannel`负责监听传入的连接和创建新的`SocketChannel`对象，`ServerSocketChannel`本身不传输数据。
 
@@ -1183,7 +1449,74 @@ public void client() throws Exception {
   buffer.clear();
 }
 ```
+NIO编程大致步骤：
+1. 创建`ServerSocketChannel`通道，绑定监听端口。
+2. 设置通道为非阻塞模式。
+3. 创建`Selector`选择器。
+4. 将`Channel`注册到`Selector`选择器上，监听感兴趣的就绪状态（可读、可写、连接、接收）。
+5. 调用`Selector.select()`，监听通道的就绪情况。
+6. 调用`selectedKeys()`获取就绪`Channel`集合。
+7. 遍历就绪`Channel`集合，判断就绪事件类型，实现具体的业务操作。
+8. 根据业务，是否需要再次注册选择键，重复执行第三步。
 
+### Pipe & FileLock
+#### Pipe
+管道（Pipe）是两个线程之间的单向数据连接。`Pipe`有一个`source`通道和一个`sink`通道，数据会被写到`sink`通道，从`source`通道读取。
+
+![](../image/javaguide_nio_pipe.png)
+
+```java
+public void pipe() throws Exception {
+  String newData = "send: " + System.currentTimeMillis();
+  Pipe pipe = Pipe.open();
+  Pipe.SinkChannel sinkChannel = pipe.sink();
+  ByteBuffer sinkBuffer = ByteBuffer.allocate(50);
+  sinkBuffer.clear();
+  sinkBuffer.put(newData.getBytes());
+  sinkBuffer.flip();
+  while (sinkBuffer.hasRemaining()) {
+      sinkChannel.write(sinkBuffer);
+  }
+
+  Pipe.SourceChannel sourceChannel = pipe.source();
+  ByteBuffer sourceBuffer = ByteBuffer.allocate(50);
+  sourceChannel.read(sourceBuffer);
+
+  System.out.println(new String(sourceBuffer.array()));
+}
+```
+简单方法并不常用，使用Pipe类一般都会用到选择器实现一个线程处理多组IO请求。一般就是使用选择器同时处理网络套接字IO请求与管道IO请求。
+
+#### FileLock
+文件锁，给文件加锁，同一时间，只能有一个程序修改此文件。
+
+文件锁分类：
+- 排它锁：对文件加排它锁后，当前进程可以对此文件进行读写，其他进程不能读写此文件。直到当前进行释放文件锁。
+- 共享锁：其他进程也能访问此文件，但这些进程只能读不能写。
+
+```java
+public void fileLock() throws Exception {
+  FileChannel fileChannel = new FileOutputStream("A:\\test.txt").getChannel();
+  // 加锁
+  FileLock fileLock = fileChannel.lock();
+  
+  // 释放锁
+  fileLock.release();
+}
+```
+1. `lock()`：排它锁。
+2. `lock(long position, long size, boolean shared)`：自定义加锁方式，前两个参数指定要加锁的部分（可以只对文件的部分内容加锁），第三个参数指定是否是共享锁（true 是共享锁）。
+3. `tryLock()`：排它锁。
+4. `tryLock(long position, long size, boolean shared)`：自定义加锁方式，如果指定为共享锁，若某进程视图对此文件进行写操作，会抛异常。
+
+`lock`是阻塞的，如果未获取到文件锁，会一直阻塞当前线程 ，直到获取文件锁。`tryLock`是非阻塞的，如果尝试获取不到则返回null，不会阻塞当前线程。
+
+`isShared()`判断此文件锁是否是共享锁。`isValid()`判断此文件锁是否有效。
+## BIO
+
+
+
+## AIO
 
 
 
@@ -1239,14 +1572,459 @@ map.forEach((k, v)-> System.out.println(k + v););
     在JDK 7中，HashMap使用数组加链表的方式来存储数据，即使用拉链法解决哈希冲突。
     在JDK 8中，当链表长度达到一定阈值（默认为8）时，会将链表转换为红黑树，以提高查找、插入和删除的性能。
 2. 扩容机制：
-    在JDK 7中，HashMap的扩容机制是在数组长度达到阈值时进行扩容，即使负载因子小于1也会扩容。当进行扩容时，HashMap 会创建一个新的两倍大小的数组，并将原来数组中的元素重新插入到新数组中，重新计算它们在新数组中的位置。
+    在 JDK 7 中，HashMap 的扩容是在数组长度达到阈值时进行的，不考虑链表长度。当进行扩容时，HashMap 会创建一个新的两倍大小的数组，并将原来数组中的元素重新插入到新数组中，重新计算它们在新数组中的位置。
     在JDK 8中，HashMap的扩容机制改进为在数组长度达到阈值并且链表长度超过一定阈值时进行扩容，且负载因子必须大于等于0.75。
 3. 迭代顺序：
     在JDK 7中，HashMap的迭代顺序是不确定的，即不保证插入顺序。
     在JDK 8中，HashMap保持了插入顺序，即在迭代时按照元素插入的先后顺序进行遍历。
+
+在创建HashMap实例时，jdk7是直接创建数组，而jdk8是将负载因子赋给当前实例，没有创建数组，在第一次调用put时才会创建数组。
+新节点插入顺序：jdk7在头部插入，jdk8在尾部插入
+
+在7中是*2，在8中是左移一位，移位效率更高
 ```
 
+### jdk7&jdk8ArrayList的差别
+
+```txt
+针对于jdk7和jdk8的对比，主要是针对于构造器和add方法进行的提升。由jdk7的在构造函数中进行初始化容量，优化为jdk8在第一次add时进行初始化容量。
+```
+
+### 集合有序性
+```txt
+list 一定有序，set不一定有序。有序的指的就是最后集合中的元素顺序就是按照添加时候的顺序排列的
+即插入的是：1，2，3，4，5；打印的也是：1，2，3，4，5；
+
+LinkedList尽管有使用索引获取元素的方法，内部实现是从起始点开始遍历，遍历到索引的节点然后返回元素。
+
+Set 所谓的无序就是在 HashSet 这个实现类中才会出现的这种情况
+
+而 LinkedHashSet 已经和 List 的结果相同
+
+TreeSet 实现的功能是根据元素的自然顺序排列
+```
+
+
+### NIO AsynchronousFileChannel
+
+异步FileChannel。
+### NIO Charset 字符编码
+
 ### NIO Selector 底层实现原理
+#### Selector#open
+```java
+// java.nio.channels.Selector#open
+
+public static Selector open() throws IOException {
+  return SelectorProvider.provider().openSelector();
+}
+// SelectorProvider的实现类有两个：SelectorProviderImpl、WindowsSelectorProvider
+
+public class WindowsSelectorProvider extends SelectorProviderImpl {
+    public WindowsSelectorProvider() {
+    }
+
+    public AbstractSelector openSelector() throws IOException {
+        return new WindowsSelectorImpl(this);
+    }
+}
+```
+1. `sun.nio.ch.WindowsSelectorImpl#WindowsSelectorImpl`
+```java
+/* 
+   创建PollArrayWrapper对象，创建对象时会分配一块堆外虚拟内存，用来存放感兴趣事件掩码和文件描述符。
+   通常是当向Selector注册Channel及感兴趣事件后，将其对应socket的文件描述符和感兴趣掩码存入pollWrapper。
+*/
+private PollArrayWrapper pollWrapper = new PollArrayWrapper(8);
+
+// 创建nio管道，并保存该管道的source和sink通道的文件描述符，wakeupPipe主要用于唤醒seletor.select()所在的线程
+private final Pipe wakeupPipe = Pipe.open();
+
+WindowsSelectorImpl(SelectorProvider var1) throws IOException {
+  //  创建父类 SelectorImpl
+  super(var1);
+  this.wakeupSourceFd = ((SelChImpl)this.wakeupPipe.source()).getFDVal();
+  SinkChannelImpl var2 = (SinkChannelImpl)this.wakeupPipe.sink();
+  
+  /* 
+      sink管道禁用Nagle算法，使算法更加即时
+      禁用Nagle算法，当sink端写入1字节数据时，将立即发送，而不必等到将较小的包组合成较大的包再发送，这样source端就可以立即读取数据
+  */
+  var2.sc.socket().setTcpNoDelay(true);
+  this.wakeupSinkFd = var2.getFDVal();
+  
+  /*
+      将source通道的文件描述符和感兴趣读事件（Net.POLLIN）保存到pollWrapper中
+      第二个参数为0，说明wakeupSourceFd时第一个被放到pollWrapper中的，后面用于唤醒selector
+  */
+  this.pollWrapper.addWakeupSocket(this.wakeupSourceFd, 0);
+}
+```
+2. `sun.nio.ch.SelectorImpl#SelectorImpl`
+```java
+public abstract class SelectorImpl extends AbstractSelector {
+
+    // 注册到selector中的SelectionKey
+    protected Set<SelectionKey> selectedKeys = new HashSet();
+    
+    // 已准备就绪的SelectionKey，即可以被selector.select()获取到的SelectionKey
+    protected HashSet<SelectionKey> keys = new HashSet();
+    
+    // 将keys包装成不可修改的set，即既不能添加也不能删除
+    private Set<SelectionKey> publicKeys;
+    
+    // 将selectedKeys包装成只可移除不能添加的set
+    private Set<SelectionKey> publicSelectedKeys;
+
+   // 创建SelectorImpl，初始化变量
+    protected SelectorImpl(SelectorProvider var1) {
+        super(var1);
+        if (Util.atBugLevel("1.4")) {
+            this.publicKeys = this.keys;
+            this.publicSelectedKeys = this.selectedKeys;
+        } else {
+        
+            // 将Keys包装成不可修改的set
+            this.publicKeys = Collections.unmodifiableSet(this.keys);
+            
+            // 对SelectedKeys简单封装，内部封装的方法都是间接调用selectedKeys的方法，迭代、判空等，但不能add
+            this.publicSelectedKeys = Util.ungrowableSet(this.selectedKeys);
+        }
+
+    }
+}
+```
+3. `sun.nio.ch.PollArrayWrapper#PollArrayWrapper`
+```java
+class PollArrayWrapper {
+    // 创建AllocatedNativeObject，用于分配堆外（native）内存，底层内存空间
+    private AllocatedNativeObject pollArray;
+    
+    // pollArray对象持有的分配的堆外虚拟内存的地址。内存空间起始位置
+    long pollArrayAddress;
+    
+    // 文件描述id开始位置
+    private static final short FD_OFFSET = 0;
+    
+    // 兴趣事件开始位置
+    private static final short EVENT_OFFSET = 4;
+    
+    // 文件描述id的长度int（4）+操作事件长度4 
+    static short SIZE_POLLFD = 8;
+    
+    // 文件描述管理器容量
+    private int size;
+
+    PollArrayWrapper(int var1) {
+        // 内存大小，默认 8*8
+        int var2 = var1 * SIZE_POLLFD;
+        
+        /*
+            创建AllocatedNativeObject，该类继承NativeObject
+            创建NativeObject主要利用`unsafe.allocateMemory(size + pageSize)`分配一块堆外虚拟内存
+            内存大小为：allocationSize + 系统默认一页的大小
+            若想释放这部分内存，需要调用`unsafe.freeMemory`或者`unsafe.reallocateMemory`
+        */
+        this.pollArray = new AllocatedNativeObject(var2, true);
+        
+        // 分配的内存地址
+        this.pollArrayAddress = this.pollArray.address();
+        this.size = var1;
+    }
+    
+    /*
+      创建对象时分配的内存主要用于存放文件描述符和事件掩码
+      通常是当向selector注册channel及感兴趣事件时，将其对应的socket的文件描述符和感兴趣掩码调用下面两个方法将其存入pollArray
+    */
+    void putDescriptor(int var1, int var2) {
+        this.pollArray.putInt(SIZE_POLLFD * var1 + 0, var2);
+    }
+
+    void putEventOps(int var1, int var2) {
+        this.pollArray.putShort(SIZE_POLLFD * var1 + 4, (short)var2);
+    }
+}
+```
+
+#### channel#register()
+```txt
+java.nio.channels.SelectableChannel#register(java.nio.channels.Selector, int)
+   ➡ java.nio.channels.spi.AbstractSelectableChannel#register
+      ➡ sun.nio.ch.SelectorImpl#register
+```
+1. `sun.nio.ch.SelectorImpl#register`
+```java
+protected final SelectionKey register(AbstractSelectableChannel var1, int var2, Object var3) {
+  if (!(var1 instanceof SelChImpl)) {
+      throw new IllegalSelectorException();
+  } else {
+      
+      // 创建SelectionKey，持有selector和channel信息
+      SelectionKeyImpl var4 = new SelectionKeyImpl((SelChImpl)var1, this);
+      
+      // 设置附件
+      var4.attach(var3);
+      synchronized(this.publicKeys) {
+          this.implRegister(var4);
+      }
+
+      // 设置感兴趣事件
+      var4.interestOps(var2);
+      return var4;
+  }
+}
+```
+创建selectionKey，selectionKey可以看成是channel、事件、selector的映射。
+
+会将创建的selectionKey放入`java.nio.channels.spi.AbstractSelectableChannel#keys`数组中，提供给`selector.select()`使用。
+
+#### Selector#select()
+```java
+// sun.nio.ch.SelectorImpl#select()
+
+public int select() throws IOException {
+  return this.select(0L);
+}
+
+public int select(long var1) throws IOException {
+  if (var1 < 0L) {
+      throw new IllegalArgumentException("Negative timeout");
+  } else {
+  
+      // 默认timeout=-1，阻塞执行
+      return this.lockAndDoSelect(var1 == 0L ? -1L : var1);
+  }
+}
+
+private int lockAndDoSelect(long var1) throws IOException {
+  synchronized(this) {
+      
+      // 确保selector时open状态，即selectorOpen变量为true，调用selector.close()会设置为false，初始值为true
+      if (!this.isOpen()) {
+          throw new ClosedSelectorException();
+      } else {
+          int var10000;
+          
+          // synchronized 保证只有一个线程在执行selector.selector()
+          synchronized(this.publicKeys) {
+              synchronized(this.publicSelectedKeys) {
+              
+                  // 阻塞执行select
+                  var10000 = this.doSelect(var1);
+              }
+          }
+
+          return var10000;
+      }
+  }
+}
+```
+1. `sun.nio.ch.WindowsSelectorImpl#doSelect`
+```java
+/* 
+class WindowsSelectorImpl extends SelectorImpl
+   abstract class SelectorImpl extends AbstractSelector
+      abstract class AbstractSelector extends Selector
+         abstract class Selector implements Closeable
+*/       
+
+final class WindowsSelectorImpl extends SelectorImpl {
+   
+   // channelArray 初始容量
+   private final int INIT_CAP = 8;
+   
+   /* 
+      保存每次需要被select的selecttionkey，
+      即每次select时 拉取到的注册到seletor上的selectionKey的有效selectionKey，下次select会覆盖掉上次的selectionKey
+   */
+   private SelectionKeyImpl[] channelArray = new SelectionKeyImpl[8];
+   
+   // 保存 注册到selector上的channel对应的文件描述符及感兴趣事件
+   private PollArrayWrapper pollWrapper = new PollArrayWrapper(8);
+   
+   // 保存每次需要被select的channel数，即注册到selector上的有效channel数量，初始值为1即wakeupChannel
+   private int totalChannels = 1;
+
+   // 保存文件描述符和SelectionKey的映射关系
+   private final WindowsSelectorImpl.FdMap fdMap = new WindowsSelectorImpl.FdMap();
+   
+   // 标识是否执行唤醒，即向wakeupSink中写入数据
+   private volatile boolean interruptTriggered = false;
+   
+   protected int doSelect(long var1) throws IOException {
+        if (this.channelArray == null) {
+            throw new ClosedSelectorException();
+        } else {
+        
+            // 保存超时时间
+            this.timeout = var1;
+            
+            // 处理被取消的 selectionKey
+            this.processDeregisterQueue();
+            
+            /* 
+               如果是中断标志，调用本地方法resetWakeupSocket0读取wakeupSink向wakeupSource发送的数据
+               并将interruptTriggered设置为false，方法直接返回，不再执行真正的poll
+            */
+            if (this.interruptTriggered) {
+                this.resetWakeupSocket();
+                return 0;
+            } else {
+               
+                // 判断辅助线程数（守护线程），少则添加多则移除，添加的同时并start()，即SelectThread.start()
+                this.adjustThreadsCount();
+                
+                // 重置 WindowsSelectorImpl.FinishLock 数为辅助线程数
+                this.finishLock.reset();
+                
+                // 唤醒所有的辅助线程，所有的辅助线程开始等待分配的selectionKey有事件发生
+                this.startLock.startThreads();
+
+                try {
+                    // 设置主线程中断的回调函数，从这里开始进行 poll 拉取事件，轮询各组负责的部分 pollWrapper 中的FD（文件描述符）
+                    this.begin();
+
+                    try {
+                        
+                        // 主线程开始 poll，阻塞等待有事件发生。poll0本地方法
+                        this.subSelector.poll();
+                    } catch (IOException var7) {
+                        this.finishLock.setException(var7);
+                    }
+
+                    // 如果有辅助线程执行，主线程执行完，唤醒并等待所有未执行完的辅助线程完成
+                    if (this.threads.size() > 0) {
+                        this.finishLock.waitForHelperThreads();
+                    }
+                } finally {
+                    this.end();
+                }
+
+                this.finishLock.checkForException();
+                this.processDeregisterQueue();
+                
+                // 获取所有感兴趣事件发生的 SelectedKey 数量
+                int var3 = this.updateSelectedKeys();
+                
+                // 本轮poll完成，重置 WakeupSocket
+                this.resetWakeupSocket();
+                return var3;
+            }
+        }
+    }
+    
+   // sun.nio.ch.SelectorImpl#processDeregisterQueue
+   // 处理被取消的selectionKey，调用selectionKey.cannel()时selectionkey就会被加入cancelledKeys
+   void processDeregisterQueue() throws IOException {
+     Set var1 = this.cancelledKeys();
+     synchronized(var1) {
+         if (!var1.isEmpty()) {
+             Iterator var3 = var1.iterator();
+   
+             while(var3.hasNext()) {
+                 SelectionKeyImpl var4 = (SelectionKeyImpl)var3.next();
+   
+                 try {
+                     
+                     // 用 pollArray 中最后一个 selectionKey 相关信息替换要取消的 selectionKey
+                     this.implDereg(var4);
+                 } catch (SocketException var11) {
+                     throw new IOException("Error deregistering key", var11);
+                 } finally {
+
+                     var3.remove();
+                 }
+             }
+         }
+   
+     }
+   }
+   
+   // sun.nio.ch.WindowsSelectorImpl#implDereg
+   protected void implDereg(SelectionKeyImpl var1) throws IOException {
+     int var2 = var1.getIndex();
+   
+     assert var2 >= 0;
+   
+     synchronized(this.closeLock) {
+     
+         // 用channelArray中最后一个selectionKey覆盖取消的这个selectionKey
+         if (var2 != this.totalChannels - 1) {
+            
+             // 覆盖 channelArray 元素
+             SelectionKeyImpl var4 = this.channelArray[this.totalChannels - 1];
+             this.channelArray[var2] = var4;
+             var4.setIndex(var2);
+             
+             // 覆盖pollWrapper中保存的对应的文件描述符及感兴趣事件
+             this.pollWrapper.replaceEntry(this.pollWrapper, this.totalChannels - 1, this.pollWrapper, var2);
+         }
+   
+         var1.setIndex(-1);
+     }
+   
+     // 已经将最后一个元素 复制了，所以最后一个元素指null，要select的selectionKey的数量-1 
+     this.channelArray[this.totalChannels - 1] = null;
+     --this.totalChannels;
+     
+     // 说明最后一个元素正好是wakeup，不要被select，所以少启动一个辅助线程
+     if (this.totalChannels != 1 && this.totalChannels % 1024 == 1) {
+         --this.totalChannels;
+         --this.threadsCount;
+     }
+   
+     this.fdMap.remove(var1);
+     this.keys.remove(var1);
+     this.selectedKeys.remove(var1);
+     this.deregister(var1);
+     SelectableChannel var3 = var1.channel();
+     if (!var3.isOpen() && !var3.isRegistered()) {
+         ((SelChImpl)var3).kill();
+     }
+   
+   }
+    
+   // java.nio.channels.spi.AbstractSelector#begin
+   // 在I/O执行开始时调用，设置线程Thread中断时，selector的中断处理
+   protected final void begin() {
+     
+     // 初始化中断对象，设置线程中断时的回调：调用selecton具体实现的wakeup()方法
+     if (interruptor == null) {
+         interruptor = new Interruptible() {
+                 public void interrupt(Thread ignore) {
+                     AbstractSelector.this.wakeup();
+                 }};
+     }
+     
+     // 设置中断处理对象保存到当前线程Thread中 
+     AbstractInterruptibleChannel.blockedOn(interruptor);
+     Thread me = Thread.currentThread();
+     
+     // 若当前线程已中断，调用中断处理对象的中断处理方法处理
+     if (me.isInterrupted())
+         interruptor.interrupt(me);
+   }
+  
+   protected final void end() {
+     AbstractInterruptibleChannel.blockedOn(null);
+   }
+}
+```
+1. selector.select() 阻塞执行。
+2. poll()拉取逻辑：调用Selector的select()方法时，会将pollWrapper的内存地址传递给内核，由内核负责轮训pollWrapper中的FD，一旦有事件就绪，将事件就绪的FD传递回用户空间，阻塞在select()的线程就会被唤醒，即每个线程轮训pollWrapper中的自己分配的FD。
+3. selector相当于持有1个主线程和多个辅助线程，这些线程才是真正阻塞拉取就绪事件的。
+4. wakeup()唤醒，wakeup()间接保证了只要有任意一个线程上分配的任意一个fd有就绪事件发生时，所有线程都会被唤醒，本轮select结束。
+
+wakeup()之所以能唤醒阻塞等待就绪事件的线程之一：每个线程无论主线程或辅助线程都会持有wakeupSourceFd，这样wakeupSink发送数据后wakeupSource发生读事件，这样线程就被唤醒了。
+
+#### wakeup()的实现原理
+> https://www.cnblogs.com/yungyu16/p/13065194.html
+
+windows环境下wakeup()的实现原理，它通过一个可写的SinkChannel和一个可读的SourceChannel组成的pipe来实现唤醒的功能，而Linux环境则使用其本身的Pipe来实现唤醒功能。无论windows还是linux，wakeup的思想是完全一致的，只不过windows没有Pipe这种信号通知的机制，所以通过TCP来实现了Pipe，建立了一对自己和自己的loopback的TCP连接来发送信号。请注意，每创建一个Selector对象，都会创建一个Pipe实例，这会导致消耗两个文件描述符FD和两个端口号，实际开发中需注意端口号和文件描述符的限制。
+
+pollWrapper的作用是保存当前selector对象上注册的FD，当调用Selector的select()方法时，会将pollWrapper的内存地址传递给内核，由内核负责轮训pollWrapper中的FD，一旦有事件就绪，将事件就绪的FD传递回用户空间，阻塞在select()的线程就会被唤醒。将wakeupSourceFd加入pollWrapper中，表示selector也需要关注wakeupSourceFd上发生的事件。
+
+在Unix系统中，管道被用来连接一个进程的输出和另一个进程的输入。Java使用Pipe类实现了一个管道范例，只不过它创建的管道是进程内（JVM进程内部)而非进程间使用的。Java中Pipe实现的管道仅用于在同一个Java虚拟机内部传输数据。
 
 
 
