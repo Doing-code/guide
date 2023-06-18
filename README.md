@@ -260,7 +260,6 @@ Dubbo中的服务调用是如何实现的？
 
 17. Dubbo中的动态代理是如何实现的？请说明其原理和使用方式。
 
-### HashMap
 ### JavaGuide
 ### JUC
 ### JVM
