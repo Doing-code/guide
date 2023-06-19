@@ -154,7 +154,7 @@ numChildren = 1
 1. 监听节点数据的变化：`get path [watch]`
 2. 监听子节点增减的变化：`ls path [watch]`
 
-注册一次，监听一次。想再次监听，需要再次注册。
+注册一次，监听一次。想再次监听，需要再次注册。但是不会对二级子节点进行监听
 
 #### 客户端API
 
@@ -184,8 +184,196 @@ Zookeeper 遵循半数机制，集群中超过半数成功就会做出响应。
 ## 服务器动态上下限监听
 
 ## 分布式锁
+![](../image/zookeeper_分布式锁实现.png)
 
+![](../image/zookeeper_分布式锁实现.png)
+
+zookeeper分布式锁流程：
+1. 客户端连接 zookeeper 集群，并创建临时序列节点。
+2. 判断自己创建的节点是不是当前节点下最小序列的节点：
+    1. 是，获取到锁。
+    2. 不是，对前一个节点进行监听。
+3. 获取到锁，处理完业务后，delete删除节点释放锁。
+4. 然后其他发起监听的客户端会判断释放的节点是不是自己前一个节点，如果是则唤醒当前节点，否则继续阻塞。
+
+- 分布式共享锁实现
+```java
+import org.apache.curator.RetryPolicy;
+import org.apache.curator.framework.CuratorFramework;
+import org.apache.curator.framework.CuratorFrameworkFactory;
+import org.apache.curator.framework.recipes.cache.*;
+import org.apache.curator.retry.ExponentialBackoffRetry;
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.data.Stat;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.CountDownLatch;
+
+/**
+ * @author cristina
+ */
+public class DistributedLock {
+
+    private final String connectString = "192.168.44.131:2181,192.168.44.132:2181,192.168.44.129:2181";
+    private final CuratorFramework client;
+    private final CountDownLatch waitLatch = new CountDownLatch(1);
+    private final String rootPath = "/locks";
+    private String waitPath;
+    private static final String DISTRIBUTED_LOCK = "seq-";
+    private String currentNode;
+    /**
+     * ExponentialBackoffRetry：重试3次，每次间隔1秒
+     */
+    RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
+
+    public DistributedLock() {
+        client = CuratorFrameworkFactory.newClient(connectString, retryPolicy);
+        client.start();
+
+        // 监听根节点路径变化
+        listenerChildrenNode(rootPath);
+
+        try {
+            // 如果根节点不存在则创建
+            Stat stat = client.checkExists().forPath(rootPath);
+            if (Objects.isNull(stat)) {
+                client.create()
+                        .creatingParentsIfNeeded()
+                        .withMode(CreateMode.PERSISTENT)
+                        .withACL(ZooDefs.Ids.OPEN_ACL_UNSAFE)
+                        .forPath(rootPath, "locks".getBytes());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void lock() {
+        try {
+            // 创建临时序列接待你
+            currentNode = client.create()
+                    .creatingParentsIfNeeded()
+                    .withMode(CreateMode.EPHEMERAL_SEQUENTIAL)
+                    .withACL(ZooDefs.Ids.OPEN_ACL_UNSAFE)
+                    .forPath(String.format("%s/%s", rootPath, DISTRIBUTED_LOCK));
+
+            // 获取根节点的所有子节点
+            List<String> childrenNode = client.getChildren().forPath(rootPath);
+
+            if (childrenNode.size() == 1) {
+                // have no competition.
+                return;
+            }
+            Collections.sort(childrenNode);
+            String node = currentNode.substring("/locks/".length());
+            int index = childrenNode.indexOf(node);
+
+            if (index == 0) {
+                // have no competition.
+                return;
+            }
+            // 监听前一个节点
+            waitPath = String.format("%s/%s", rootPath, childrenNode.get(index - 1));
+            // 阻塞
+            waitLatch.await();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void unlock() {
+        try {
+            client.delete().deletingChildrenIfNeeded().withVersion(-1).forPath(currentNode);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void listenerChildrenNode(String path) {
+        try {
+            TreeCache cache = new TreeCache(client, path);
+            cache.getListenable().addListener(new TreeCacheListener() {
+                @Override
+                public void childEvent(CuratorFramework curatorFramework, TreeCacheEvent event) throws Exception {
+                    // 排除不关心的事件
+                    if (Objects.isNull(event.getData())) {
+                        return;
+                    }
+                    if (event.getType() == TreeCacheEvent.Type.NODE_REMOVED) {
+                        // 当前节点为阻塞状态，只有当前节点的前一个序列节点释放后，当前节点才会被唤醒
+                        if (event.getData().getPath().equals(waitPath)) {
+                            waitLatch.countDown();
+                            System.out.println("remove: " + event.getData().getPath());
+                        }
+                    }
+                }
+            });
+            cache.start();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+
+Curator 客户端提供一个`InterProcessMutex`排他锁。省去造轮子的过程。
 ## Zookeeper 算法 
+### paxos 算法
+paxos 算法是一种居于消息传递且具有高度容错性的一致性算法。
+
+paxos 算法所解决的问题就是如何快速正确的在分布式系统中对某个数据值达成一致，并且保证不论发生任何异常，都不会破坏整个系统的一致性。
+
+![](../image/zookeeper_paxos_算法流程.png)
+
+在一个Paxos系统中，首先将所有节点划分为Proposer（提议者）、Acceptor（接收者）和Learner（学习者）。且每个节点都可以有多个角色。
+
+Paxos算法流程分为三个阶段：
+1. Prepare准备阶段
+   1. Proposer向多个Acceptor发出Propose请求Promise。
+   2. Acceptor针对接收到的Propose请求进行Promise。
+2. Accept接收阶段
+   1. Proposer接收到多数Acceptor的Promise后，向Acceptor发出Propose请求。
+   2. Acceptor针对接收到的Propose请求进行Accept处理。
+3. Learn学习阶段：Proposer将表决的决议发送给所有Learners。
+
+![](../image/zookeeper_paxos_算法流程解释.png)
+
+1. Prepare：`Proposer`生成全局唯一且递增的`Proposal ID`，向所有`Acceptor`发送`Propose`请求，无需携带提案内容，只携带`Proposal ID`即可。
+2. Promise：`Acceptor`收到`Propose`请求后，做出`两个承诺，一个应答`。
+   1. 不再接受`Proposal ID`小于等于当前请求的Propose请求。
+   2. 不再接受`Proposal ID`小于当前请求的Accept请求。
+   3. 不违背以前做出的`Promise`承诺下，响应已经`Accept`过的提案中`Proposal ID`最大的哪个提案的`Value`和`Proposal ID`，没有则返回 null。（Acceptor Promise）
+3. Propose：`Proposer`收到多数`Acceptor`的`Promise`应答后，从应答中选择`Proposal ID`最大的提案的`Value`，作为 本次要发起的提案。如果所有应答的提案`Value`都为null，则可以自己指定提案`Value`。然后携带当前`Proposal ID`，向所有`Acceptor`发送`Propose`请求。
+4. Accept：`Acceptor`收到`Propose`请求后，在不违背之前做出的承诺下，接受并持久化当前`Proposal ID`和提案`Value`。
+5. Learn：`Proposer`收到多数`Acceptor`的`Accept`后，决议形成，将决议发送给所有`Learner`。
+
+### ZAB 协议
+ZAB协议借鉴了Paxos算法，是专门为Zookeeper设计的支持崩溃恢复的原子广播协议。基于该协议，Zookeeper设计为只有一台客户端（Leader）负责处理外部的写事务请求，然后Leader客户端将数据同步到其他Follower节点。在Zookeeper中只有一个Leader可以发起提案。
+
+zab协议包括两种基本模式：消息广播、崩溃恢复。
+
+![](../image/zookeeper_zab协议_消息广播.png)
+
+消息广播总结：
+1. 客户端发起一个写操作请求。
+2. `Leader`服务器将客户端的请求转化为事务`Proposal`提案，同时为每个`Proposal`分配一个全局的ID，即zxid。
+3. `Leader`服务器会为每个`Follower`服务器都分配一个队列，然后将需要广播的`Proposal`依次放到队列中，并且根据`FIFO`策略进行消息发送。
+4. `Follower`接收到`Proposal`后，首先会将其以事务日志的方式写入本地磁盘中，写入成功后向`Leader`响应一个`Ack`消息。
+5. `Leader`接收到超过半数以上`Follower`的`Ack`响应消息后（包括Leader自身），即认为消息发送成功，可以发送`commit`消息。
+6. `Leader`向所有`Follower`广播`commit`消息，同时`Leader`也会完成事务提交。`Follower`接收到`commit`消息后，会将上一条事务提交。
+
+Zookeeper采用Zab协议的核心，就是只要有一台服务器提交了Proposal，就要确保所有的服务器最终都能正确提交Proposal。
+
+个人理解：Proposal可以理解为客户端的一次写操作（创建节点、修改节点、删除节点等），只有Leader有写操作权限，所以由Leader将操作具体内容（创建节点、修改节点、删除节点等）广播给Follower。提交事务就是将数据永久持久化到磁盘中。
+
+ZAB协议针对事务请求的处理过程类似于两阶段提交过程：
+1. 广播事务阶段。
+2. 广播提交操作。
+
+### CAP理论
 
 ## 源码
 ### 服务端初始化
@@ -293,6 +481,26 @@ numChildren = 0
 ```
 
 ### 写数据原理
+
+### 选举机制
+半数机制，超过半数的投票则通过选举。
+1. 第一次启动选举规则：
+   1. 投票过半数时，服务器id的胜出。
+2. 非第一次启动选举规则：
+   1. EPOCH大的直接胜出。
+   2. EPOCH相同，zxid大的胜出。
+   3. zxid相同，服务器id大的胜出。
+   
+### 生产环境集群安装多数zk合适？
+- 10台服务器：3台zk
+- 20台服务器：5台zk
+- 100台服务器：1台zk
+- 200台服务器：11台zk
+
+服务器越多，提高可靠性，但是也会提高通信延时。
+
+### 常用命令
+ls、get、create、delete ...
 
 
 
