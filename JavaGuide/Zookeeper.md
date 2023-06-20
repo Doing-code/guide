@@ -355,6 +355,7 @@ ZAB协议借鉴了Paxos算法，是专门为Zookeeper设计的支持崩溃恢复
 
 zab协议包括两种基本模式：消息广播、崩溃恢复。
 
+#### 消息广播
 ![](../image/zookeeper_zab协议_消息广播.png)
 
 消息广播总结：
@@ -373,12 +374,985 @@ ZAB协议针对事务请求的处理过程类似于两阶段提交过程：
 1. 广播事务阶段。
 2. 广播提交操作。
 
+两阶段提交有可能会因为Leader宕机带来数据不一致。如：
+1. Leader发起一个事务Proposal后宕机了，Follower来不及Proposal。
+2. Leader收到半数ACK后宕机，来不及向Follower发送commit；
+
+一旦Leader服务器与过半Follower失去联系，那么就会进入崩溃恢复模式。
+#### 崩溃恢复
+![](../image/zookeeper_zab协议_崩溃恢复.png)
+
+假设异常情况：
+1. 一个事务在Leader提出之后，Leader宕机。
+2. 一个事务在Leader提交后，且过半的Follower都响应Ack了，但是Leader在commit消息发出之前宕机。
+
+Zab协议崩溃恢复需要满足以下两个要求：
+1. 确保已经被Leader提交的提案Proposal，必须最终被所有的Follower服务器提交。（已经产生的提案，Follower必须执行）
+2. 确保丢弃已经被Leader提出，但是还没有被提交的Proposal。
+
+崩溃恢复主要包括两部分：Leader选举、数据恢复。
+#####　Leader选举
+![](../image/zookeeper_zab协议_崩溃恢复＿Leader选举.png)
+
+Zab协议需要保证选举出来的Leader满足以下条件：
+1. 新选举的Leader不能包含未提交的Proposal。（新Leader必须都是已经提交了Proposal的Follower节点（Ack））
+2. 新选举的Leader节点中是最大的zxid。（可以避免Leader服务器检查Proposal的提交和丢弃工作）
+#####　数据恢复
+![](../image/zookeeper_zab协议_崩溃恢复＿Leader选举.png)
+
+Zab数据同步：
+1. 完成Leader选举后，在正式开始工作之前（即接收事务请求，然后提出新的Proposal），Leader会先确认事务日志中的所有Proposal是否已经被集群中过半的服务器commit。
+2. Leader需要确保所有的Follower服务器能够接收到每一条事务的Proposal，并且能够将所有已提交的事务Proposal应用到内存数据中。等到Follower将所有尚未同步的事务Proposal都从Leader上同步，并且应用到内存数据中后，Leader才会把该Follower加入到真正可用的Follower列表中。
+
 ### CAP理论
+1. 一致性（Consistency）：指数据在多个副本之间是否能够保持数据一致的特性。在一致性的需求下，当一个系统在数据一致性的状态下执行变更操作后，应该保证系统的数据仍处于一致的状态。
+2. 可用性（Available）：指系统提供的服务必须一直处于可用状态。对于用户的每一次操作请求总能在有限时间内返回结果。
+3. 分区容错性（Partition Tolerance）：指在遇到任何网络分区故障时，仍然需要能够保证对外提供满足一致性和可用性的服务。除非整个网络环境都出现故障。
+
+Zookeeper保证的是CP：
+1. Zookeeper不能保证每次服务请求的可用性。（在极端情况下，Zookeeper可能会丢弃以下请求，消费者需要重新请求才能获得结果）
+2. Leader选举时集群都是不可用。
+
+一个分布式系统不可能同时满足这三个。最多只能同时满足两个，P是必须的，CP或者AP。
 
 ## 源码
+### 持久化源码
+Leader和Follower的数据会在内存和磁盘中各保存一份，素以需要将内存中的数据持久化到磁盘中。
+
+在` org.apache.zookeeper.server.persistence`包下的都是和序列化相关的代码。
+
+![](../image/zookeeper_源码_持久化.png)
+
+等到服务器空闲时会将内存数据写入到`TxnLog编辑日志`，再从`TxnLog编辑日志`写入到`snapShot快照`（磁盘）。
+
+#### 快照
+```java
+public interface SnapShot {
+    
+    // 反序列化
+    long deserialize(DataTree dt, Map<Long, Integer> sessions) 
+        throws IOException;
+    
+    // 序列化
+    void serialize(DataTree dt, Map<Long, Integer> sessions, 
+            File name) 
+        throws IOException;
+    
+    // 查找最近的快照文件
+    File findMostRecentSnapshot() throws IOException;
+    
+    // 释放资源
+    void close() throws IOException;
+}
+```
+#### 操作日志
+```java
+public interface TxnLog {
+    // 设置监控 fsync 的阈值
+    void setServerStats(ServerStats serverStats);
+    
+    // 回滚日志
+    void rollLog() throws IOException;
+    // 追加日志
+    boolean append(TxnHeader hdr, Record r) throws IOException;
+
+    // 读取日志
+    TxnIterator read(long zxid) throws IOException;
+    
+    // 获取事务id
+    long getLastLoggedZxid() throws IOException;
+    
+    // 删除日志
+    boolean truncate(long zxid) throws IOException;
+    
+    // 获取此事务日志的 dbid
+    long getDbId() throws IOException;
+    
+    // 提交
+    void commit() throws IOException;
+
+    // 事务日志运行的同步时间(以毫秒为单位)
+    long getTxnLogSyncElapsedTime();
+   
+    // 释放资源
+    void close() throws IOException;
+    
+    // 用于读取事务日志的迭代接口
+    public interface TxnIterator {
+        TxnHeader getHeader();
+        Record getTxn();
+        boolean next() throws IOException;
+        void close() throws IOException;
+        long getStorageSize() throws IOException;
+    }
+}
+```
+
+### 序列化源码
+`zookeeper-jute`是关于Zookeeper序列化相关源码。
+```java
+// 序列化实现 OutputArchive 接口
+// 反序列化实现 InputArchive 接口
+
+public interface Record {
+    public void serialize(OutputArchive archive, String tag)
+        throws IOException;
+    public void deserialize(InputArchive archive, String tag)
+        throws IOException;
+}
+
+public interface OutputArchive {
+    public void writeByte(byte b, String tag) throws IOException;
+    public void writeBool(boolean b, String tag) throws IOException;
+    public void writeInt(int i, String tag) throws IOException;
+    public void writeLong(long l, String tag) throws IOException;
+    public void writeFloat(float f, String tag) throws IOException;
+    public void writeDouble(double d, String tag) throws IOException;
+    public void writeString(String s, String tag) throws IOException;
+    public void writeBuffer(byte buf[], String tag)
+        throws IOException;
+    public void writeRecord(Record r, String tag) throws IOException;
+    public void startRecord(Record r, String tag) throws IOException;
+    public void endRecord(Record r, String tag) throws IOException;
+    public void startVector(List<?> v, String tag) throws IOException;
+    public void endVector(List<?> v, String tag) throws IOException;
+    public void startMap(TreeMap<?,?> v, String tag) throws IOException;
+    public void endMap(TreeMap<?,?> v, String tag) throws IOException;
+
+}
+
+public interface InputArchive {
+    public byte readByte(String tag) throws IOException;
+    public boolean readBool(String tag) throws IOException;
+    public int readInt(String tag) throws IOException;
+    public long readLong(String tag) throws IOException;
+    public float readFloat(String tag) throws IOException;
+    public double readDouble(String tag) throws IOException;
+    public String readString(String tag) throws IOException;
+    public byte[] readBuffer(String tag) throws IOException;
+    public void readRecord(Record r, String tag) throws IOException;
+    public void startRecord(String tag) throws IOException;
+    public void endRecord(String tag) throws IOException;
+    public Index startVector(String tag) throws IOException;
+    public void endVector(String tag) throws IOException;
+    public Index startMap(String tag) throws IOException;
+    public void endMap(String tag) throws IOException;
+}
+```
+
 ### 服务端初始化
+![img.png](../image/zookeeper_源码_服务端初始化_不包括选举机制.png)
+
+#### 启动脚本
+```shell
+# zkServer.sh
+if [ -e "$ZOOBIN/../libexec/zkEnv.sh" ]; then
+  . "$ZOOBINDIR"/../libexec/zkEnv.sh
+else
+  . "$ZOOBINDIR"/zkEnv.sh
+fi
+
+if [ "x$JMXDISABLE" = "x" ] || [ "$JMXDISABLE" = 'false' ]
+then
+  echo "ZooKeeper JMX enabled by default" >&2
+  if [ "x$JMXPORT" = "x" ]
+  then
+    # for some reason these two options are necessary on jdk6 on Ubuntu
+    #   accord to the docs they are not necessary, but otw jconsole cannot
+    #   do a local attach
+    ZOOMAIN="-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.local.only=$JMXLOCALONLY org.apache.zookeeper.server.quorum.QuorumPeerMain"
+  else
+    if [ "x$JMXAUTH" = "x" ]
+    then
+      JMXAUTH=false
+    fi
+    if [ "x$JMXSSL" = "x" ]
+    then
+      JMXSSL=false
+    fi
+    if [ "x$JMXLOG4J" = "x" ]
+    then
+      JMXLOG4J=true
+    fi
+    echo "ZooKeeper remote JMX Port set to $JMXPORT" >&2
+    echo "ZooKeeper remote JMX authenticate set to $JMXAUTH" >&2
+    echo "ZooKeeper remote JMX ssl set to $JMXSSL" >&2
+    echo "ZooKeeper remote JMX log4j set to $JMXLOG4J" >&2
+    ZOOMAIN="-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=$JMXPORT -Dcom.sun.management.jmxremote.authenticate=$JMXAUTH -Dcom.sun.management.jmxremote.ssl=$JMXSSL -Dzookeeper.jmx.log4j.disable=$JMXLOG4J org.apache.zookeeper.server.quorum.QuorumPeerMain"
+  fi
+else
+    echo "JMX disabled by user request" >&2
+    ZOOMAIN="org.apache.zookeeper.server.quorum.QuorumPeerMain"
+ fi
+ 
+ if [ "x$2" != "x" ]
+then
+    ZOOCFG="$ZOOCFGDIR/$2"
+fi
+    
+# ... ...
+case $1 in
+start)
+    echo  -n "Starting zookeeper ... "
+    if [ -f "$ZOOPIDFILE" ]; then
+      if kill -0 `cat "$ZOOPIDFILE"` > /dev/null 2>&1; then
+         echo $command already running as process `cat "$ZOOPIDFILE"`.
+         exit 1
+      fi
+    fi
+    nohup "$JAVA" $ZOO_DATADIR_AUTOCREATE "-Dzookeeper.log.dir=${ZOO_LOG_DIR}" \
+    "-Dzookeeper.log.file=${ZOO_LOG_FILE}" "-Dzookeeper.root.logger=${ZOO_LOG4J_PROP}" \
+    -XX:+HeapDumpOnOutOfMemoryError -XX:OnOutOfMemoryError='kill -9 %p' \
+    -cp "$CLASSPATH" $JVMFLAGS $ZOOMAIN "$ZOOCFG" > "$_ZOO_DAEMON_OUT" 2>&1 < /dev/null &
+ ;;
+# $ZOOMAIN="org.apache.zookeeper.server.quorum.QuorumPeerMain"
+# $ZOOCFG 在 zkEnv.sh 文件中 = filepath/zoo.cfg
+
+# zkEnv.sh
+if [ "x$ZOOCFG" = "x" ]
+then
+    ZOOCFG="zoo.cfg"
+fi
+
+ZOOCFG="$ZOOCFGDIR/$ZOOCFG"
+```
+
+所以Zookeeper服务端的入口是`org.apache.zookeeper.server.quorum.QuorumPeerMain#main`。
+#### 解析配置文件
+1. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#parse`
+```java
+public void parse(String path) throws ConfigException {
+  LOG.info("Reading configuration from: " + path);
+ 
+  try {
+      // 获取文件路径
+      File configFile = (new VerifyingFileFactory.Builder(LOG)
+          .warnForRelativePath()
+          .failForNonExistingPath()
+          .build()).create(path);
+          
+      Properties cfg = new Properties();
+      
+      // IO流的形式读取配置文件
+      FileInputStream in = new FileInputStream(configFile);
+      try {
+          // 加载配置文件的内容
+          cfg.load(in);
+          configFileStr = path;
+      } finally {
+          in.close();
+      }
+      
+      // 解析zoo.cfg
+      parseProperties(cfg);
+  } catch (IOException e) {
+      throw new ConfigException("Error processing " + path, e);
+  } catch (IllegalArgumentException e) {
+      throw new ConfigException("Error processing " + path, e);
+  }   
+  
+  // 省略部分代码 .. 动态配置文件 ...
+}
+```
+2. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#parseProperties`
+```java
+public void parseProperties(Properties zkProp)
+    throws IOException, ConfigException {
+        int clientPort = 0;
+        int secureClientPort = 0;
+        String clientPortAddress = null;
+        String secureClientPortAddress = null;
+        VerifyingFileFactory vff = new VerifyingFileFactory.Builder(LOG).warnForRelativePath().build();
+        
+        // zoo.cfg 能够配置的所有配置项，遍历 Properties
+        for (Entry<Object, Object> entry : zkProp.entrySet()) {
+            String key = entry.getKey().toString().trim();
+            String value = entry.getValue().toString().trim();
+            if (key.equals("dataDir")) {
+                dataDir = vff.create(value);
+            } else if (key.equals("dataLogDir")) {
+                dataLogDir = vff.create(value);
+            } else if (key.equals("clientPort")) {
+                clientPort = Integer.parseInt(value);
+            } else if (key.equals("localSessionsEnabled")) {
+                localSessionsEnabled = Boolean.parseBoolean(value);
+            } else if (key.equals("localSessionsUpgradingEnabled")) {
+                localSessionsUpgradingEnabled = Boolean.parseBoolean(value);
+            } else if (key.equals("clientPortAddress")) {
+                clientPortAddress = value.trim();
+            } else if (key.equals("secureClientPort")) {
+                secureClientPort = Integer.parseInt(value);
+            } else if (key.equals("secureClientPortAddress")){
+                secureClientPortAddress = value.trim();
+            } else if (key.equals("tickTime")) {
+                tickTime = Integer.parseInt(value);
+            } else if (key.equals("maxClientCnxns")) {
+                maxClientCnxns = Integer.parseInt(value);
+            } else if (key.equals("minSessionTimeout")) {
+                minSessionTimeout = Integer.parseInt(value);
+            } else if (key.equals("maxSessionTimeout")) {
+                maxSessionTimeout = Integer.parseInt(value);
+            } else if (key.equals("initLimit")) {
+                initLimit = Integer.parseInt(value);
+            } else if (key.equals("syncLimit")) {
+                syncLimit = Integer.parseInt(value);
+            } else if (key.equals("electionAlg")) {
+                electionAlg = Integer.parseInt(value);
+            } else if (key.equals("quorumListenOnAllIPs")) {
+                quorumListenOnAllIPs = Boolean.parseBoolean(value);
+            } else if (key.equals("peerType")) {
+                if (value.toLowerCase().equals("observer")) {
+                    peerType = LearnerType.OBSERVER;
+                } else if (value.toLowerCase().equals("participant")) {
+                    peerType = LearnerType.PARTICIPANT;
+                } else
+                {
+                    throw new ConfigException("Unrecognised peertype: " + value);
+                }
+            } else if (key.equals( "syncEnabled" )) {
+                syncEnabled = Boolean.parseBoolean(value);
+            } else if (key.equals("dynamicConfigFile")){
+                dynamicConfigFileStr = value;
+            } else if (key.equals("autopurge.snapRetainCount")) {
+                snapRetainCount = Integer.parseInt(value);
+            } else if (key.equals("autopurge.purgeInterval")) {
+                purgeInterval = Integer.parseInt(value);
+            } else if (key.equals("standaloneEnabled")) {
+                if (value.toLowerCase().equals("true")) {
+                    setStandaloneEnabled(true);
+                } else if (value.toLowerCase().equals("false")) {
+                    setStandaloneEnabled(false);
+                } else {
+                    throw new ConfigException("Invalid option " + value + " for standalone mode. Choose 'true' or 'false.'");
+                }
+            } else if (key.equals("reconfigEnabled")) {
+                if (value.toLowerCase().equals("true")) {
+                    setReconfigEnabled(true);
+                } else if (value.toLowerCase().equals("false")) {
+                    setReconfigEnabled(false);
+                } else {
+                    throw new ConfigException("Invalid option " + value + " for reconfigEnabled flag. Choose 'true' or 'false.'");
+                }
+            } else if (key.equals("sslQuorum")){
+                sslQuorum = Boolean.parseBoolean(value);
+            } else if (key.equals("portUnification")){
+                shouldUsePortUnification = Boolean.parseBoolean(value);
+            } else if (key.equals("sslQuorumReloadCertFiles")) {
+                sslQuorumReloadCertFiles = Boolean.parseBoolean(value);
+            } else if ((key.startsWith("server.") || key.startsWith("group") || key.startsWith("weight")) && zkProp.containsKey("dynamicConfigFile")) {
+                throw new ConfigException("parameter: " + key + " must be in a separate dynamic config file");
+            } else if (key.equals(QuorumAuth.QUORUM_SASL_AUTH_ENABLED)) {
+                quorumEnableSasl = Boolean.parseBoolean(value);
+            } else if (key.equals(QuorumAuth.QUORUM_SERVER_SASL_AUTH_REQUIRED)) {
+                quorumServerRequireSasl = Boolean.parseBoolean(value);
+            } else if (key.equals(QuorumAuth.QUORUM_LEARNER_SASL_AUTH_REQUIRED)) {
+                quorumLearnerRequireSasl = Boolean.parseBoolean(value);
+            } else if (key.equals(QuorumAuth.QUORUM_LEARNER_SASL_LOGIN_CONTEXT)) {
+                quorumLearnerLoginContext = value;
+            } else if (key.equals(QuorumAuth.QUORUM_SERVER_SASL_LOGIN_CONTEXT)) {
+                quorumServerLoginContext = value;
+            } else if (key.equals(QuorumAuth.QUORUM_KERBEROS_SERVICE_PRINCIPAL)) {
+                quorumServicePrincipal = value;
+            } else if (key.equals("quorum.cnxn.threads.size")) {
+                quorumCnxnThreadsSize = Integer.parseInt(value);
+            } else {
+                System.setProperty("zookeeper." + key, value);
+            }
+        }
+        // ... 省略部分代码，检查配置参数是否合法
+        
+        // backward compatibility - dynamic configuration in the same file as
+        // static configuration params see writeDynamicConfig()
+        if (dynamicConfigFileStr == null) {
+            
+            // 解析 myid、初始化 ClientPort 等信息
+            setupQuorumPeerConfig(zkProp, true);
+            if (isDistributed() && isReconfigEnabled()) {
+                // we don't backup static config for standalone mode.
+                // we also don't backup if reconfig feature is disabled.
+                backupOldConfig();
+            }
+        }
+    }
+```
+3. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#setupQuorumPeerConfig`
+```java
+void setupQuorumPeerConfig(Properties prop, boolean configBackwardCompatibilityMode)
+      throws IOException, ConfigException {
+  quorumVerifier = parseDynamicConfig(prop, electionAlg, true, configBackwardCompatibilityMode);
+  
+  // 服务id 就是 myid
+  setupMyId();
+  setupClientPort();
+  setupPeerType();
+  checkValidity();
+}
+
+private void setupMyId() throws IOException {
+  File myIdFile = new File(dataDir, "myid");
+  // standalone server doesn't need myid file.
+  if (!myIdFile.isFile()) {
+      return;
+  }
+  BufferedReader br = new BufferedReader(new FileReader(myIdFile));
+  String myIdString;
+  try {
+      myIdString = br.readLine();
+  } finally {
+      br.close();
+  }
+  try {
+      // myid 赋值给 serverId
+      serverId = Long.parseLong(myIdString);
+      MDC.put("myid", myIdString);
+  } catch (NumberFormatException e) {
+      throw new IllegalArgumentException("serverid " + myIdString
+              + " is not a number");
+  }
+}
+```
+主脉络的流程就分析完了。
+
+#### 删除过期快照
+1. `org.apache.zookeeper.server.DatadirCleanupManager#start`
+```java
+// config.getSnapRetainCount() 默认=3，config.getPurgeInterval() 默认=0
+// DatadirCleanupManager purgeMgr = new DatadirCleanupManager(config.getDataDir(), config.getDataLogDir(), config.getSnapRetainCount(), config.getPurgeInterval());
+// purgeMgr.start();
+
+public void start() {
+  // 如果清理任务正在执行中，返回
+  if (PurgeTaskStatus.STARTED == purgeTaskStatus) {
+      LOG.warn("Purge task is already running.");
+      return;
+  }
+  // 默认关闭
+  if (purgeInterval <= 0) {
+      LOG.info("Purge task is not scheduled.");
+      return;
+  }
+
+  // 创建定时任务，交给线程池来处理 删除过期快照，每隔 purgeInterval 小时检查一次
+  timer = new Timer("PurgeTask", true);
+  TimerTask task = new PurgeTask(dataLogDir, snapDir, snapRetainCount);
+  timer.scheduleAtFixedRate(task, 0, TimeUnit.HOURS.toMillis(purgeInterval));
+
+  purgeTaskStatus = PurgeTaskStatus.STARTED;
+}
+
+static class PurgeTask extends TimerTask {
+  private File logsDir;
+  private File snapsDir;
+  private int snapRetainCount;
+
+  public PurgeTask(File dataDir, File snapDir, int count) {
+      logsDir = dataDir;
+      snapsDir = snapDir;
+      snapRetainCount = count;
+  }
+
+  @Override
+  public void run() {
+      LOG.info("Purge task started.");
+      try {
+          // 清除过期快照
+          PurgeTxnLog.purge(logsDir, snapsDir, snapRetainCount);
+      } catch (Exception e) {
+          LOG.error("Error occurred while purging.", e);
+      }
+      LOG.info("Purge task completed.");
+  }
+}
+```
+简单看一下`PurgeTxnLog.purge()`源码：
+```java
+public static void purge(File dataDir, File snapDir, int num) throws IOException {
+   // 最少保留3个快照
+  if (num < 3) {
+      throw new IllegalArgumentException(COUNT_ERR_MSG);
+  }
+
+  // 默认生成的文件夹名字是version-2
+  FileTxnSnapLog txnLog = new FileTxnSnapLog(dataDir, snapDir);
+
+  // 获取指定数量的快照
+  List<File> snaps = txnLog.findNRecentSnapshots(num);
+  int numSnaps = snaps.size();
+  if (numSnaps > 0) {
+      purgeOlderSnapshots(txnLog, snaps.get(numSnaps - 1));
+  }
+}
+```
+主脉络的流程就分析完了。
+
+#### 通信初始化
+1. `org.apache.zookeeper.server.ServerCnxnFactory#createFactory()`
+```java
+static public ServerCnxnFactory createFactory() throws IOException {
+  // 默认就是 NIOServerCnxnFactory
+  String serverCnxnFactoryName =
+      System.getProperty(ZOOKEEPER_SERVER_CNXN_FACTORY);
+  if (serverCnxnFactoryName == null) {
+      serverCnxnFactoryName = NIOServerCnxnFactory.class.getName();
+  }
+  try {
+      
+      // 创建 NIOServerCnxnFactory
+      ServerCnxnFactory serverCnxnFactory = (ServerCnxnFactory) Class.forName(serverCnxnFactoryName)
+              .getDeclaredConstructor().newInstance();
+      LOG.info("Using {} as server connection factory", serverCnxnFactoryName);
+      return serverCnxnFactory;
+  } catch (Exception e) {
+      IOException ioe = new IOException("Couldn't instantiate "
+              + serverCnxnFactoryName);
+      ioe.initCause(e);
+      throw ioe;
+  }
+}
+```
+2. `org.apache.zookeeper.server.NIOServerCnxnFactory#configure`
+```java
+public void configure(InetSocketAddress addr, int maxcc, boolean secure) throws IOException {
+  if (secure) {
+      throw new UnsupportedOperationException("SSL isn't supported in NIOServerCnxn");
+  }
+  configureSaslLogin();
+
+  maxClientCnxns = maxcc;
+  sessionlessCnxnTimeout = Integer.getInteger(
+      ZOOKEEPER_NIO_SESSIONLESS_CNXN_TIMEOUT, 10000);
+
+  cnxnExpiryQueue =
+      new ExpiryQueue<NIOServerCnxn>(sessionlessCnxnTimeout);
+  expirerThread = new ConnectionExpirerThread();
+
+  int numCores = Runtime.getRuntime().availableProcessors();
+  // 32 cores sweet spot seems to be 4 selector threads
+  numSelectorThreads = Integer.getInteger(
+      ZOOKEEPER_NIO_NUM_SELECTOR_THREADS,
+      Math.max((int) Math.sqrt((float) numCores/2), 1));
+  if (numSelectorThreads < 1) {
+      throw new IOException("numSelectorThreads must be at least 1");
+  }
+
+  numWorkerThreads = Integer.getInteger(
+      ZOOKEEPER_NIO_NUM_WORKER_THREADS, 2 * numCores);
+  workerShutdownTimeoutMS = Long.getLong(
+      ZOOKEEPER_NIO_SHUTDOWN_TIMEOUT, 5000);
+
+  for(int i=0; i<numSelectorThreads; ++i) {
+      selectorThreads.add(new SelectorThread(i));
+  }
+
+  // 默认 NIO 通信，绑定2181端口
+  this.ss = ServerSocketChannel.open();
+  ss.socket().setReuseAddress(true);
+  LOG.info("binding to port " + addr);
+  ss.socket().bind(addr);
+  ss.configureBlocking(false);
+  acceptThread = new AcceptThread(ss, addr, selectorThreads);
+}
+```
+主脉络的流程就分析完了。
+#### 加载编辑日志和快照
+1. `org.apache.zookeeper.server.quorum.QuorumPeer#start`
+```java
+public synchronized void start() {
+  if (!getView().containsKey(myid)) {
+      throw new RuntimeException("My id " + myid + " not in the peer list");
+   }
+   
+  // 加载日志数据到内存中
+  loadDataBase();
+  startServerCnxnFactory();
+  try {
+      
+      /*
+         启动adminServer，通过浏览器可以访问
+         http://localhost:8080/commands/
+      */
+      adminServer.start();
+  } catch (AdminServerException e) {
+      LOG.warn("Problem starting AdminServer", e);
+      System.out.println(e);
+  }
+  
+  // 启动快速选举
+  startLeaderElection();
+  
+  // 调用 Thread.start();
+  super.start();
+}
+```
+2. `org.apache.zookeeper.server.quorum.QuorumPeer#loadDataBase`
+```java
+private void    loadDataBase() {
+  try {
+  
+      // 从磁盘将数据加载到内存中
+      zkDb.loadDataBase();
+
+      // 获取最新的 zxid
+      long lastProcessedZxid = zkDb.getDataTree().lastProcessedZxid;
+      
+      // 获取 zxid 对应的 EPOCH（代号）
+      long epochOfZxid = ZxidUtils.getEpochFromZxid(lastProcessedZxid);
+      try {
+          currentEpoch = readLongFromFile(CURRENT_EPOCH_FILENAME);
+      } catch(FileNotFoundException e) {
+         // ... 省略
+      }
+      /// ... 省略
+  } catch(IOException ie) {
+      LOG.error("Unable to load database on disk", ie);
+      throw new RuntimeException("Unable to run quorum server ", ie);
+  }
+}
+```
+3. `org.apache.zookeeper.server.ZKDatabase#loadDataBase`
+```java
+public long loadDataBase() throws IOException {
+  long zxid = snapLog.restore(dataTree, sessionsWithTimeouts, commitProposalPlaybackListener);
+  initialized = true;
+  return zxid;
+}
+```
+4. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#restore`
+```java
+public long restore(DataTree dt, Map<Long, Integer> sessions, PlayBackListener listener) throws IOException {
+  // 1、恢复快照
+  long deserializeResult = snapLog.deserialize(dt, sessions);
+  FileTxnLog txnLog = new FileTxnLog(dataDir);
+
+  // 2、恢复 编辑日志 数据到 DataTree
+  RestoreFinalizer finalizer = () -> {
+      long highestZxid = fastForwardFromEdits(dt, sessions, listener);
+      return highestZxid;
+  };
+
+  // ... 省略
+
+  return finalizer.run();
+}
+```
+5. `org.apache.zookeeper.server.persistence.SnapShot#deserialize`
+```java
+public long deserialize(DataTree dt, Map<Long, Integer> sessions) throws IOException {
+  // we run through 100 snapshots (not all of them)
+  // if we cannot get it running within 100 snapshots
+  // we should  give up
+  List<File> snapList = findNValidSnapshots(100);
+  if (snapList.size() == 0) {
+      return -1L;
+  }
+  File snap = null;
+  boolean foundValid = false;
+  
+  // 依次遍历每一个快照的数据
+  for (int i = 0, snapListSize = snapList.size(); i < snapListSize; i++) {
+      snap = snapList.get(i);
+      LOG.info("Reading snapshot " + snap);
+      
+      // 反序列化 环境准备
+      try (InputStream snapIS = new BufferedInputStream(new FileInputStream(snap));
+           CheckedInputStream crcIn = new CheckedInputStream(snapIS, new Adler32())) {
+          InputArchive ia = BinaryInputArchive.getArchive(crcIn);
+          
+          // 反序列化
+          deserialize(dt, sessions, ia);
+          long checkSum = crcIn.getChecksum().getValue();
+          long val = ia.readLong("val");
+          if (val != checkSum) {
+              throw new IOException("CRC corruption in snapshot :  " + snap);
+          }
+          foundValid = true;
+          break;
+      } catch (IOException e) {
+          LOG.warn("problem reading snap file " + snap, e);
+      }
+  }
+  if (!foundValid) {
+      throw new IOException("Not able to find valid snapshots in " + snapDir);
+  }
+  dt.lastProcessedZxid = Util.getZxidFromName(snap.getName(), SNAPSHOT_FILE_PREFIX);
+  return dt.lastProcessedZxid;
+}
+```
+6. `org.apache.zookeeper.server.persistence.FileSnap#deserialize`
+```java
+public void deserialize(DataTree dt, Map<Long, Integer> sessions,
+      InputArchive ia) throws IOException {
+  FileHeader header = new FileHeader();
+  header.deserialize(ia, "fileheader");
+  if (header.getMagic() != SNAP_MAGIC) {
+      throw new IOException("mismatching magic headers "
+              + header.getMagic() +
+              " !=  " + FileSnap.SNAP_MAGIC);
+  }
+  
+  // 反序列化快照
+  SerializeUtils.deserializeSnapshot(dt,ia,sessions);
+}
+```
+7. `org.apache.zookeeper.server.util.SerializeUtils#deserializeSnapshot`
+```java
+public static void deserializeSnapshot(DataTree dt,InputArchive ia,
+      Map<Long, Integer> sessions) throws IOException {
+  int count = ia.readInt("count");
+  while (count > 0) {
+      long id = ia.readLong("id");
+      int to = ia.readInt("timeout");
+      sessions.put(id, to);
+      if (LOG.isTraceEnabled()) {
+      }
+      count--;
+  }
+  
+  // 反序列化
+  dt.deserialize(ia, "tree");
+}
+```
+8. `org.apache.zookeeper.server.DataTree#deserialize`
+```java
+public void deserialize(InputArchive ia, String tag) throws IOException {
+  aclCache.deserialize(ia);
+  nodes.clear();
+  pTrie.clear();
+  String path = ia.readString("path");
+  
+  // 循环将快照数据恢复到 DataTree
+  while (!"/".equals(path)) {
+  
+      // 每次循环创建一个节点对象
+      DataNode node = new DataNode();
+      ia.readRecord(node, "node");
+      
+      // 将 DataNode恢复到 DataTree
+      nodes.put(path, node);
+      synchronized (node) {
+          aclCache.addUsage(node.acl);
+      }
+      int lastSlash = path.lastIndexOf('/');
+      if (lastSlash == -1) {
+          root = node;
+      } else {
+      
+          // // 处理父节点
+          String parentPath = path.substring(0, lastSlash);
+          DataNode parent = nodes.get(parentPath);
+          if (parent == null) {
+              throw new IOException("Invalid Datatree, unable to find " +
+                      "parent " + parentPath + " of path " + path);
+          }
+          
+          // // 处理子节点
+          parent.addChild(path.substring(lastSlash + 1));
+          long eowner = node.stat.getEphemeralOwner();
+          EphemeralType ephemeralType = EphemeralType.get(eowner);
+          if (ephemeralType == EphemeralType.CONTAINER) {
+              containers.add(path);
+          } else if (ephemeralType == EphemeralType.TTL) {
+              ttls.add(path);
+          } else if (eowner != 0) {
+              HashSet<String> list = ephemerals.get(eowner);
+              if (list == null) {
+                  list = new HashSet<String>();
+                  ephemerals.put(eowner, list);
+              }
+              list.add(path);
+          }
+      }
+      path = ia.readString("path");
+  }
+  nodes.put("/", root);
+  // we are done with deserializing the
+  // the datatree
+  // update the quotas - create path trie
+  // and also update the stat nodes
+  setupQuota();
+
+  aclCache.purgeUnused();
+}
+```
+9. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#fastForwardFromEdits`
+```java
+public long fastForwardFromEdits(DataTree dt, Map<Long, Integer> sessions, PlayBackListener listener) throws IOException {
+
+  // 从快照的zxid + 1位置开始恢复
+  TxnIterator itr = txnLog.read(dt.lastProcessedZxid+1);
+  
+  // 快照中最大的 zxid，在执行编辑日志时，这个值会不断更新，直到所有操作执行完
+  long highestZxid = dt.lastProcessedZxid;
+  TxnHeader hdr;
+  try {
+  
+      // 从 lastProcessedZxid事务编号器开始，不断的从编辑日志中恢复剩下的还没有恢复的数据
+      while (true) {
+          // iterator points to
+          // the first valid txn when initialized
+          
+          // 获取事务头信息，包括 zxid
+          hdr = itr.getHeader();
+          if (hdr == null) {
+              //empty logs
+              return dt.lastProcessedZxid;
+          }
+          if (hdr.getZxid() < highestZxid && highestZxid != 0) {
+              LOG.error("{}(highestZxid) > {}(next log) for type {}",
+                      highestZxid, hdr.getZxid(), hdr.getType());
+          } else {
+              highestZxid = hdr.getZxid();
+          }
+          try {
+              
+              // 根据编辑日志恢复数据到 DataTree 每 执行一次，对应的事务 idhighestZxid + 1
+              processTransaction(hdr,dt,sessions, itr.getTxn());
+          } catch(KeeperException.NoNodeException e) {
+             throw new IOException("Failed to process transaction type: " +
+                   hdr.getType() + " error: " + e.getMessage(), e);
+          }
+          listener.onTxnLoaded(hdr, itr.getTxn());
+          if (!itr.next())
+              break;
+      }
+  } finally {
+      if (itr != null) {
+          itr.close();
+      }
+  }
+  return highestZxid;
+}
+```
+10. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#processTransaction`
+```java
+public void processTransaction(TxnHeader hdr,DataTree dt, Map<Long, Integer> sessions, Record txn)
+  throws KeeperException.NoNodeException {
+  ProcessTxnResult rc;
+  switch (hdr.getType()) {
+  case OpCode.createSession:
+      sessions.put(hdr.getClientId(),
+              ((CreateSessionTxn) txn).getTimeOut());
+      if (LOG.isTraceEnabled()) {
+          ZooTrace.logTraceMessage(LOG,ZooTrace.SESSION_TRACE_MASK,
+                  "playLog --- create session in log: 0x"
+                          + Long.toHexString(hdr.getClientId())
+                          + " with timeout: "
+                          + ((CreateSessionTxn) txn).getTimeOut());
+      }
+      rc = dt.processTxn(hdr, txn);
+      break;
+  case OpCode.closeSession:
+      sessions.remove(hdr.getClientId());
+      if (LOG.isTraceEnabled()) {
+          ZooTrace.logTraceMessage(LOG,ZooTrace.SESSION_TRACE_MASK,
+                  "playLog --- close session in log: 0x"
+                          + Long.toHexString(hdr.getClientId()));
+      }
+      rc = dt.processTxn(hdr, txn);
+      break;
+  default:
+  
+      // 处理事务请求，创建节点、删除节点和其他的各种事务操作等
+      rc = dt.processTxn(hdr, txn);
+  }
+
+  /**
+   * Snapshots are lazily created. So when a snapshot is in progress,
+   * there is a chance for later transactions to make into the
+   * snapshot. Then when the snapshot is restored, NONODE/NODEEXISTS
+   * errors could occur. It should be safe to ignore these.
+   */
+  if (rc.err != Code.OK.intValue()) {
+      LOG.debug(
+              "Ignoring processTxn failure hdr: {}, error: {}, path: {}",
+              hdr.getType(), rc.err, rc.path);
+  }
+}
+```
+11. `org.apache.zookeeper.server.DataTree#processTxn`
+```java
+public ProcessTxnResult processTxn(TxnHeader header, Record txn, boolean isSubTxn)
+    {
+        ProcessTxnResult rc = new ProcessTxnResult();
+
+        try {
+            rc.clientId = header.getClientId();
+            rc.cxid = header.getCxid();
+            rc.zxid = header.getZxid();
+            rc.type = header.getType();
+            rc.err = 0;
+            rc.multiResult = null;
+            switch (header.getType()) {
+                case OpCode.create:
+                    CreateTxn createTxn = (CreateTxn) txn;
+                    rc.path = createTxn.getPath();
+                    
+                    // 创建节点
+                    createNode(
+                            createTxn.getPath(),
+                            createTxn.getData(),
+                            createTxn.getAcl(),
+                            createTxn.getEphemeral() ? header.getClientId() : 0,
+                            createTxn.getParentCVersion(),
+                            header.getZxid(), header.getTime(), null);
+                    break;
+                 // ... 省略 ...
+            }
+        } catch (KeeperException e) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Failed: " + header + ":" + txn, e);
+            }
+            rc.err = e.code().intValue();
+        } catch (IOException e) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Failed: " + header + ":" + txn, e);
+            }
+        }
+        // ... 省略 ...
+        return rc;
+    }
+```
 
 ### 选举机制
+选举机制大致流程
+
+![img.png](../image/zookeeper_源码_选举机制大致流程.png)
+
+#### 选举准备
+创建选票、通络通信监听、发送和接收的消息队列等等。
+
+![img.png](../image/zookeeper_源码_选举机制准备.png)
+
+1. `org.apache.zookeeper.server.quorum.QuorumPeer#startLeaderElection`
+```java
+synchronized public void startLeaderElection() {
+ try {
+     if (getPeerState() == ServerState.LOOKING) {
+         currentVote = new Vote(myid, getLastLoggedZxid(), getCurrentEpoch());
+     }
+ } catch(IOException e) {
+     RuntimeException re = new RuntimeException(e.getMessage());
+     re.setStackTrace(e.getStackTrace());
+     throw re;
+ }
+
+ // if (!getView().containsKey(myid)) {
+//      throw new RuntimeException("My id " + myid + " not in the peer list");
+  //}
+  if (electionType == 0) {
+      try {
+          udpSocket = new DatagramSocket(getQuorumAddress().getPort());
+          responder = new ResponderThread();
+          responder.start();
+      } catch (SocketException e) {
+          throw new RuntimeException(e);
+      }
+  }
+  this.electionAlg = createElectionAlgorithm(electionType);
+}
+```
+
+#### 选举执行
 
 ### 服务端Leader启动
 
