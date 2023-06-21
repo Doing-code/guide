@@ -7,11 +7,14 @@
 - [ ] [JVM](JavaGuide/JVM.md)
 - [ ] [Kafka](JavaGuide/Kafka.md)
 - [ ] [Linux](JavaGuide/Linux.md)
-- [ ] [MyBatis](JavaGuide/MyBatis.md)
+- [x] [MyBatis](https://github.com/Doing-code/MyBatisFramework)
+- [x] [Spring](https://github.com/Doing-code/SpringFramework)
 - [x] [MySQL](JavaGuide/MySQL.md)
-- [ ] [Netty](JavaGuide/Netty.md)
+
+[comment]: <> (- [ ] [Netty]&#40;JavaGuide/Netty.md&#41;)
 - [ ] [Redis](JavaGuide/Redis.md)
-- [ ] [RocketMQ](JavaGuide/RocketMQ.md)
+
+[comment]: <> (- [ ] [RocketMQ]&#40;JavaGuide/RocketMQ.md&#41;)
 - [ ] [SpringBoot](JavaGuide/SpringBoot.md)
 - [ ] [Zookeeper](JavaGuide/Zookeeper.md)
 
