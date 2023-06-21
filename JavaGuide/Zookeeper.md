@@ -1312,6 +1312,19 @@ public ProcessTxnResult processTxn(TxnHeader header, Record txn, boolean isSubTx
         return rc;
     }
 ```
+ZooKeeper 服务端的初始化流程如下：
+```txt
+1. 读取配置文件：
+   ZooKeeper 服务端会读取配置文件，包括服务器的IP地址、端口号、数据目录、最大连接数等配置信息。
+2. 初始化数据目录：
+   ZooKeeper 会检查数据目录是否存在，如果不存在则创建。数据目录用于存储 ZooKeeper 的数据和事务日志。
+3. 加载数据和事务日志：
+   如果数据目录中存在数据和事务日志，ZooKeeper 会加载它们，并恢复到最新的状态。
+4. 初始化服务器状态：
+   ZooKeeper 会初始化服务器状态，包括服务器的 ID、IP 地址、端口号等信息，并根据配置文件中的参数进行初始化。
+5. 启动内部线程：
+   ZooKeeper 会启动多个内部线程，包括选举线程、请求处理线程等，用于处理客户端请求、管理集群状态等。
+```
 
 ### 选举机制
 选举机制大致流程
@@ -1327,7 +1340,11 @@ public ProcessTxnResult processTxn(TxnHeader header, Record txn, boolean isSubTx
 ```java
 synchronized public void startLeaderElection() {
  try {
+ 
+     // 当前节点在启动的时候，初始状态都是LOOKING，都会先投自己一票
      if (getPeerState() == ServerState.LOOKING) {
+     
+         // 创建选票，选票包括myid（serverid）、zxid（事务id）、epoch（当前选举轮数）
          currentVote = new Vote(myid, getLastLoggedZxid(), getCurrentEpoch());
      }
  } catch(IOException e) {
@@ -1348,11 +1365,849 @@ synchronized public void startLeaderElection() {
           throw new RuntimeException(e);
       }
   }
+  
+  // 根据配置文件配置的选举算法类型创建选举算法，新版zookeeper默认FastLeaderElection，这里electionType=3
   this.electionAlg = createElectionAlgorithm(electionType);
 }
 ```
+2. `org.apache.zookeeper.server.quorum.Vote#Vote()`
+```java
+public Vote(long id,
+              long zxid,
+              long peerEpoch) {
+  this.version = 0x0;
+  this.id = id;
+  this.zxid = zxid;
+  this.electionEpoch = -1;
+  this.peerEpoch = peerEpoch;
+  this.state = ServerState.LOOKING;
+}
+```
+3. `org.apache.zookeeper.server.quorum.QuorumPeer#createElectionAlgorithm`
+```java
+protected Election createElectionAlgorithm(int electionAlgorithm){
+  Election le=null;
 
+  //TODO: use a factory rather than a switch
+  switch (electionAlgorithm) {
+  
+  // 在 3.7.1 版本中默认 FastLeaderElection
+  case 0:
+      le = new LeaderElection(this);
+      break;
+  case 1:
+      le = new AuthFastLeaderElection(this);
+      break;
+  case 2:
+      le = new AuthFastLeaderElection(this, true);
+      break;
+  case 3:
+  
+      // QuorumCnxManager 负责发起网络请求（将投票发送出去或者接收其他节点发送的投票）
+      QuorumCnxManager qcm = createCnxnManager();
+      QuorumCnxManager oldQcm = qcmRef.getAndSet(qcm);
+      
+      // 如果已经在选举了，则停止选举
+      if (oldQcm != null) {
+          LOG.warn("Clobbering already-set QuorumCnxManager (restarting leader election?)");
+          oldQcm.halt();
+      }
+      
+      /*
+         QuorumCnxManager.Listener 是一个内部类，继承了 Thread
+         所以 listener.start() 只需查看其 run() 方法即可
+         这个 Listener 的作用是开启一个选举端口，比如在zoo.cfg中配置的3888端口
+         Listener 线程负责创建 ServerSocket，用来接收投票信息
+         如果收到其他节点的投票时，会将网络投票数据添加到成员变量recvQueue<Message>(阻塞队列)中
+         QuorumCnxManager有三个内部类Listener(线程)、RecvWoker(线程）、SendWorker(线程)。
+      */
+      QuorumCnxManager.Listener listener = qcm.listener;
+      if(listener != null){
+          listener.start();
+          
+          // 真正选举的地方
+          FastLeaderElection fle = new FastLeaderElection(this, qcm);
+          
+          // 这个`start()`调用的是`messenger.start()`
+          // `messenger.start()` 内部启动了 WorkerReceiver 和 WorkerSender线程
+          fle.start();
+          le = fle;
+      } else {
+          LOG.error("Null listener when initializing cnx manager");
+      }
+      break;
+  default:
+      assert false;
+  }
+  return le;
+}
+```
+`createElectionAlgorithm()`方法大致做了三件事：
+- 1、启动`QuorumCnxManager.Listener`线程
+- 2、启动`FastLeaderElection.Messenger.WorkerReceiver`线程
+- 3、启动`FastLeaderElection.Messenger.WorkerSender`线程
+
+4. `org.apache.zookeeper.server.quorum.QuorumPeer#createCnxnManager`
+```java
+public QuorumCnxManager createCnxnManager() {
+  return new QuorumCnxManager(this,
+          this.getId(),
+          this.getView(),
+          this.authServer,
+          this.authLearner,
+          this.tickTime * this.syncLimit,
+          this.getQuorumListenOnAllIPs(),
+          this.quorumCnxnThreadsSize,
+          this.isQuorumSaslAuthEnabled());
+}
+```
+看一下创建`QuorumCnxManager`的源码，`org.apache.zookeeper.server.quorum.QuorumCnxManager#QuorumCnxManager`。
+```java
+public QuorumCnxManager(QuorumPeer self,
+                      final long mySid,
+                      Map<Long,QuorumPeer.QuorumServer> view,
+                      QuorumAuthServer authServer,
+                      QuorumAuthLearner authLearner,
+                      int socketTimeout,
+                      boolean listenOnAllIPs,
+                      int quorumCnxnThreadsSize,
+                      boolean quorumSaslAuthEnabled) {
+  this.recvQueue = new ArrayBlockingQueue<Message>(RECV_CAPACITY);
+  this.queueSendMap = new ConcurrentHashMap<Long, ArrayBlockingQueue<ByteBuffer>>();
+  this.senderWorkerMap = new ConcurrentHashMap<Long, SendWorker>();
+  this.lastMessageSent = new ConcurrentHashMap<Long, ByteBuffer>();
+
+  String cnxToValue = System.getProperty("zookeeper.cnxTimeout");
+  if(cnxToValue != null){
+      this.cnxTO = Integer.parseInt(cnxToValue);
+  }
+
+  this.self = self;
+
+  this.mySid = mySid;
+  this.socketTimeout = socketTimeout;
+  this.view = view;
+  this.listenOnAllIPs = listenOnAllIPs;
+
+  initializeAuth(mySid, authServer, authLearner, quorumCnxnThreadsSize,
+          quorumSaslAuthEnabled);
+
+  // Starts listener thread that waits for connection requests
+  listener = new Listener();
+  listener.setName("QuorumPeerListener");
+}
+```
+5. `org.apache.zookeeper.server.quorum.QuorumCnxManager.Listener#run`
+```java
+public void run() {
+   int numRetries = 0;
+   InetSocketAddress addr;
+   Socket client = null;
+   Exception exitException = null;
+   while ((!shutdown) && (portBindMaxRetry == 0 || numRetries < portBindMaxRetry)) {
+       try {
+           if (self.shouldUsePortUnification()) {
+               LOG.info("Creating TLS-enabled quorum server socket");
+               ss = new UnifiedServerSocket(self.getX509Util(), true);
+           } else if (self.isSslQuorum()) {
+               LOG.info("Creating TLS-only quorum server socket");
+               ss = new UnifiedServerSocket(self.getX509Util(), false);
+           } else {
+               ss = new ServerSocket();
+           }
+
+           ss.setReuseAddress(true);
+
+           if (self.getQuorumListenOnAllIPs()) {
+               int port = self.getElectionAddress().getPort();
+               addr = new InetSocketAddress(port);
+           } else {
+               // Resolve hostname for this server in case the
+               // underlying ip address has changed.
+               self.recreateSocketAddresses(self.getId());
+               addr = self.getElectionAddress();
+           }
+           LOG.info("My election bind port: " + addr.toString());
+           setName(addr.toString());
+           ss.bind(addr);
+           while (!shutdown) {
+               try {
+                   
+                   // 阻塞等待其他节点投票
+                   client = ss.accept();
+                   setSockOpts(client);
+                   if (quorumSaslAuthEnabled) {
+                       receiveConnectionAsync(client);
+                   } else {
+                       receiveConnection(client);
+                   }
+                   numRetries = 0;
+               } catch (SocketTimeoutException e) {
+               }
+           }
+       } catch (IOException e) {
+           
+   }
+   // ... 省略 ...
+}
+```
+6. `org.apache.zookeeper.server.quorum.FastLeaderElection`
+```java
+public FastLeaderElection(QuorumPeer self, QuorumCnxManager manager){
+   this.stop = false;
+   this.manager = manager;
+   starter(self, manager);
+}
+    
+// 创建发送队列和接收队列
+private void starter(QuorumPeer self, QuorumCnxManager manager) {
+   this.self = self;
+   proposedLeader = -1;
+   proposedZxid = -1;
+   
+   // 发送阻塞队列
+   sendqueue = new LinkedBlockingQueue<ToSend>();
+   // 接收阻塞队列
+   recvqueue = new LinkedBlockingQueue<Notification>();
+   this.messenger = new Messenger(manager);
+}
+
+Messenger(QuorumCnxManager manager) {
+
+   // 创建一个发送消息的工作线程
+   this.ws = new WorkerSender(manager);
+   this.wsThread = new Thread(this.ws, "WorkerSender[myid=" + self.getId() + "]");
+   this.wsThread.setDaemon(true);
+
+   // 创建一个接收消息的工作线程
+   this.wr = new WorkerReceiver(manager);
+   this.wrThread = new Thread(this.wr, "WorkerReceiver[myid=" + self.getId() + "]");
+   this.wrThread.setDaemon(true);
+}
+```
+sendqueue、 recvqueue、 WorkerReceiver WorkerSender、Listener，这五个对象是在 选举准备时创建的。
 #### 选举执行
+![img.png](../image/zookeeper_源码_选举机制执行.png)
+
+queueSendMap SendWorker、RecvWorker，这三个对象是在真正选举的过程中创建的。
+
+1. `org.apache.zookeeper.server.quorum.QuorumPeer#run`
+```java
+public void run() {
+   while (running) {
+      switch (getPeerState()) {
+         // 服务器刚启动时的状态
+         case LOOKING:
+            // ... 省略
+            setCurrentVote(makeLEStrategy().lookForLeader());
+         case OBSERVING:
+            try {
+               LOG.info("OBSERVING");
+               setObserver(makeObserver(logFactory));
+               observer.observeLeader();
+            } catch (Exception e) {
+               LOG.warn("Unexpected exception",e );
+            } finally {
+               observer.shutdown();
+               setObserver(null);  
+               updateServerState();
+            }
+            break;
+         case FOLLOWING:
+            try {
+               LOG.info("FOLLOWING");
+               setFollower(makeFollower(logFactory));
+               follower.followLeader();
+            } catch (Exception e) {
+               LOG.warn("Unexpected exception",e);
+            } finally {
+               follower.shutdown();
+               setFollower(null);
+               updateServerState();
+            }
+            break;
+         case LEADING:
+            LOG.info("LEADING");
+            try {
+               setLeader(makeLeader(logFactory));
+               leader.lead();
+               setLeader(null);
+            } catch (Exception e) {
+               LOG.warn("Unexpected exception",e);
+            } finally {
+               if (leader != null) {
+                  leader.shutdown("Forcing shutdown");
+                  setLeader(null);
+               }
+               updateServerState();
+            }
+            break;
+      }
+      start_fle = Time.currentElapsedTime();
+   // ... 省略
+   }
+}
+```
+2. `org.apache.zookeeper.server.quorum.FastLeaderElection#lookForLeader`
+```java
+public Vote lookForLeader() throws InterruptedException {
+  try {
+      self.jmxLeaderElectionBean = new LeaderElectionBean();
+      MBeanRegistry.getInstance().register(
+              self.jmxLeaderElectionBean, self.jmxLocalPeerBean);
+  } catch (Exception e) {
+      LOG.warn("Failed to register with JMX", e);
+      self.jmxLeaderElectionBean = null;
+  }
+  if (self.start_fle == 0) {
+     self.start_fle = Time.currentElapsedTime();
+  }
+  try {
+      
+      // 用来存储接收到的投票
+      HashMap<Long, Vote> recvset = new HashMap<Long, Vote>();
+      HashMap<Long, Vote> outofelection = new HashMap<Long, Vote>();
+      int notTimeout = finalizeWait;
+      synchronized(this){
+      
+          // 逻辑时钟 +1
+          logicalclock.incrementAndGet();
+          
+          // 更新选票
+          updateProposal(getInitId(), getInitLastLoggedZxid(), getPeerEpoch());
+      }
+              
+      /*
+         异步广播选票（放入发送dui），把初始的投票数据发送出去（即第一轮投票）。假设3个zk节点，选票为 Vote(1, 0, 1)
+         发送第1个节点（自身）的选票会投递到 QuorumCnxManager的recvQueue<Message>中，由 WorkerReceiver线程 pollRecvQueue() 处理
+         发送给第2、3节点的选票会通过socket发送
+      */
+      sendNotifications();
+
+      /*
+       * Loop in which we exchange notifications until we find a leader
+         在循环中交换通知直到找到领导者
+       */
+
+      while ((self.getPeerState() == ServerState.LOOKING) && (!stop)){
+          
+          // recvqueue 的数据是通过 FastLeaderElection 内部的 WorkerReceiver 线程 offer 的
+          // 从 recvqueue 队列中拉数据（投给自己的选票）
+          Notification n = recvqueue.poll(notTimeout, TimeUnit.MILLISECONDS);
+
+          // 如果为 null 则没有获取到外部的投票，可能是集群之间的节点没有连接上
+          if(n == null){
+              
+              // 检查 queueSendMap 缓存的队列是否都为空，都为空说明所有的票据都已经发布，那么再次发送投票
+              if(manager.haveDelivered()){
+                  sendNotifications();
+              } else {
+                  
+                  // 再次尝试发起连接发送选票
+                  manager.connectAll();
+              }
+
+              int tmpTimeOut = notTimeout*2;
+              notTimeout = (tmpTimeOut < maxNotificationInterval ? tmpTimeOut : maxNotificationInterval);
+              LOG.info("Notification time out: " + notTimeout);
+          } 
+          
+          // 校验收到的网络投票是否来自配置文件中的 server 列表中的服务器（验证节点serverId是否有效）
+          else if (validVoter(n.sid) && validVoter(n.leader)) {
+              
+              // 判断收到的投票者的状态，如果是 LOOKING 则代表在找 leader
+              switch (n.state) {
+              case LOOKING:
+              
+                  // 如果收到的选举的epoch（可理解为周期、轮数）比自己的逻辑时钟大，说明自己的投票轮数落后
+                  // 比较 epoch、zxid、sid 谁大就更改选票投谁，totalOrderPredicate() 返回true，说明网络投票优先自己，改投收到的选票信息
+                  if (n.electionEpoch > logicalclock.get()) {
+                      logicalclock.set(n.electionEpoch);
+                      recvset.clear();
+                      if(totalOrderPredicate(n.leader, n.zxid, n.peerEpoch, getInitId(), getInitLastLoggedZxid(), getPeerEpoch())) {
+                          updateProposal(n.leader, n.zxid, n.peerEpoch);
+                      } else {
+                          updateProposal(getInitId(), getInitLastLoggedZxid(), getPeerEpoch());
+                      }
+                      
+                      // 再次发送通知给其他节点，说我已经赞同了提案中的节点为 leader
+                      sendNotifications();
+                      
+                  // 如果收到的选举的epoch（可理解为周期、轮数）比自己的逻辑时钟小，说明收到的投票消息过期，丢弃
+                  } else if (n.electionEpoch < logicalclock.get()) {
+                      if(LOG.isDebugEnabled()){
+                          LOG.debug("Notification election epoch is smaller than logicalclock. n.electionEpoch = 0x"
+                                  + Long.toHexString(n.electionEpoch)
+                                  + ", logicalclock=0x" + Long.toHexString(logicalclock.get()));
+                      }
+                      break;
+                      
+                  // epoch相同，则比较 zxid、sid 谁更大，如果返回true，说明网络投票的胜出，更新选票
+                  } else if (totalOrderPredicate(n.leader, n.zxid, n.peerEpoch, proposedLeader, proposedZxid, proposedEpoch)) {
+                      updateProposal(n.leader, n.zxid, n.peerEpoch);
+                      
+                      // 再次发送通知给其他节点，说我已经赞同了提案中的节点为 leader
+                      sendNotifications();
+                  }
+
+                  // 记录收到的投票
+                  recvset.put(n.sid, new Vote(n.leader, n.zxid, n.electionEpoch, n.peerEpoch));
+
+                  // 判断投给自己的选票vote 是否过半数，并判断是否收到了半数以上的投票 ack 确认
+                  if (termPredicate(recvset, new Vote(proposedLeader, proposedZxid, logicalclock.get(), proposedEpoch))) {
+
+                      // 虽然已经完成过半的节点赞成某个 sid 成为 leader,但是还是得尝试一下 recvqueue 有没有数据
+                      // 可能由于网络原因 z3 节点的投票数据这时候才到达
+                      // 在超时时间（200ms）内等待，看是否还有投票，如果有再次比较票据信息，记录选票
+                      while((n = recvqueue.poll(finalizeWait, TimeUnit.MILLISECONDS)) != null){
+                          if(totalOrderPredicate(n.leader, n.zxid, n.peerEpoch, proposedLeader, proposedZxid, proposedEpoch)){
+                              recvqueue.put(n);
+                              break;
+                          }
+                      }
+
+                      // 如果 recvqueue 真的没有任务投票数据了，就可以确认节点状态，退出 leader 选举
+                      if (n == null) {
+                          
+                          // 更新节点类型  LEADING | FOLLOWING | OBSERVING
+                          self.setPeerState((proposedLeader == self.getId()) ? ServerState.LEADING: learningState());
+                          Vote endVote = new Vote(proposedLeader, proposedZxid, logicalclock.get(), proposedEpoch);
+                          
+                          // 清空收到的选票队列
+                          leaveInstance(endVote);
+                          
+                          // 退出 while 循环,程序回到 QuorumPeer.setCurrentVote(makeLEStrategy().lookForLeader());
+                          return endVote;
+                      }
+                  }
+                  break;
+              case OBSERVING:
+                  break;
+              case FOLLOWING:
+              case LEADING:
+              default:
+                  break;
+              }
+          } else {
+            
+          }
+      }
+      return null;
+  } finally {
+      // ...
+  }
+}
+
+synchronized void updateProposal(long leader, long zxid, long epoch){
+   if(LOG.isDebugEnabled()){
+      LOG.debug("Updating proposal: " + leader + " (newleader), 0x"
+              + Long.toHexString(zxid) + " (newzxid), " + proposedLeader
+              + " (oldleader), 0x" + Long.toHexString(proposedZxid) + " (oldzxid)");
+   }
+   proposedLeader = leader;
+   proposedZxid = zxid;
+   proposedEpoch = epoch;
+}
+```
+
+3. `org.apache.zookeeper.server.quorum.FastLeaderElection#sendNotifications`
+```java
+private void sendNotifications() {
+  for (long sid : self.getCurrentAndNextConfigVoters()) {
+      QuorumVerifier qv = self.getQuorumVerifier();
+      
+      // 准备选票 serverid、zxid、epoch
+      ToSend notmsg = new ToSend(ToSend.mType.notification,
+              proposedLeader,
+              proposedZxid,
+              logicalclock.get(),
+              QuorumPeer.ServerState.LOOKING,
+              sid,
+              proposedEpoch, qv.toString().getBytes());
+      if(LOG.isDebugEnabled()){
+          LOG.debug("Sending Notification: " + proposedLeader + " (n.leader), 0x"  +
+                Long.toHexString(proposedZxid) + " (n.zxid), 0x" + Long.toHexString(logicalclock.get())  +
+                " (n.round), " + sid + " (recipient), " + self.getId() +
+                " (myid), 0x" + Long.toHexString(proposedEpoch) + " (n.peerEpoch)");
+      }
+      
+      // 把要发送的选票放入发送队列，由 WorkerSender线程负责拉取（每3秒poll一次）
+      sendqueue.offer(notmsg);
+  }
+}
+```
+4. `org.apache.zookeeper.server.quorum.FastLeaderElection.Messenger.WorkerSender#run`
+```java
+public void run() {
+    while (!stop) {
+        try {
+            
+            // 每3秒接收一次要发送的选票
+            ToSend m = sendqueue.poll(3000, TimeUnit.MILLISECONDS);
+            if(m == null) continue;
+
+            // 处理要发送的选票
+            process(m);
+        } catch (InterruptedException e) {
+            break;
+        }
+    }
+    LOG.info("WorkerSender is down");
+}
+
+void process(ToSend m) {
+    ByteBuffer requestBuffer = buildMsg(m.state.ordinal(),
+                                        m.leader,
+                                        m.zxid,
+                                        m.electionEpoch,
+                                        m.peerEpoch,
+                                        m.configData);
+
+    // 发送选票
+    manager.toSend(m.sid, requestBuffer);
+
+}
+```
+5. `org.apache.zookeeper.server.quorum.QuorumCnxManager#toSend`
+```java
+public void toSend(Long sid, ByteBuffer b) {
+  /*
+   * If sending message to myself, then simply enqueue it (loopback).
+   */
+   
+  // 如果是投给自己的
+  if (this.mySid == sid) {
+       b.position(0);
+       
+       // 将发送给自己的选票添加到 recvQueue 队列，由 WorkerReceiver 线程负责 pollRecvQueue() 处理
+       addToRecvQueue(new Message(b.duplicate(), sid));
+      /*
+       * Otherwise send to the corresponding thread to send.
+       */
+  } else {
+       // 不是否给自己的
+       /*
+        * Start a new connection if doesn't have one already.
+        */
+       ArrayBlockingQueue<ByteBuffer> bq = new ArrayBlockingQueue<ByteBuffer>(
+          SEND_CAPACITY);
+       ArrayBlockingQueue<ByteBuffer> oldq = queueSendMap.putIfAbsent(sid, bq);
+       
+       // 由 SendWorker 线程负责 pollSendQueue() 处理
+       if (oldq != null) {
+           addToSendQueue(oldq, b);
+       } else {
+           addToSendQueue(bq, b);
+       }
+       
+       // 发送选票
+       connectOne(sid);
+  }
+}
+```
+6. `org.apache.zookeeper.server.quorum.QuorumCnxManager#connectOne`
+```java
+synchronized void connectOne(long sid){
+  if (senderWorkerMap.get(sid) != null) {
+      LOG.debug("There is a connection already for server " + sid);
+      return;
+  }
+  synchronized (self.QV_LOCK) {
+      boolean knownId = false;
+      // Resolve hostname for the remote server before attempting to
+      // connect in case the underlying ip address has changed.
+      self.recreateSocketAddresses(sid);
+      Map<Long, QuorumPeer.QuorumServer> lastCommittedView = self.getView();
+      QuorumVerifier lastSeenQV = self.getLastSeenQuorumVerifier();
+      Map<Long, QuorumPeer.QuorumServer> lastProposedView = lastSeenQV.getAllMembers();
+      if (lastCommittedView.containsKey(sid)) {
+          knownId = true;
+          
+          // 
+          if (connectOne(sid, lastCommittedView.get(sid).electionAddr))
+              return;
+      }
+      if (lastSeenQV != null && lastProposedView.containsKey(sid)
+              && (!knownId || (lastProposedView.get(sid).electionAddr !=
+              lastCommittedView.get(sid).electionAddr))) {
+          knownId = true;
+          if (connectOne(sid, lastProposedView.get(sid).electionAddr))
+              return;
+      }
+      if (!knownId) {
+          LOG.warn("Invalid server id: " + sid);
+          return;
+      }
+  }
+}
+```
+7. `org.apache.zookeeper.server.quorum.QuorumCnxManager#connectOne`
+```java
+synchronized private boolean connectOne(long sid, InetSocketAddress electionAddr){
+  if (senderWorkerMap.get(sid) != null) {
+      LOG.debug("There is a connection already for server " + sid);
+      return true;
+  }
+
+  Socket sock = null;
+  try {
+      LOG.debug("Opening channel to server " + sid);
+      if (self.isSslQuorum()) {
+           SSLSocket sslSock = self.getX509Util().createSSLSocket();
+           setSockOpts(sslSock);
+           sslSock.connect(electionAddr, cnxTO);
+           sslSock.startHandshake();
+           sock = sslSock;
+           LOG.info("SSL handshake complete with {} - {} - {}", sslSock.getRemoteSocketAddress(), sslSock.getSession().getProtocol(), sslSock.getSession().getCipherSuite());
+       } else {
+           sock = new Socket();
+           setSockOpts(sock);
+           sock.connect(electionAddr, cnxTO);
+
+       }
+       LOG.debug("Connected to server " + sid);
+      // Sends connection request asynchronously if the quorum
+      // sasl authentication is enabled. This is required because
+      // sasl server authentication process may take few seconds to
+      // finish, this may delay next peer connection requests.
+      if (quorumSaslAuthEnabled) {
+      
+          // 异步
+          initiateConnectionAsync(sock, sid);
+      } else {
+      
+          // 同步
+          initiateConnection(sock, sid);
+      }
+      return true;
+  } catch (UnresolvedAddressException e) {
+      closeSocket(sock);
+      throw e;
+  } catch (X509Exception e) {
+      closeSocket(sock);
+      return false;
+  } catch (IOException e) {
+      closeSocket(sock);
+      return false;
+  }
+}
+```
+8. `org.apache.zookeeper.server.quorum.QuorumCnxManager#initiateConnection`
+```java
+public void initiateConnection(final Socket sock, final Long sid) {
+  try {
+      startConnection(sock, sid);
+  } catch (IOException e) {
+      LOG.error("Exception while connecting, id: {}, addr: {}, closing learner connection",
+              new Object[] { sid, sock.getRemoteSocketAddress() }, e);
+      closeSocket(sock);
+      return;
+  }
+}
+```
+9. `org.apache.zookeeper.server.quorum.QuorumCnxManager#startConnection`
+```java
+private boolean startConnection(Socket sock, Long sid) throws IOException {
+  
+  // 通过输出流，向服务器发送数据
+  DataOutputStream dout = null;
+  
+  // 通过输入流，读取对方发送过来的选票
+  DataInputStream din = null;
+  try {
+      // Use BufferedOutputStream to reduce the number of IP packets. This is
+      // important for x-DC scenarios.
+      BufferedOutputStream buf = new BufferedOutputStream(sock.getOutputStream());
+      dout = new DataOutputStream(buf);
+
+      // Sending id and challenge
+      // represents protocol version (in other words - message type)
+      dout.writeLong(PROTOCOL_VERSION);
+      dout.writeLong(self.getId());
+      String addr = formatInetAddr(self.getElectionAddress());
+      byte[] addr_bytes = addr.getBytes();
+      dout.writeInt(addr_bytes.length);
+      dout.write(addr_bytes);
+      dout.flush();
+
+      din = new DataInputStream(
+              new BufferedInputStream(sock.getInputStream()));
+  } catch (IOException e) {
+      LOG.warn("Ignoring exception reading or writing challenge: ", e);
+      closeSocket(sock);
+      return false;
+  }
+
+  // authenticate learner
+  QuorumPeer.QuorumServer qps = self.getVotingView().get(sid);
+  if (qps != null) {
+      // TODO - investigate why reconfig makes qps null.
+      authLearner.authenticate(sock, qps.hostname);
+  }
+
+  // If lost the challenge, then drop the new connection
+  
+  // 如果对方的 sid 大于自己
+  if (sid > self.getId()) {
+      LOG.info("Have smaller server identifier, so dropping the " +
+              "connection: (" + sid + ", " + self.getId() + ")");
+      closeSocket(sock);
+      // Otherwise proceed with the connection
+  } else {
+      // 如果对方的 sid 小于自己
+      
+      // 初始化发送器和接收器
+      SendWorker sw = new SendWorker(sock, sid);
+      RecvWorker rw = new RecvWorker(sock, din, sid, sw);
+      sw.setRecv(rw);
+
+      SendWorker vsw = senderWorkerMap.get(sid);
+
+      if(vsw != null)
+          vsw.finish();
+
+      senderWorkerMap.put(sid, sw);
+      queueSendMap.putIfAbsent(sid, new ArrayBlockingQueue<ByteBuffer>(
+              SEND_CAPACITY));
+
+      // 启动发送器线程和接收器线程
+      sw.start();
+      rw.start();
+
+      return true;
+
+  }
+  return false;
+}
+```
+10. `org.apache.zookeeper.server.quorum.QuorumCnxManager.SendWorker#run`
+```java
+public void run() {
+   threadCnt.incrementAndGet();
+   try {
+       /**
+        * If there is nothing in the queue to send, then we
+        * send the lastMessage to ensure that the last message
+        * was received by the peer. The message could be dropped
+        * in case self or the peer shutdown their connection
+        * (and exit the thread) prior to reading/processing
+        * the last message. Duplicate messages are handled correctly
+        * by the peer.
+        *
+        * If the send queue is non-empty, then we have a recent
+        * message than that stored in lastMessage. To avoid sending
+        * stale message, we should send the message in the send queue.
+        */
+       ArrayBlockingQueue<ByteBuffer> bq = queueSendMap.get(sid);
+       if (bq == null || isSendQueueEmpty(bq)) {
+          ByteBuffer b = lastMessageSent.get(sid);
+          if (b != null) {
+              LOG.debug("Attempting to send lastMessage to sid=" + sid);
+              send(b);
+          }
+       }
+   } catch (IOException e) {
+       LOG.error("Failed to send last message. Shutting down thread.", e);
+       this.finish();
+   }
+
+   try {
+       while (running && !shutdown && sock != null) {
+
+           ByteBuffer b = null;
+           try {
+               ArrayBlockingQueue<ByteBuffer> bq = queueSendMap
+                       .get(sid);
+               if (bq != null) {
+                   // 
+                   b = pollSendQueue(bq, 1000, TimeUnit.MILLISECONDS);
+               } else {
+                   LOG.error("No queue of incoming messages for " +
+                             "server " + sid);
+                   break;
+               }
+
+               if(b != null){
+                   lastMessageSent.put(sid, b);
+                   send(b);
+               }
+           } catch (InterruptedException e) {
+               LOG.warn("Interrupted while waiting for message on queue",
+                       e);
+           }
+       }
+   } catch (Exception e) {
+       LOG.warn("Exception when using channel: for id " + sid
+                + " my id = " + QuorumCnxManager.this.mySid
+                + " error = " + e);
+   }
+   this.finish();
+   LOG.warn("Send worker leaving thread " + " id " + sid + " my id = " + self.getId());
+}
+```
+11. `org.apache.zookeeper.server.quorum.QuorumCnxManager.RecvWorker#run`
+```java
+public void run() {
+   threadCnt.incrementAndGet();
+   try {
+       while (running && !shutdown && sock != null) {
+           /**
+            * Reads the first int to determine the length of the
+            * message
+            */
+           int length = din.readInt();
+           if (length <= 0 || length > PACKETMAXSIZE) {
+               throw new IOException(
+                       "Received packet with invalid packet: "
+                               + length);
+           }
+           /**
+            * Allocates a new ByteBuffer to receive the message
+            */
+           byte[] msgArray = new byte[length];
+           din.readFully(msgArray, 0, length);
+           ByteBuffer message = ByteBuffer.wrap(msgArray);
+           
+           // 将发送给自己的选票添加到 recvQueue 队列中，由 WorkerReceiver线程负责 pollRecvQueue() 处理
+           addToRecvQueue(new Message(message.duplicate(), sid));
+       }
+   } catch (Exception e) {
+       LOG.warn("Connection broken for id " + sid + ", my id = "
+                + QuorumCnxManager.this.mySid + ", error = " , e);
+   } finally {
+       LOG.warn("Interrupting SendWorker");
+       sw.finish();
+       closeSocket(sock);
+   }
+}
+```
+1. 逻辑时钟(epoch–logicalclock)：或者叫投票的次数，同一轮投票过程中的逻辑时钟值是相同的。每投完一次票这个数据就会增加，然后与接收到的其它服务器返回的投票信息中的数值相比，根据不同的值做出不同的判断。
+
+在 ZooKeeper 3.5.7 版本中，Leader 选举的流程如下：
+```txt
+1. 启动阶段：
+   1. 每个服务器以 FOLLOWER 状态启动，并与其他服务器建立连接，形成一个 ZooKeeper 集群。
+   2. 所有服务器等待初始化完成后，进入 LOOKING 状态。
+2. LOOKING 阶段：
+   1. 服务器会发送 Leader 选举请求（LE）给其他服务器，并等待其他服务器的响应。
+   2. 服务器会记录收到的选票，并根据选票的 zxid、epoch、sid 进行比较。
+3. 选举投票：
+   1. 每个服务器收到选举请求后，会检查自己的状态：
+      1. 如果服务器已经有 LEADER，它会回复自己的投票信息给请求服务器。
+      2. 如果服务器还没有 LEADER，它会检查自己的 zxid：
+         1. 如果自己的 zxid 比选举请求的 zxid 大，服务器会拒绝投票。
+         2. 如果自己的 zxid 比选举请求的 zxid 小或相等，服务器会投票给请求服务器，并更新自己的投票信息。
+         投票选举规则：((newEpoch > curEpoch) || ((newEpoch == curEpoch) && ((newZxid > curZxid) || ((newZxid == curZxid) && (newId > curId)))));
+4. 选票比较和选举结果：
+   1. 在 LOOKING 阶段，每个服务器会记录收到的投票，并统计得票数。
+   2. 如果有服务器收到了超过半数的选票，它会切换为 LEADING 状态，并成为新的 LEADER。
+   3. 如果没有服务器获得足够的选票，所有服务器会重新发起选举，回到 LOOKING 阶段。
+5. 新的 LEADER 选举成功：
+   1. 新的 LEADER 会向其他服务器发送消息，告知它们自己已成为 LEADER，并开始处理客户端请求。
+   2. 其他服务器收到消息后，切换为 FOLLOWER 状态，并与新的 LEADER 保持通信。
+```
+### Leader和Follower状态同步
+![](../image/zookeeper_Leader和Follower状态同步大致流程.png)
 
 ### 服务端Leader启动
 
