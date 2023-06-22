@@ -2207,13 +2207,2388 @@ public void run() {
    2. 其他服务器收到消息后，切换为 FOLLOWER 状态，并与新的 LEADER 保持通信。
 ```
 ### Leader和Follower状态同步
-![](../image/zookeeper_Leader和Follower状态同步大致流程.png)
 
+大致流程：
+
+![](../image/zookeeper_Follower和Leader状态同步大致流程.png)
+
+Leader 与 Follower 在进行 nio 操作时的对应读写操作（配合源码看蛮直观的）：
+
+![](../image/zookeeper_Follower和Leader状态同步时序图流程.png)
+
+同步数据入口 `org.apache.zookeeper.server.quorum.QuorumPeer#run`
+
+#### Leader
+
+1. `org.apache.zookeeper.server.quorum.Leader#lead`
+```java
+void lead() throws IOException, InterruptedException {
+  self.end_fle = Time.currentElapsedTime();
+  long electionTimeTaken = self.end_fle - self.start_fle;
+  self.setElectionTimeTaken(electionTimeTaken);
+  LOG.info("LEADING - LEADER ELECTION TOOK - {} {}", electionTimeTaken, QuorumPeer.FLE_TIME_UNIT);
+  self.start_fle = 0;
+  self.end_fle = 0;
+
+  zk.registerJMX(new LeaderBean(this, zk), self.jmxLocalPeerBean);
+
+  try {
+      self.tick.set(0);
+      
+      // 加载快照和编辑日志（在初始化时已经加载过了）
+      zk.loadData();
+
+      leaderStateSummary = new StateSummary(self.getCurrentEpoch(), zk.getLastProcessedZxid());
+
+      // 创建一个线程并开启线程，接收 follower/observer 的注册请求
+      cnxAcceptor = new LearnerCnxAcceptor();
+      cnxAcceptor.start();
+
+      /*
+         阻塞等待超过半数的 follower/observer 连接
+         设置 leader 的 epoch，根据 epoch 设置新的 zxid
+      */
+      long epoch = getEpochToPropose(self.getId(), self.getAcceptedEpoch());
+
+      // 根据新的 epoch，设置新的起始 zxid
+      zk.setZxid(ZxidUtils.makeZxid(epoch, 0));
+
+      synchronized(this){
+          lastProposed = zk.getZxid();
+      }
+
+      newLeaderProposal.packet = new QuorumPacket(NEWLEADER, zk.getZxid(),
+             null, null);
+
+
+      if ((newLeaderProposal.packet.getZxid() & 0xffffffffL) != 0) {
+          LOG.info("NEWLEADER proposal has Zxid of "
+                  + Long.toHexString(newLeaderProposal.packet.getZxid()));
+      }
+
+      QuorumVerifier lastSeenQV = self.getLastSeenQuorumVerifier();
+      QuorumVerifier curQV = self.getQuorumVerifier();
+      if (curQV.getVersion() == 0 && curQV.getVersion() == lastSeenQV.getVersion()) {
+          
+         try {
+             QuorumVerifier newQV = self.configFromString(curQV.toString());
+             newQV.setVersion(zk.getZxid());
+             self.setLastSeenQuorumVerifier(newQV, true);    
+         } catch (Exception e) {
+             throw new IOException(e);
+         }
+      }
+      
+      newLeaderProposal.addQuorumVerifier(self.getQuorumVerifier());
+      if (self.getLastSeenQuorumVerifier().getVersion() > self.getQuorumVerifier().getVersion()){
+         newLeaderProposal.addQuorumVerifier(self.getLastSeenQuorumVerifier());
+      }
+      
+       // 阻塞等待超过半数的 follower/observer 获取新的 epoch，并返回 Leader.ACKEPOCH          
+       waitForEpochAck(self.getId(), leaderStateSummary);
+       
+       // 设置当前新的 epoch
+       self.setCurrentEpoch(epoch);    
+      
+       try {
+       
+           // 阻塞等待超过半数的 follower/observer 进行数据同步成功，并且返回 Leader.ACK
+           waitForNewLeaderAck(self.getId(), zk.getZxid());
+       } catch (InterruptedException e) {
+           shutdown("Waiting for a quorum of followers, only synced with sids: [ "
+                   + newLeaderProposal.ackSetsToString() + " ]");
+           HashSet<Long> followerSet = new HashSet<Long>();
+
+           for(LearnerHandler f : getLearners()) {
+               if (self.getQuorumVerifier().getVotingMembers().containsKey(f.getSid())){
+                   followerSet.add(f.getSid());
+               }
+           }    
+           boolean initTicksShouldBeIncreased = true;
+           for (Proposal.QuorumVerifierAcksetPair qvAckset:newLeaderProposal.qvAcksetPairs) {
+               if (!qvAckset.getQuorumVerifier().containsQuorum(followerSet)) {
+                   initTicksShouldBeIncreased = false;
+                   break;
+               }
+           }                  
+           if (initTicksShouldBeIncreased) {
+               LOG.warn("Enough followers present. "+
+                       "Perhaps the initTicks need to be increased.");
+           }
+           return;
+       }
+
+       /*
+            执行到这里，说明所有的follower都已经回复了ack
+            说明整个集群是可运行态，当前leader也可以启动服务接收客户端请求了
+       */
+       startZkServer();
+
+      String initialZxid = System.getProperty("zookeeper.testingonly.initialZxid");
+      if (initialZxid != null) {
+          long zxid = Long.parseLong(initialZxid);
+          zk.setZxid((zk.getZxid() & 0xffffffff00000000L) | zxid);
+      }
+
+      if (!System.getProperty("zookeeper.leaderServes", "yes").equals("no")) {
+          self.setZooKeeperServer(zk);
+      }
+
+      self.adminServer.setZooKeeperServer(zk);
+
+      boolean tickSkip = true;
+      // If not null then shutdown this leader
+      String shutdownMessage = null;
+
+      // 死循环，每 (self.tickTime / 2) 毫秒主动向 follower/observer 发起 ping 请求（心跳检测）
+      while (true) {
+          synchronized (this) {
+              long start = Time.currentElapsedTime();
+              long cur = start;
+              long end = start + self.tickTime / 2;
+              while (cur < end) {
+                  wait(end - cur);
+                  cur = Time.currentElapsedTime();
+              }
+
+              if (!tickSkip) {
+                  self.tick.incrementAndGet();
+              }
+
+              // We use an instance of SyncedLearnerTracker to
+              // track synced learners to make sure we still have a
+              // quorum of current (and potentially next pending) view.
+              SyncedLearnerTracker syncedAckSet = new SyncedLearnerTracker();
+              syncedAckSet.addQuorumVerifier(self.getQuorumVerifier());
+              if (self.getLastSeenQuorumVerifier() != null
+                      && self.getLastSeenQuorumVerifier().getVersion() > self
+                              .getQuorumVerifier().getVersion()) {
+                  syncedAckSet.addQuorumVerifier(self
+                          .getLastSeenQuorumVerifier());
+              }
+
+              // 将 Follower 加入该容器
+              syncedAckSet.addAck(self.getId());
+
+              for (LearnerHandler f : getLearners()) {
+                  if (f.synced()) {
+                      syncedAckSet.addAck(f.getSid());
+                  }
+              }
+
+              // check leader running status
+              if (!this.isRunning()) {
+                  // set shutdown flag
+                  shutdownMessage = "Unexpected internal error";
+                  break;
+              }
+
+              // 判断是否有超过半数 follower 在集群中
+              if (!tickSkip && !syncedAckSet.hasAllQuorums()) {
+              
+                  // 如果没有半数，则调用 shutdown() 关闭一些对象，然后 return，重新选举
+                  shutdownMessage = "Not sufficient followers synced, only synced with sids: [ "
+                          + syncedAckSet.ackSetsToString() + " ]";
+                  break;
+              }
+              tickSkip = !tickSkip;
+          }
+          for (LearnerHandler f : getLearners()) {
+              f.ping();
+          }
+      }
+      if (shutdownMessage != null) {
+          // 集群中没有过半的 follower，关闭一些对象，重新选举
+          shutdown(shutdownMessage);
+          // leader goes in looking state
+      }
+  } finally {
+      zk.unregisterJMX(this);
+  }
+}
+```
+lead()方法大致会执行下面几个操作：
+* 1、从快照和编辑日志中加载数据。
+* 2、创建一个线程，接收 `follower/observer` 的注册请求。
+* 3、等待过半的 `follower/observer` 注册之后，再继续往下执行程序。
+* 4、等待过半的 `follower/observer` 都获取了新的 epoch，并且返回 `Leader.ACKEPOCH` 之后，再继续往下执行程序。
+* 5、等待过半的 `follower/observer` 进行数据同步成功，并且返回 `Leader.ACK` 之后，再继续往下执行程序。
+* 6、数据同步完成，开启 zkServer，同时开启请求调用连接，接收请求执行。
+* 7、while 循环，每隔 (self.tickTime / 2) 毫秒向 follower 发起 ping 请求（心跳检测）。
+* 8、如果集群中没有过半的 follower，则会调用 shutdown() 关闭一些对象，重新选举。
+
+2. `org.apache.zookeeper.server.quorum.Leader.LearnerCnxAcceptor#run`
+```java
+public void run() {
+    try {
+        while (!stop) {
+            Socket s = null;
+            boolean error = false;
+            try {
+                
+                // 阻塞等待，Follower 发送同步申请
+                s = ss.accept();
+
+                // start with the initLimit, once the ack is processed
+                // in LearnerHandler switch to the syncLimit
+                
+                // 设置 socket 读取超时时间为 tickTime * initLimit
+                s.setSoTimeout(self.tickTime * self.initLimit);
+                s.setTcpNoDelay(nodelay);
+
+                BufferedInputStream is = new BufferedInputStream(s.getInputStream());
+                
+                // 创建 LearnerHandler 并启动线程（处理 leader ~ follower 之间的请求）
+                LearnerHandler fh = new LearnerHandler(s, is, Leader.this);
+                fh.start();
+            } catch (SocketException e) {
+                // ... ...
+            }
+        }
+    } catch (Exception e) {
+        LOG.warn("Exception while accepting follower", e.getMessage());
+        handleException(this.getName(), e);
+    }
+}
+```
+`Leader` 监听 `Follower` 的请求，为每一个 `Follower` 都创建一个 `LearnerHandler` 线程来处理请求响应。
+3. `org.apache.zookeeper.server.quorum.LearnerHandler#run`
+```java
+public void run() {
+    try {
+        leader.addLearnerHandler(this);
+        tickOfNextAckDeadline = leader.self.tick.get()
+                + leader.self.initLimit + leader.self.syncLimit;
+
+        // 获取 follower 的注册请求信息
+        ia = BinaryInputArchive.getArchive(bufferedInput);
+        bufferedOutput = new BufferedOutputStream(sock.getOutputStream());
+        oa = BinaryOutputArchive.getArchive(bufferedOutput);
+
+        // 等待 follower/observer 发出的请求，请求包的类型为 Leader.FOLLOWERINFO 或 Leader.OBSERVERINFO
+        QuorumPacket qp = new QuorumPacket();
+        
+        // 阻塞读取数据。readRecord 读取数据包不断从 learner 节点读数据，如果没读到将会阻塞 readRecord 
+        ia.readRecord(qp, "packet");
+        if(qp.getType() != Leader.FOLLOWERINFO && qp.getType() != Leader.OBSERVERINFO){
+            LOG.error("First packet " + qp.toString()
+                    + " is not FOLLOWERINFO or OBSERVERINFO!");
+            return;
+        }
+
+        // 获取 follower 信息，互殴去版本信息及sid
+        byte learnerInfoData[] = qp.getData();
+        if (learnerInfoData != null) {
+            ByteBuffer bbsid = ByteBuffer.wrap(learnerInfoData);
+            if (learnerInfoData.length >= 8) {
+                // 获取 myid
+                this.sid = bbsid.getLong();
+            }
+            if (learnerInfoData.length >= 12) {
+                // 协议版本号，默认 0x10000
+                this.version = bbsid.getInt(); // protocolVersion
+            }
+            if (learnerInfoData.length >= 20) {
+                long configVersion = bbsid.getLong();
+                if (configVersion > leader.self.getQuorumVerifier().getVersion()) {
+                    throw new IOException("Follower is ahead of the leader (has a later activated configuration)");
+                }
+            }
+        } else {
+            // 获取 myid
+            this.sid = leader.followerCounter.getAndDecrement();
+        }
+
+        if (leader.self.getView().containsKey(this.sid)) {
+            LOG.info("Follower sid: " + this.sid + " : info : "
+                    + leader.self.getView().get(this.sid).toString());
+        } else {
+            LOG.info("Follower sid: " + this.sid + " not in the current config " + Long.toHexString(leader.self.getQuorumVerifier().getVersion()));
+        }
+                    
+        if (qp.getType() == Leader.OBSERVERINFO) {
+              learnerType = LearnerType.OBSERVER;
+        }
+
+        long lastAcceptedEpoch = ZxidUtils.getEpochFromZxid(qp.getZxid());
+
+        long peerLastZxid;
+        StateSummary ss = null;
+        long zxid = qp.getZxid();
+        long newEpoch = leader.getEpochToPropose(this.getSid(), lastAcceptedEpoch);
+        long newLeaderZxid = ZxidUtils.makeZxid(newEpoch, 0);
+
+        // 正常情况下，follower 发送过来的 version（protocolVersion）就是 0x10000
+        if (this.getVersion() < 0x10000) {
+            // we are going to have to extrapolate the epoch information
+            long epoch = ZxidUtils.getEpochFromZxid(zxid);
+            ss = new StateSummary(epoch, zxid);
+            // fake the message
+            leader.waitForEpochAck(this.getSid(), ss);
+        } else {
+            byte ver[] = new byte[4];
+            ByteBuffer.wrap(ver).putInt(0x10000);
+            
+            // leader 将新的 epoch 发送给 follower
+            QuorumPacket newEpochPacket = new QuorumPacket(Leader.LEADERINFO, newLeaderZxid, ver, null);
+            oa.writeRecord(newEpochPacket, "packet");
+            bufferedOutput.flush();
+            
+            // leader 接收到 follower 的 ack 响应
+            QuorumPacket ackEpochPacket = new QuorumPacket();
+            ia.readRecord(ackEpochPacket, "packet");
+            if (ackEpochPacket.getType() != Leader.ACKEPOCH) {
+                LOG.error(ackEpochPacket.toString()
+                        + " is not ACKEPOCH");
+                return;
+            }
+            ByteBuffer bbepoch = ByteBuffer.wrap(ackEpochPacket.getData());
+            ss = new StateSummary(bbepoch.getInt(), ackEpochPacket.getZxid());
+            
+            // 等待 followers 返回 ack 响应
+            leader.waitForEpochAck(this.getSid(), ss);
+        }
+        peerLastZxid = ss.getLastZxid();
+       
+        // Take any necessary action if we need to send TRUNC or DIFF
+        // startForwarding() will be called in all cases
+        boolean needSnap = syncFollower(peerLastZxid, leader.zk.getZKDatabase(), leader);
+        
+        /* if we are not truncating or sending a diff just send a snapshot */
+        if (needSnap) {
+            boolean exemptFromThrottle = getLearnerType() != LearnerType.OBSERVER;
+            LearnerSnapshot snapshot = 
+                    leader.getLearnerSnapshotThrottler().beginSnapshot(exemptFromThrottle);
+            try {
+                long zxidToSend = leader.zk.getZKDatabase().getDataTreeLastProcessedZxid();
+                oa.writeRecord(new QuorumPacket(Leader.SNAP, zxidToSend, null, null), "packet");
+                bufferedOutput.flush();
+
+                LOG.info("Sending snapshot last zxid of peer is 0x{}, zxid of leader is 0x{}, "
+                        + "send zxid of db as 0x{}, {} concurrent snapshots, " 
+                        + "snapshot was {} from throttle",
+                        Long.toHexString(peerLastZxid), 
+                        Long.toHexString(leaderLastZxid),
+                        Long.toHexString(zxidToSend), 
+                        snapshot.getConcurrentSnapshotNumber(),
+                        snapshot.isEssential() ? "exempt" : "not exempt");
+                // Dump data to peer
+                leader.zk.getZKDatabase().serializeSnapshot(oa);
+                oa.writeString("BenWasHere", "signature");
+                bufferedOutput.flush();
+            } finally {
+                snapshot.close();
+            }
+        }
+
+        LOG.debug("Sending NEWLEADER message to " + sid);
+
+        if (getVersion() < 0x10000) {
+            QuorumPacket newLeaderQP = new QuorumPacket(Leader.NEWLEADER,
+                    newLeaderZxid, null, null);
+            oa.writeRecord(newLeaderQP, "packet");
+        } else {
+            QuorumPacket newLeaderQP = new QuorumPacket(Leader.NEWLEADER,
+                    newLeaderZxid, leader.self.getLastSeenQuorumVerifier()
+                            .toString().getBytes(), null);
+                            
+            // 加入到 queuedPackets 队列                 
+            queuedPackets.add(newLeaderQP);
+        }
+        bufferedOutput.flush();
+
+        // 启动数据包发送线程，负责处理 queuedPackets 队列
+        startSendingPackets();
+        
+        /*
+         * Have to wait for the first ACK, wait until
+         * the leader is ready, and only then we can
+         * start processing messages.
+         */
+        qp = new QuorumPacket();
+        ia.readRecord(qp, "packet");
+        if(qp.getType() != Leader.ACK){
+            LOG.error("Next packet was supposed to be an ACK,"
+                + " but received packet: {}", packetToString(qp));
+            return;
+        }
+
+        if(LOG.isDebugEnabled()){
+            LOG.debug("Received NEWLEADER-ACK message from " + sid);   
+        }
+        leader.waitForNewLeaderAck(getSid(), qp.getZxid());
+
+        syncLimitCheck.start();
+        
+        // now that the ack has been processed expect the syncLimit
+        sock.setSoTimeout(leader.self.tickTime * leader.self.syncLimit);
+
+        /*
+         * Wait until leader starts up
+         */
+        synchronized(leader.zk){
+            while(!leader.zk.isRunning() && !this.isInterrupted()){
+                leader.zk.wait(20);
+            }
+        }
+        // Mutation packets will be queued during the serialize,
+        // so we need to mark when the peer can actually start
+        // using the data
+        //
+        LOG.debug("Sending UPTODATE message to " + sid);      
+        queuedPackets.add(new QuorumPacket(Leader.UPTODATE, -1, null, null));
+
+        while (true) {
+            qp = new QuorumPacket();
+            ia.readRecord(qp, "packet");
+
+            long traceMask = ZooTrace.SERVER_PACKET_TRACE_MASK;
+            if (qp.getType() == Leader.PING) {
+                traceMask = ZooTrace.SERVER_PING_TRACE_MASK;
+            }
+            if (LOG.isTraceEnabled()) {
+                ZooTrace.logQuorumPacket(LOG, traceMask, 'i', qp);
+            }
+            tickOfNextAckDeadline = leader.self.tick.get() + leader.self.syncLimit;
+
+
+            ByteBuffer bb;
+            long sessionId;
+            int cxid;
+            int type;
+
+            switch (qp.getType()) {
+            case Leader.ACK:
+                if (this.learnerType == LearnerType.OBSERVER) {
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Received ACK from Observer  " + this.sid);
+                    }
+                }
+                syncLimitCheck.updateAck(qp.getZxid());
+                leader.processAck(this.sid, qp.getZxid(), sock.getLocalSocketAddress());
+                break;
+            case Leader.PING:
+                // Process the touches
+                ByteArrayInputStream bis = new ByteArrayInputStream(qp
+                        .getData());
+                DataInputStream dis = new DataInputStream(bis);
+                while (dis.available() > 0) {
+                    long sess = dis.readLong();
+                    int to = dis.readInt();
+                    leader.zk.touch(sess, to);
+                }
+                break;
+            case Leader.REVALIDATE:
+                bis = new ByteArrayInputStream(qp.getData());
+                dis = new DataInputStream(bis);
+                long id = dis.readLong();
+                int to = dis.readInt();
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                DataOutputStream dos = new DataOutputStream(bos);
+                dos.writeLong(id);
+                boolean valid = leader.zk.checkIfValidGlobalSession(id, to);
+                if (valid) {
+                    try {
+                        //set the session owner
+                        // as the follower that
+                        // owns the session
+                        leader.zk.setOwner(id, this);
+                    } catch (SessionExpiredException e) {
+                        LOG.error("Somehow session " + Long.toHexString(id) +
+                                " expired right after being renewed! (impossible)", e);
+                    }
+                }
+                if (LOG.isTraceEnabled()) {
+                    ZooTrace.logTraceMessage(LOG,
+                                             ZooTrace.SESSION_TRACE_MASK,
+                                             "Session 0x" + Long.toHexString(id)
+                                             + " is valid: "+ valid);
+                }
+                dos.writeBoolean(valid);
+                qp.setData(bos.toByteArray());
+                queuedPackets.add(qp);
+                break;
+            case Leader.REQUEST:
+                bb = ByteBuffer.wrap(qp.getData());
+                sessionId = bb.getLong();
+                cxid = bb.getInt();
+                type = bb.getInt();
+                bb = bb.slice();
+                Request si;
+                if(type == OpCode.sync){
+                    si = new LearnerSyncRequest(this, sessionId, cxid, type, bb, qp.getAuthinfo());
+                } else {
+                    si = new Request(null, sessionId, cxid, type, bb, qp.getAuthinfo());
+                }
+                si.setOwner(this);
+                leader.zk.submitLearnerRequest(si);
+                break;
+            default:
+                LOG.warn("unexpected quorum packet, type: {}", packetToString(qp));
+                break;
+            }
+        }
+    } catch (IOException e) {
+        if (sock != null && !sock.isClosed()) {
+            LOG.error("Unexpected exception causing shutdown while sock "
+                    + "still open", e);
+            //close the socket to make sure the
+            //other side can see it being close
+            try {
+                sock.close();
+            } catch(IOException ie) {
+                // do nothing
+            }
+        }
+    } catch (InterruptedException e) {
+        LOG.error("Unexpected exception causing shutdown", e);
+    } catch (SnapshotThrottleException e) {
+        LOG.error("too many concurrent snapshots: " + e);
+    } finally {
+        LOG.warn("******* GOODBYE "
+                + (sock != null ? sock.getRemoteSocketAddress() : "<null>")
+                + " ********");
+        shutdown();
+    }
+}
+```
+4. `org.apache.zookeeper.server.quorum.LearnerHandler#syncFollower`- leader发送同步信息
+```java
+public boolean syncFollower(long peerLastZxid, ZKDatabase db, Leader leader) {
+
+  boolean isPeerNewEpochZxid = (peerLastZxid & 0xffffffffL) == 0;
+  // Keep track of the latest zxid which already queued
+  long currentZxid = peerLastZxid;
+  boolean needSnap = true;
+  boolean txnLogSyncEnabled = db.isTxnLogSyncEnabled();
+  ReentrantReadWriteLock lock = db.getLogLock();
+  ReadLock rl = lock.readLock();
+  try {
+      rl.lock();
+      long maxCommittedLog = db.getmaxCommittedLog();
+      long minCommittedLog = db.getminCommittedLog();
+      long lastProcessedZxid = db.getDataTreeLastProcessedZxid();
+
+      LOG.info("Synchronizing with Follower sid: {} maxCommittedLog=0x{}"
+              + " minCommittedLog=0x{} lastProcessedZxid=0x{}"
+              + " peerLastZxid=0x{}", getSid(),
+              Long.toHexString(maxCommittedLog),
+              Long.toHexString(minCommittedLog),
+              Long.toHexString(lastProcessedZxid),
+              Long.toHexString(peerLastZxid));
+
+      if (db.getCommittedLog().isEmpty()) {
+          /*
+           * It is possible that committedLog is empty. In that case
+           * setting these value to the latest txn in leader db
+           * will reduce the case that we need to handle
+           *
+           * Here is how each case handle by the if block below
+           * 1. lastProcessZxid == peerZxid -> Handle by (2)
+           * 2. lastProcessZxid < peerZxid -> Handle by (3)
+           * 3. lastProcessZxid > peerZxid -> Handle by (5)
+           */
+          minCommittedLog = lastProcessedZxid;
+          maxCommittedLog = lastProcessedZxid;
+      }
+
+      if (forceSnapSync) {
+          // Force leader to use snapshot to sync with follower
+          LOG.warn("Forcing snapshot sync - should not see this in production");
+          
+      // follower 已经同步过了
+      } else if (lastProcessedZxid == peerLastZxid) {
+          // Follower is already sync with us, send empty diff
+          LOG.info("Sending DIFF zxid=0x" + Long.toHexString(peerLastZxid) +
+                   " for peer sid: " +  getSid());
+          queueOpPacket(Leader.DIFF, peerLastZxid);
+          needOpPacket = false;
+          needSnap = false;
+          
+      // 回滚同步
+      } else if (peerLastZxid > maxCommittedLog && !isPeerNewEpochZxid) {
+          // Newer than committedLog, send trunc and done
+          LOG.debug("Sending TRUNC to follower zxidToSend=0x" +
+                    Long.toHexString(maxCommittedLog) +
+                    " for peer sid:" +  getSid());
+          queueOpPacket(Leader.TRUNC, maxCommittedLog);
+          currentZxid = maxCommittedLog;
+          needOpPacket = false;
+          needSnap = false;
+          
+      // 差异化同步    
+      } else if ((maxCommittedLog >= peerLastZxid)
+              && (minCommittedLog <= peerLastZxid)) {
+          // Follower is within commitLog range
+          LOG.info("Using committedLog for peer sid: " +  getSid());
+          Iterator<Proposal> itr = db.getCommittedLog().iterator();
+          
+          // 将差异化的提交放入队列中，发送给 follower
+          currentZxid = queueCommittedProposals(itr, peerLastZxid,
+                                               null, maxCommittedLog);
+          needSnap = false;
+      } else if (peerLastZxid < minCommittedLog && txnLogSyncEnabled) {
+          // Use txnlog and committedLog to sync
+
+          // Calculate sizeLimit that we allow to retrieve txnlog from disk
+          long sizeLimit = db.calculateTxnLogSizeLimit();
+          // This method can return empty iterator if the requested zxid
+          // is older than on-disk txnlog
+          Iterator<Proposal> txnLogItr = db.getProposalsFromTxnLog(
+                  peerLastZxid, sizeLimit);
+          if (txnLogItr.hasNext()) {
+              LOG.info("Use txnlog and committedLog for peer sid: " +  getSid());
+              currentZxid = queueCommittedProposals(txnLogItr, peerLastZxid,
+                                                   minCommittedLog, maxCommittedLog);
+
+              LOG.debug("Queueing committedLog 0x" + Long.toHexString(currentZxid));
+              Iterator<Proposal> committedLogItr = db.getCommittedLog().iterator();
+              currentZxid = queueCommittedProposals(committedLogItr, currentZxid,
+                                                   null, maxCommittedLog);
+              needSnap = false;
+          }
+          // closing the resources
+          if (txnLogItr instanceof TxnLogProposalIterator) {
+              TxnLogProposalIterator txnProposalItr = (TxnLogProposalIterator) txnLogItr;
+              txnProposalItr.close();
+          }
+      } else {
+          LOG.warn("Unhandled scenario for peer sid: " +  getSid());
+      }
+      LOG.debug("Start forwarding 0x" + Long.toHexString(currentZxid) +
+                " for peer sid: " +  getSid());
+      leaderLastZxid = leader.startForwarding(this, currentZxid);
+  } finally {
+      rl.unlock();
+  }
+
+  if (needOpPacket && !needSnap) {
+      // This should never happen, but we should fall back to sending
+      // snapshot just in case.
+      LOG.error("Unhandled scenario for peer sid: " +  getSid() +
+               " fall back to use snapshot");
+      needSnap = true;
+  }
+
+  return needSnap;
+}
+```
+通过`maxCommittedLog`  `minCommittedLog` 和 `peerLastZxid`之间的比较确定是否需要同步以及同步类型。
+* 直接差异化同步（DIFF同步）
+* 先回滚再差异化同步（TRUNC+DIFF同步）
+* 仅回滚同步（TRUNC同步）
+* 全量同步（SNAP同步）
+
+#### Follower
+1. `org.apache.zookeeper.server.quorum.Follower#followLeader`
+```java
+void followLeader() throws InterruptedException {
+    self.end_fle = Time.currentElapsedTime();
+    long electionTimeTaken = self.end_fle - self.start_fle;
+    self.setElectionTimeTaken(electionTimeTaken);
+    LOG.info("FOLLOWING - LEADER ELECTION TOOK - {} {}", electionTimeTaken,
+            QuorumPeer.FLE_TIME_UNIT);
+    self.start_fle = 0;
+    self.end_fle = 0;
+    fzk.registerJMX(new FollowerBean(this, zk), self.jmxLocalPeerBean);
+    try {
+        
+        // 获取被选举的 Leader 信息
+        QuorumServer leaderServer = findLeader();            
+        try {
+        
+            // 连接 leader，创建socket连接
+            connectToLeader(leaderServer.addr, leaderServer.hostname);
+            
+            // 注册当前节点信息到 Leader
+            long newEpochZxid = registerWithLeader(Leader.FOLLOWERINFO);
+            if (self.isReconfigStateChange())
+               throw new Exception("learned about role change");
+            //check to see if the leader zxid is lower than ours
+            //this should never happen but is just a safety check
+            long newEpoch = ZxidUtils.getEpochFromZxid(newEpochZxid);
+            if (newEpoch < self.getAcceptedEpoch()) {
+                LOG.error("Proposed leader epoch " + ZxidUtils.zxidToString(newEpochZxid)
+                        + " is less than our accepted epoch " + ZxidUtils.zxidToString(self.getAcceptedEpoch()));
+                throw new IOException("Error: Epoch of leader is lower");
+            }
+            
+            // 同步 leader 数据
+            syncWithLeader(newEpochZxid);     
+            
+            // 读取 leader 发送的数据包           
+            QuorumPacket qp = new QuorumPacket();
+            while (this.isRunning()) {
+            
+                // 处理 leader 请求（如：两阶段 primary - accept）
+                readPacket(qp);
+                
+                // 处理数据包
+                processPacket(qp);
+            }
+        } catch (Exception e) {
+            LOG.warn("Exception when following the leader", e);
+            try {
+                sock.close();
+            } catch (IOException e1) {
+                e1.printStackTrace();
+            }
+
+            // clear pending revalidations
+            pendingRevalidations.clear();
+        }
+    } finally {
+        zk.unregisterJMX((Learner)this);
+    }
+}
+```
+2. `org.apache.zookeeper.server.quorum.Learner#registerWithLeader`
+```java
+protected long registerWithLeader(int pktType) throws IOException{
+   /*
+   * Send follower info, including last zxid and sid
+   */
+   long lastLoggedZxid = self.getLastLoggedZxid();
+   QuorumPacket qp = new QuorumPacket();                
+   qp.setType(pktType);
+   qp.setZxid(ZxidUtils.makeZxid(self.getAcceptedEpoch(), 0));
+ 
+   // 发送当前节点信息 
+   LearnerInfo li = new LearnerInfo(self.getId(), 0x10000, self.getQuorumVerifier().getVersion());
+   ByteArrayOutputStream bsid = new ByteArrayOutputStream();
+   BinaryOutputArchive boa = BinaryOutputArchive.getArchive(bsid);
+   boa.writeRecord(li, "LearnerInfo");
+   qp.setData(bsid.toByteArray());
+   
+   // 发送请求给 leader，并从 leader 获取响应
+   writePacket(qp, true);
+   
+   // leader 收到注册请求后，并将 leader 的基本信息响应给 follower
+   readPacket(qp);        
+   final long newEpoch = ZxidUtils.getEpochFromZxid(qp.getZxid());
+   if (qp.getType() == Leader.LEADERINFO) {
+      // we are connected to a 1.0 server so accept the new epoch and read the next packet
+      leaderProtocolVersion = ByteBuffer.wrap(qp.getData()).getInt();
+      byte epochBytes[] = new byte[4];
+      final ByteBuffer wrappedEpochBytes = ByteBuffer.wrap(epochBytes);
+      if (newEpoch > self.getAcceptedEpoch()) {
+          wrappedEpochBytes.putInt((int)self.getCurrentEpoch());
+          self.setAcceptedEpoch(newEpoch);
+      } else if (newEpoch == self.getAcceptedEpoch()) {
+          // since we have already acked an epoch equal to the leaders, we cannot ack
+          // again, but we still need to send our lastZxid to the leader so that we can
+          // sync with it if it does assume leadership of the epoch.
+          // the -1 indicates that this reply should not count as an ack for the new epoch
+          wrappedEpochBytes.putInt(-1);
+      } else {
+          throw new IOException("Leaders epoch, " + newEpoch + " is less than accepted epoch, " + self.getAcceptedEpoch());
+      }
+      
+      // follower发送ack信息，一次完整的请求注册就结束了（ackNewEpoch）
+      QuorumPacket ackNewEpoch = new QuorumPacket(Leader.ACKEPOCH, lastLoggedZxid, epochBytes, null);
+      writePacket(ackNewEpoch, true);
+      return ZxidUtils.makeZxid(newEpoch, 0);
+   } else {
+      if (newEpoch > self.getAcceptedEpoch()) {
+          self.setAcceptedEpoch(newEpoch);
+      }
+      if (qp.getType() != Leader.NEWLEADER) {
+          LOG.error("First packet should have been NEWLEADER");
+          throw new IOException("First packet should have been NEWLEADER");
+      }
+      return qp.getZxid();
+   }
+} 
+```
+3. `org.apache.zookeeper.server.quorum.Learner#syncWithLeader`- follower接收同步数据信息
+```java
+protected void syncWithLeader(long newLeaderZxid) throws Exception{
+  QuorumPacket ack = new QuorumPacket(Leader.ACK, 0, null, null);
+  QuorumPacket qp = new QuorumPacket();
+  long newEpoch = ZxidUtils.getEpochFromZxid(newLeaderZxid);
+  
+  QuorumVerifier newLeaderQV = null;
+  
+  // In the DIFF case we don't need to do a snapshot because the transactions will sync on top of any existing snapshot
+  // For SNAP and TRUNC the snapshot is needed to save that history
+  boolean snapshotNeeded = true;
+  readPacket(qp);
+  LinkedList<Long> packetsCommitted = new LinkedList<Long>();
+  LinkedList<PacketInFlight> packetsNotCommitted = new LinkedList<PacketInFlight>();
+  synchronized (zk) {
+      if (qp.getType() == Leader.DIFF) {
+          LOG.info("Getting a diff from the leader 0x{}", Long.toHexString(qp.getZxid()));
+          snapshotNeeded = false;
+      }
+      
+      // 全量同步
+      else if (qp.getType() == Leader.SNAP) {
+          LOG.info("Getting a snapshot from leader 0x" + Long.toHexString(qp.getZxid()));
+          // The leader is going to dump the database
+          // db is clear as part of deserializeSnapshot()
+          zk.getZKDatabase().deserializeSnapshot(leaderIs);
+          // ZOOKEEPER-2819: overwrite config node content extracted
+          // from leader snapshot with local config, to avoid potential
+          // inconsistency of config node content during rolling restart.
+          if (!QuorumPeerConfig.isReconfigEnabled()) {
+              LOG.debug("Reset config node content from local config after deserialization of snapshot.");
+              zk.getZKDatabase().initConfigInZKDatabase(self.getQuorumVerifier());
+          }
+          String signature = leaderIs.readString("signature");
+          if (!signature.equals("BenWasHere")) {
+              LOG.error("Missing signature. Got " + signature);
+              throw new IOException("Missing signature");                   
+          }
+          zk.getZKDatabase().setlastProcessedZxid(qp.getZxid());
+          
+      // 删除差异化数据
+      } else if (qp.getType() == Leader.TRUNC) {
+          //we need to truncate the log to the lastzxid of the leader
+          LOG.warn("Truncating log to get in sync with the leader 0x"
+                  + Long.toHexString(qp.getZxid()));
+          boolean truncated=zk.getZKDatabase().truncateLog(qp.getZxid());
+          if (!truncated) {
+              // not able to truncate the log
+              LOG.error("Not able to truncate the log "
+                      + Long.toHexString(qp.getZxid()));
+              System.exit(13);
+          }
+          zk.getZKDatabase().setlastProcessedZxid(qp.getZxid());
+
+      }
+      else {
+          LOG.error("Got unexpected packet from leader: {}, exiting ... ",
+                    LearnerHandler.packetToString(qp));
+          System.exit(13);
+
+      }
+      zk.getZKDatabase().initConfigInZKDatabase(self.getQuorumVerifier());
+      zk.createSessionTracker();            
+      
+      long lastQueued = 0;
+      outerLoop:
+      while (self.isRunning()) {
+          // 读取同步数据信息，同步到当前节点
+          readPacket(qp);
+          switch(qp.getType()) {
+            // ...
+          }
+      }
+  }
+  ack.setZxid(ZxidUtils.makeZxid(newEpoch, 0));
+  writePacket(ack, true);
+  sock.setSoTimeout(self.tickTime * self.syncLimit);
+  zk.startup();
+
+  self.updateElectionVote(newEpoch);
+
+  // We need to log the stuff that came in between the snapshot and the uptodate
+  if (zk instanceof FollowerZooKeeperServer) {
+      FollowerZooKeeperServer fzk = (FollowerZooKeeperServer)zk;
+      for(PacketInFlight p: packetsNotCommitted) {
+          fzk.logRequest(p.hdr, p.rec);
+      }
+      for(Long zxid: packetsCommitted) {
+          fzk.commit(zxid);
+      }
+  } else if (zk instanceof ObserverZooKeeperServer) {
+      // Similar to follower, we need to log requests between the snapshot
+      // and UPTODATE
+      ObserverZooKeeperServer ozk = (ObserverZooKeeperServer) zk;
+      for (PacketInFlight p : packetsNotCommitted) {
+          Long zxid = packetsCommitted.peekFirst();
+          if (p.hdr.getZxid() != zxid) {
+              // log warning message if there is no matching commit
+              // old leader send outstanding proposal to observer
+              LOG.warn("Committing " + Long.toHexString(zxid)
+                      + ", but next proposal is "
+                      + Long.toHexString(p.hdr.getZxid()));
+              continue;
+          }
+          packetsCommitted.remove();
+          Request request = new Request(null, p.hdr.getClientId(),
+                  p.hdr.getCxid(), p.hdr.getType(), null, null);
+          request.setTxn(p.rec);
+          request.setHdr(p.hdr);
+          ozk.commitRequest(request);
+      }
+  } else {
+      // New server type need to handle in-flight packets
+      throw new UnsupportedOperationException("Unknown server type");
+  }
+}
+```
+
+4. `org.apache.zookeeper.server.quorum.Follower#processPacket`
+```java
+protected void processPacket(QuorumPacket qp) throws Exception{
+   switch (qp.getType()) {
+   case Leader.PING:            
+      ping(qp);            
+      break;
+   case Leader.PROPOSAL:           
+      TxnHeader hdr = new TxnHeader();
+      Record txn = SerializeUtils.deserializeTxn(qp.getData(), hdr);
+      if (hdr.getZxid() != lastQueued + 1) {
+          LOG.warn("Got zxid 0x"
+                  + Long.toHexString(hdr.getZxid())
+                  + " expected 0x"
+                  + Long.toHexString(lastQueued + 1));
+      }
+      lastQueued = hdr.getZxid();
+      
+      if (hdr.getType() == OpCode.reconfig){
+         SetDataTxn setDataTxn = (SetDataTxn) txn;       
+         QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));
+         self.setLastSeenQuorumVerifier(qv, true);                               
+      }
+      
+      fzk.logRequest(hdr, txn);
+      break;
+   case Leader.COMMIT:
+      fzk.commit(qp.getZxid());
+      break;
+      
+   case Leader.COMMITANDACTIVATE:
+     // get the new configuration from the request
+     Request request = fzk.pendingTxns.element();
+     SetDataTxn setDataTxn = (SetDataTxn) request.getTxn();                                                                                                      
+     QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));                                
+   
+     // get new designated leader from (current) leader's message
+     ByteBuffer buffer = ByteBuffer.wrap(qp.getData());    
+     long suggestedLeaderId = buffer.getLong();
+      boolean majorChange = 
+             self.processReconfig(qv, suggestedLeaderId, qp.getZxid(), true);
+     // commit (writes the new config to ZK tree (/zookeeper/config)                     
+     fzk.commit(qp.getZxid());
+      if (majorChange) {
+         throw new Exception("changes proposed in reconfig");
+     }
+     break;
+   case Leader.UPTODATE:
+      LOG.error("Received an UPTODATE message after Follower started");
+      break;
+   case Leader.REVALIDATE:
+      revalidate(qp);
+      break;
+   case Leader.SYNC:
+      fzk.sync();
+      break;
+   default:
+      LOG.warn("Unknown packet type: {}", LearnerHandler.packetToString(qp));
+      break;
+   }
+}
+```
 ### 服务端Leader启动
+![img.png](../image/zookeeper_服务端Leader启动.png)
+
+1. `org.apache.zookeeper.server.quorum.Leader#startZkServer`
+```java
+private synchronized void startZkServer() {
+  // Update lastCommitted and Db's zxid to a value representing the new epoch
+  lastCommitted = zk.getZxid();
+  LOG.info("Have quorum of supporters, sids: [ "
+          + newLeaderProposal.ackSetsToString()
+          + " ]; starting up and setting last processed zxid: 0x{}",
+          Long.toHexString(zk.getZxid()));
+  
+  /*
+   * ZOOKEEPER-1324. the leader sends the new config it must complete
+   *  to others inside a NEWLEADER message (see LearnerHandler where
+   *  the NEWLEADER message is constructed), and once it has enough
+   *  acks we must execute the following code so that it applies the
+   *  config to itself.
+   */
+  QuorumVerifier newQV = self.getLastSeenQuorumVerifier();
+  
+  Long designatedLeader = getDesignatedLeader(newLeaderProposal, zk.getZxid());                                         
+
+  self.processReconfig(newQV, designatedLeader, zk.getZxid(), true);
+  if (designatedLeader != self.getId()) {
+      allowedToCommit = false;
+  }
+  
+  zk.startup();
+  /*
+   * Update the election vote here to ensure that all members of the
+   * ensemble report the same vote to new servers that start up and
+   * send leader election notifications to the ensemble.
+   * 
+   * @see https://issues.apache.org/jira/browse/ZOOKEEPER-1732
+   */
+  self.updateElectionVote(getEpoch());
+
+  zk.getZKDatabase().setlastProcessedZxid(zk.getZxid());
+}
+```
+2. `org.apache.zookeeper.server.quorum.LeaderZooKeeperServer#startup`
+```java
+public synchronized void startup() {
+  super.startup();
+  if (containerManager != null) {
+      containerManager.start();
+  }
+}
+```
+LeaderZooKeeperServer 继承自 ZooKeeperServer，重写了 startup 和 setupRequestProcessors，这里重点关注 Leader 服务器的请求处理链。
+
+Leader 服务器的请求处理链 LeaderRequestProcessor -> PrepRequestProcessor -> ProposalRequestProcessor -> CommitProcessor -> ToBeAppliedRequestProcessor -> FinalRequestProcessor
+* 1、PrepRequestProcessor 请求预处理器。在Zookeeper中，那些会改变服务器状态的请求称为事务请求（创建节点、更新数据、删除节点、创建会话等），PrepRequestProcessor能够识别出当前客户端请求是否是事务请求。对于事务请求，PrepRequestProcessor处理器会对其进行一系列预处理，如创建请求事务头、事务体、会话检查、ACL检查和版本检查等。
+* 2、ProposalRequestProcessor 事务投票处理器。Leader服务器事务处理流程的发起者，对于非事务性请求，ProposalRequestProcessor会直接将请求转发到CommitProcessor处理器，不再做任何处理，而对于事务性请求，处理将请求转发到CommitProcessor外，还会根据请求类型创建对应的Proposal提议，并发送给所有的Follower服务器来发起一次集群内的事务投票。同时，ProposalRequestProcessor还会将事务请求交付给SyncRequestProcessor进行事务日志的记录。
+* 3、CommitProcessor 事务提交处理器。对于非事务请求，该处理器会直接将其交付给下一级处理器处理；对于事务请求，其会等待集群内针对Proposal的投票直到该Proposal可被提交，利用CommitProcessor，每个服务器都可以很好地控制对事务请求的顺序处理。
+* 4、ToBeCommitProcessor 该处理器有一个toBeApplied队列，用来存储那些已经被CommitProcessor处理过的可被提交的Proposal。其会将这些请求交付给FinalRequestProcessor处理器处理，待其处理完后，再将其从toBeApplied队列中移除。
+* 5、FinalRequestProcessor 用来进行客户端请求返回之前的操作，包括创建客户端请求的响应，针对事务请求，该处理还会负责将事务应用到内存数据库中去。
+* 6、SyncRequestProcessor 事务日志记录处理器。用来将事务请求记录到事务日志文件中，同时会触发Zookeeper进行数据快照。
+* 7、AckRequestProcessor 负责在SyncRequestProcessor完成事务日志记录后，向Proposal的投票收集器发送ACK反馈，以通知投票收集器当前服务器已经完成了对该Proposal的事务日志记录。
+
+3. `org.apache.zookeeper.server.ZooKeeperServer#startup`
+```java
+public synchronized void startup() {
+  if (sessionTracker == null) {
+      createSessionTracker();
+  }
+  startSessionTracker();
+  setupRequestProcessors();
+
+  registerJMX();
+
+  setState(State.RUNNING);
+  notifyAll();
+}
+```
+5. `org.apache.zookeeper.server.ZooKeeperServer#setupRequestProcessors`
+```java
+protected void setupRequestProcessors() {
+  RequestProcessor finalProcessor = new FinalRequestProcessor(this);
+  RequestProcessor syncProcessor = new SyncRequestProcessor(this,
+          finalProcessor);
+          
+  // 启动线程
+  ((SyncRequestProcessor)syncProcessor).start();
+  firstProcessor = new PrepRequestProcessor(this, syncProcessor);
+  
+  // 启动线程
+  ((PrepRequestProcessor)firstProcessor).start();
+}
+```
+顺便看一下 SyncRequestProcessor：
+```java
+public SyncRequestProcessor(ZooKeeperServer zks,
+      RequestProcessor nextProcessor) {
+  super("SyncThread:" + zks.getServerId(), zks
+          .getZooKeeperServerListener());
+  this.zks = zks;
+  this.nextProcessor = nextProcessor;
+  running = true;
+}
+
+public void run() {
+  try {
+      int logCount = 0;
+
+      // we do this in an attempt to ensure that not all of the servers
+      // in the ensemble take a snapshot at the same time
+      int randRoll = r.nextInt(snapCount/2);
+      while (true) {
+          Request si = null;
+          if (toFlush.isEmpty()) {
+              si = queuedRequests.take();
+          } else {
+              si = queuedRequests.poll();
+              if (si == null) {
+                  flush(toFlush);
+                  continue;
+              }
+          }
+          if (si == requestOfDeath) {
+              break;
+          }
+          if (si != null) {
+              // track the number of records written to the log
+              if (zks.getZKDatabase().append(si)) {
+                  logCount++;
+                  if (logCount > (snapCount / 2 + randRoll)) {
+                      randRoll = r.nextInt(snapCount/2);
+                      // roll the log
+                      zks.getZKDatabase().rollLog();
+                      // take a snapshot
+                      if (snapInProcess != null && snapInProcess.isAlive()) {
+                          LOG.warn("Too busy to snap, skipping");
+                      } else {
+                          snapInProcess = new ZooKeeperThread("Snapshot Thread") {
+                                  public void run() {
+                                      try {
+                                          zks.takeSnapshot();
+                                      } catch(Exception e) {
+                                          LOG.warn("Unexpected exception", e);
+                                      }
+                                  }
+                              };
+                          snapInProcess.start();
+                      }
+                      logCount = 0;
+                  }
+              } else if (toFlush.isEmpty()) {
+                  // optimization for read heavy workloads
+                  // iff this is a read, and there are no pending
+                  // flushes (writes), then just pass this to the next
+                  // processor
+                  if (nextProcessor != null) {
+                  
+                      // 回调方法
+                      nextProcessor.processRequest(si);
+                      if (nextProcessor instanceof Flushable) {
+                          ((Flushable)nextProcessor).flush();
+                      }
+                  }
+                  continue;
+              }
+              toFlush.add(si);
+              if (toFlush.size() > 1000) {
+                  flush(toFlush);
+              }
+          }
+      }
+  } catch (Throwable t) {
+      handleException(this.getName(), t);
+  } finally{
+      running = false;
+  }
+  LOG.info("SyncRequestProcessor exited!");
+}
+```
+6. `org.apache.zookeeper.server.PrepRequestProcessor#run`
+```java
+public void run() {
+  try {
+      while (true) {
+          Request request = submittedRequests.take();
+          long traceMask = ZooTrace.CLIENT_REQUEST_TRACE_MASK;
+          if (request.type == OpCode.ping) {
+              traceMask = ZooTrace.CLIENT_PING_TRACE_MASK;
+          }
+          if (LOG.isTraceEnabled()) {
+              ZooTrace.logRequest(LOG, traceMask, 'P', request, "");
+          }
+          if (Request.requestOfDeath == request) {
+              break;
+          }
+          pRequest(request);
+      }
+  } catch (RequestProcessorException e) {
+      if (e.getCause() instanceof XidRolloverException) {
+          LOG.info(e.getCause().getMessage());
+      }
+      handleException(this.getName(), e);
+  } catch (Exception e) {
+      handleException(this.getName(), e);
+  }
+  LOG.info("PrepRequestProcessor exited loop!");
+}
+```
+7. `org.apache.zookeeper.server.PrepRequestProcessor#pRequest`
+```java
+protected void pRequest(Request request) throws RequestProcessorException {
+  // LOG.info("Prep>>> cxid = " + request.cxid + " type = " +
+  // request.type + " id = 0x" + Long.toHexString(request.sessionId));
+  request.setHdr(null);
+  request.setTxn(null);
+
+  try {
+      switch (request.type) {
+      case OpCode.createContainer:
+      case OpCode.create:
+      case OpCode.create2:
+          CreateRequest create2Request = new CreateRequest();
+          pRequest2Txn(request.type, zks.getNextZxid(), request, create2Request, true);
+          break;
+      case OpCode.createTTL:
+          CreateTTLRequest createTtlRequest = new CreateTTLRequest();
+          pRequest2Txn(request.type, zks.getNextZxid(), request, createTtlRequest, true);
+          break;
+      case OpCode.deleteContainer:
+      case OpCode.delete:
+          DeleteRequest deleteRequest = new DeleteRequest();
+          pRequest2Txn(request.type, zks.getNextZxid(), request, deleteRequest, true);
+          break;
+      case OpCode.setData:
+          SetDataRequest setDataRequest = new SetDataRequest();                
+          pRequest2Txn(request.type, zks.getNextZxid(), request, setDataRequest, true);
+          break;
+      case OpCode.reconfig:
+          ReconfigRequest reconfigRequest = new ReconfigRequest();
+          ByteBufferInputStream.byteBuffer2Record(request.request, reconfigRequest);
+          pRequest2Txn(request.type, zks.getNextZxid(), request, reconfigRequest, true);
+          break;
+      case OpCode.setACL:
+          SetACLRequest setAclRequest = new SetACLRequest();                
+          pRequest2Txn(request.type, zks.getNextZxid(), request, setAclRequest, true);
+          break;
+      case OpCode.check:
+          CheckVersionRequest checkRequest = new CheckVersionRequest();              
+          pRequest2Txn(request.type, zks.getNextZxid(), request, checkRequest, true);
+          break;
+      case OpCode.multi:
+          MultiTransactionRecord multiRequest = new MultiTransactionRecord();
+          try {
+              ByteBufferInputStream.byteBuffer2Record(request.request, multiRequest);
+          } catch(IOException e) {
+              request.setHdr(new TxnHeader(request.sessionId, request.cxid, zks.getNextZxid(),
+                      Time.currentWallTime(), OpCode.multi));
+              throw e;
+          }
+          List<Txn> txns = new ArrayList<Txn>();
+          //Each op in a multi-op must have the same zxid!
+          long zxid = zks.getNextZxid();
+          KeeperException ke = null;
+
+          //Store off current pending change records in case we need to rollback
+          Map<String, ChangeRecord> pendingChanges = getPendingChanges(multiRequest);
+
+          for(Op op: multiRequest) {
+              Record subrequest = op.toRequestRecord();
+              int type;
+              Record txn;
+
+              /* If we've already failed one of the ops, don't bother
+               * trying the rest as we know it's going to fail and it
+               * would be confusing in the logfiles.
+               */
+              if (ke != null) {
+                  type = OpCode.error;
+                  txn = new ErrorTxn(Code.RUNTIMEINCONSISTENCY.intValue());
+              }
+
+              /* Prep the request and convert to a Txn */
+              else {
+                  try {
+                      pRequest2Txn(op.getType(), zxid, request, subrequest, false);
+                      type = request.getHdr().getType();
+                      txn = request.getTxn();
+                  } catch (KeeperException e) {
+                      ke = e;
+                      type = OpCode.error;
+                      txn = new ErrorTxn(e.code().intValue());
+
+                      if (e.code().intValue() > Code.APIERROR.intValue()) {
+                          LOG.info("Got user-level KeeperException when processing {} aborting" +
+                                  " remaining multi ops. Error Path:{} Error:{}",
+                                  request.toString(), e.getPath(), e.getMessage());
+                      }
+
+                      request.setException(e);
+
+                      /* Rollback change records from failed multi-op */
+                      rollbackPendingChanges(zxid, pendingChanges);
+                  }
+              }
+
+              //FIXME: I don't want to have to serialize it here and then
+              //       immediately deserialize in next processor. But I'm
+              //       not sure how else to get the txn stored into our list.
+              ByteArrayOutputStream baos = new ByteArrayOutputStream();
+              BinaryOutputArchive boa = BinaryOutputArchive.getArchive(baos);
+              txn.serialize(boa, "request") ;
+              ByteBuffer bb = ByteBuffer.wrap(baos.toByteArray());
+
+              txns.add(new Txn(type, bb.array()));
+          }
+
+          request.setHdr(new TxnHeader(request.sessionId, request.cxid, zxid,
+                  Time.currentWallTime(), request.type));
+          request.setTxn(new MultiTxn(txns));
+
+          break;
+
+      //create/close session don't require request record
+      case OpCode.createSession:
+      case OpCode.closeSession:
+          if (!request.isLocalSession()) {
+              pRequest2Txn(request.type, zks.getNextZxid(), request,
+                           null, true);
+          }
+          break;
+
+      //All the rest don't need to create a Txn - just verify session
+      case OpCode.sync:
+      case OpCode.exists:
+      case OpCode.getData:
+      case OpCode.getACL:
+      case OpCode.getChildren:
+      case OpCode.getChildren2:
+      case OpCode.ping:
+      case OpCode.setWatches:
+      case OpCode.checkWatches:
+      case OpCode.removeWatches:
+          zks.sessionTracker.checkSession(request.sessionId,
+                  request.getOwner());
+          break;
+      default:
+          LOG.warn("unknown type " + request.type);
+          break;
+      }
+  } catch (KeeperException e) {
+      if (request.getHdr() != null) {
+          request.getHdr().setType(OpCode.error);
+          request.setTxn(new ErrorTxn(e.code().intValue()));
+      }
+
+      if (e.code().intValue() > Code.APIERROR.intValue()) {
+          LOG.info("Got user-level KeeperException when processing {} Error Path:{} Error:{}",
+                  request.toString(), e.getPath(), e.getMessage());
+      }
+      request.setException(e);
+  } catch (Exception e) {
+      // log at error level as we are returning a marshalling
+      // error to the user
+      LOG.error("Failed to process " + request, e);
+
+      StringBuilder sb = new StringBuilder();
+      ByteBuffer bb = request.request;
+      if(bb != null){
+          bb.rewind();
+          while (bb.hasRemaining()) {
+              sb.append(Integer.toHexString(bb.get() & 0xff));
+          }
+      } else {
+          sb.append("request buffer is null");
+      }
+
+      LOG.error("Dumping request buffer: 0x" + sb.toString());
+      if (request.getHdr() != null) {
+          request.getHdr().setType(OpCode.error);
+          request.setTxn(new ErrorTxn(Code.MARSHALLINGERROR.intValue()));
+      }
+  }
+  request.zxid = zks.getZxid();
+  nextProcessor.processRequest(request);
+}
+```
 
 ### 服务端Follower启动
+1. `org.apache.zookeeper.server.quorum.Follower#followLeader`
+```java
+void followLeader() throws InterruptedException {
+  self.end_fle = Time.currentElapsedTime();
+  long electionTimeTaken = self.end_fle - self.start_fle;
+  self.setElectionTimeTaken(electionTimeTaken);
+  LOG.info("FOLLOWING - LEADER ELECTION TOOK - {} {}", electionTimeTaken,
+          QuorumPeer.FLE_TIME_UNIT);
+  self.start_fle = 0;
+  self.end_fle = 0;
+  fzk.registerJMX(new FollowerBean(this, zk), self.jmxLocalPeerBean);
+  try {
+      QuorumServer leaderServer = findLeader();            
+      try {
+          connectToLeader(leaderServer.addr, leaderServer.hostname);
+          long newEpochZxid = registerWithLeader(Leader.FOLLOWERINFO);
+          if (self.isReconfigStateChange())
+             throw new Exception("learned about role change");
+          //check to see if the leader zxid is lower than ours
+          //this should never happen but is just a safety check
+          long newEpoch = ZxidUtils.getEpochFromZxid(newEpochZxid);
+          if (newEpoch < self.getAcceptedEpoch()) {
+              LOG.error("Proposed leader epoch " + ZxidUtils.zxidToString(newEpochZxid)
+                      + " is less than our accepted epoch " + ZxidUtils.zxidToString(self.getAcceptedEpoch()));
+              throw new IOException("Error: Epoch of leader is lower");
+          }
+          syncWithLeader(newEpochZxid);                
+          QuorumPacket qp = new QuorumPacket();
+          
+          // 读取信息、处理信息
+          while (this.isRunning()) {
+              readPacket(qp);
+              processPacket(qp);
+          }
+      } catch (Exception e) {
+          LOG.warn("Exception when following the leader", e);
+          try {
+              sock.close();
+          } catch (IOException e1) {
+              e1.printStackTrace();
+          }
+
+          // clear pending revalidations
+          pendingRevalidations.clear();
+      }
+  } finally {
+      zk.unregisterJMX((Learner)this);
+  }
+}
+```
+2. `org.apache.zookeeper.server.quorum.Follower#processPacket`
+```java
+protected void processPacket(QuorumPacket qp) throws Exception{
+  switch (qp.getType()) {
+  case Leader.PING:            
+      ping(qp);            
+      break;
+  case Leader.PROPOSAL:           
+      TxnHeader hdr = new TxnHeader();
+      Record txn = SerializeUtils.deserializeTxn(qp.getData(), hdr);
+      if (hdr.getZxid() != lastQueued + 1) {
+          LOG.warn("Got zxid 0x"
+                  + Long.toHexString(hdr.getZxid())
+                  + " expected 0x"
+                  + Long.toHexString(lastQueued + 1));
+      }
+      lastQueued = hdr.getZxid();
+      
+      if (hdr.getType() == OpCode.reconfig){
+         SetDataTxn setDataTxn = (SetDataTxn) txn;       
+         QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));
+         self.setLastSeenQuorumVerifier(qv, true);                               
+      }
+      
+      fzk.logRequest(hdr, txn);
+      break;
+  case Leader.COMMIT:
+      fzk.commit(qp.getZxid());
+      break;
+      
+  case Leader.COMMITANDACTIVATE:
+     // get the new configuration from the request
+     Request request = fzk.pendingTxns.element();
+     SetDataTxn setDataTxn = (SetDataTxn) request.getTxn();                                                                                                      
+     QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));                                
+
+     // get new designated leader from (current) leader's message
+     ByteBuffer buffer = ByteBuffer.wrap(qp.getData());    
+     long suggestedLeaderId = buffer.getLong();
+      boolean majorChange = 
+             self.processReconfig(qv, suggestedLeaderId, qp.getZxid(), true);
+     // commit (writes the new config to ZK tree (/zookeeper/config)                     
+     fzk.commit(qp.getZxid());
+      if (majorChange) {
+         throw new Exception("changes proposed in reconfig");
+     }
+     break;
+  case Leader.UPTODATE:
+      LOG.error("Received an UPTODATE message after Follower started");
+      break;
+  case Leader.REVALIDATE:
+      revalidate(qp);
+      break;
+  case Leader.SYNC:
+      fzk.sync();
+      break;
+  default:
+      LOG.warn("Unknown packet type: {}", LearnerHandler.packetToString(qp));
+      break;
+  }
+}
+```
 
 ### 客户端启动
+![](../image/zookeeper_客户端启动.png)
+
+```shell
+# zkCli.sh
+
+ZOOBIN="${BASH_SOURCE-$0}"
+ZOOBIN="$(dirname "${ZOOBIN}")"
+ZOOBINDIR="$(cd "${ZOOBIN}"; pwd)"
+
+if [ -e "$ZOOBIN/../libexec/zkEnv.sh" ]; then
+  . "$ZOOBINDIR"/../libexec/zkEnv.sh
+else
+  . "$ZOOBINDIR"/zkEnv.sh
+fi
+
+ZOO_LOG_FILE=zookeeper-$USER-cli-$HOSTNAME.log
+
+"$JAVA" "-Dzookeeper.log.dir=${ZOO_LOG_DIR}" "-Dzookeeper.root.logger=${ZOO_LOG4J_PROP}" "-Dzookeeper.log.file=${ZOO_LOG_FILE}" \
+     -cp "$CLASSPATH" $CLIENT_JVMFLAGS $JVMFLAGS \
+     org.apache.zookeeper.ZooKeeperMain "$@"
+```
+
+1. `org.apache.zookeeper.ZooKeeperMain#main`
+```java
+public static void main(String args[]) throws CliException, IOException, InterruptedException
+{
+  ZooKeeperMain main = new ZooKeeperMain(args);
+  
+  // 启动客户端
+  main.run();
+}
+```
+2. `org.apache.zookeeper.ZooKeeperMain#ZooKeeperMain`
+```java
+public ZooKeeperMain(String args[]) throws IOException, InterruptedException {
+  
+  // 解析参数中的 option（可选项）
+  cl.parseOptions(args);
+  System.out.println("Connecting to " + cl.getOption("server"));
+  
+  // 连接到 zk 服务器
+  connectToZK(cl.getOption("server"));
+}
+```
+3. `org.apache.zookeeper.ZooKeeperMain#connectToZK`
+```java
+protected void connectToZK(String newHost) throws InterruptedException, IOException {
+  if (zk != null && zk.getState().isAlive()) {
+      zk.close();
+  }
+
+  // zk server 地址
+  host = newHost;
+  boolean readOnly = cl.getOption("readonly") != null;
+  if (cl.getOption("secure") != null) {
+      System.setProperty(ZKClientConfig.SECURE_CLIENT, "true");
+      System.out.println("Secure connection is enabled");
+  }
+  
+  // 创建 Zookeeper 客户端
+  zk = new ZooKeeperAdmin(host, Integer.parseInt(cl.getOption("timeout")), new MyWatcher(), readOnly);
+}
+```
+4. `org.apache.zookeeper.admin.ZooKeeperAdmin#ZooKeeperAdmin`
+```java
+// public class ZooKeeperAdmin extends ZooKeeper
+
+public ZooKeeperAdmin(String connectString, int sessionTimeout, Watcher watcher,
+               boolean canBeReadOnly) throws IOException {
+  super(connectString, sessionTimeout, watcher, canBeReadOnly);
+}
+
+public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+      boolean canBeReadOnly) throws IOException {
+  this(connectString, sessionTimeout, watcher, canBeReadOnly,
+          createDefaultHostProvider(connectString));
+}
+
+public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+      boolean canBeReadOnly, HostProvider aHostProvider)
+      throws IOException {
+  this(connectString, sessionTimeout, watcher, canBeReadOnly,
+          aHostProvider, null);
+}
+
+public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+      boolean canBeReadOnly, HostProvider aHostProvider,
+      ZKClientConfig clientConfig) throws IOException {
+  LOG.info("Initiating client connection, connectString=" + connectString
+          + " sessionTimeout=" + sessionTimeout + " watcher=" + watcher);
+
+  if (clientConfig == null) {
+      clientConfig = new ZKClientConfig();
+  }
+  this.clientConfig = clientConfig;
+  
+  // 创建监听器管理器
+  watchManager = defaultWatchManager();
+  watchManager.defaultWatcher = watcher;
+  
+  // url 解析器，多个 zk 服务端地址用 "," 分割，并将 host、post 添加到 serverAddresses 集合中
+  ConnectStringParser connectStringParser = new ConnectStringParser(
+          connectString);
+          
+  // 将 ip:port 封装为 HostProvider
+  hostProvider = aHostProvider;
+
+  /*
+       创建并初始化连接，ClientCnxn 管理客户端网络连接
+       getClientCnxnSocket() 获取客户端的 socket 连接，若没有指定默认是 ClientCnxnSocketNIO
+  */
+  cnxn = createConnection(connectStringParser.getChrootPath(),
+          hostProvider, sessionTimeout, this, watchManager,
+          getClientCnxnSocket(), canBeReadOnly);
+          
+  // 启动网络连接器，并建立连接
+  cnxn.start();
+}
+```
+* 1、connectStringParser.getChrootPath()：chrootpath，命名空间，可用于隔离。
+* 2、HostProvider：内部对解析出来的地址和端口封装为InetSocketAddress,并提供next方法返回一个服务器地址供客户端连接ClientCnxn。
+
+5. `org.apache.zookeeper.ZooKeeper#defaultWatchManager`
+```java
+protected ZKWatchManager defaultWatchManager() {
+  return new ZKWatchManager(getClientConfig().getBoolean(ZKClientConfig.DISABLE_AUTO_WATCH_RESET));
+}
+```
+6. `org.apache.zookeeper.client.ConnectStringParser#ConnectStringParser`
+```java
+public ConnectStringParser(String connectString) {
+  // parse out chroot, if any
+  int off = connectString.indexOf('/');
+  if (off >= 0) {
+      String chrootPath = connectString.substring(off);
+      // ignore "/" chroot spec, same as null
+      if (chrootPath.length() == 1) {
+          this.chrootPath = null;
+      } else {
+          PathUtils.validatePath(chrootPath);
+          this.chrootPath = chrootPath;
+      }
+      connectString = connectString.substring(0, off);
+  } else {
+      this.chrootPath = null;
+  }
+
+  List<String> hostsList = split(connectString,",");
+  for (String host : hostsList) {
+      int port = DEFAULT_PORT;
+      int pidx = host.lastIndexOf(':');
+      if (pidx >= 0) {
+          // otherwise : is at the end of the string, ignore
+          if (pidx < host.length() - 1) {
+              port = Integer.parseInt(host.substring(pidx + 1));
+          }
+          host = host.substring(0, pidx);
+      }
+      serverAddresses.add(InetSocketAddress.createUnresolved(host, port));
+  }
+}
+```
+7. `org.apache.zookeeper.ZooKeeper#createConnection`
+```java
+protected ClientCnxn createConnection(String chrootPath,
+      HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
+      ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket,
+      boolean canBeReadOnly) throws IOException {
+  return new ClientCnxn(chrootPath, hostProvider, sessionTimeout, this,
+          watchManager, clientCnxnSocket, canBeReadOnly);
+}
+```
+8. `org.apache.zookeeper.ClientCnxn#ClientCnxn`
+```java
+public ClientCnxn(String chrootPath, HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
+      ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket, boolean canBeReadOnly)
+      throws IOException {
+  this(chrootPath, hostProvider, sessionTimeout, zooKeeper, watcher,
+       clientCnxnSocket, 0, new byte[16], canBeReadOnly);
+}
+
+public ClientCnxn(String chrootPath, HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
+      ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket,
+      long sessionId, byte[] sessionPasswd, boolean canBeReadOnly) {
+  this.zooKeeper = zooKeeper;
+  this.watcher = watcher;
+  this.sessionId = sessionId;
+  this.sessionPasswd = sessionPasswd;
+  this.sessionTimeout = sessionTimeout;
+  this.hostProvider = hostProvider;
+  this.chrootPath = chrootPath;
+
+  // 连接超时时间
+  connectTimeout = sessionTimeout / hostProvider.size();
+  readTimeout = sessionTimeout * 2 / 3;
+  readOnly = canBeReadOnly;
+
+  // 用于向服务端发送请求，并接收服务端的响应
+  sendThread = new SendThread(clientCnxnSocket);
+  
+  // 事件处理线程
+  eventThread = new EventThread();
+  this.clientConfig=zooKeeper.getClientConfig();
+  initRequestTimeout();
+}
+```
+9. `org.apache.zookeeper.ClientCnxn#start`
+```java
+public void start() {
+  sendThread.start();
+  eventThread.start();
+}
+```
+10. `org.apache.zookeeper.ClientCnxn.SendThread#run`
+```java
+public void run() {
+   clientCnxnSocket.introduce(this, sessionId, outgoingQueue);
+   clientCnxnSocket.updateNow();
+   clientCnxnSocket.updateLastSendAndHeard();
+   int to;
+   long lastPingRwServer = Time.currentElapsedTime();
+   final int MAX_SEND_PING_INTERVAL = 10000; //10 seconds
+   InetSocketAddress serverAddress = null;
+   while (state.isAlive()) {
+       try {
+           if (!clientCnxnSocket.isConnected()) {
+               // don't re-establish connection if we are closing
+               if (closing) {
+                   break;
+               }
+               if (rwServerAddress != null) {
+                   serverAddress = rwServerAddress;
+                   rwServerAddress = null;
+               } else {
+               
+                   // 取出地址
+                   serverAddress = hostProvider.next(1000);
+               }
+               
+               // 开始连接
+               startConnect(serverAddress);
+               
+               clientCnxnSocket.updateLastSendAndHeard();
+           }
+
+           // 已连接
+           if (state.isConnected()) {
+               // determine whether we need to send an AuthFailed event.
+               if (zooKeeperSaslClient != null) {
+                   boolean sendAuthEvent = false;
+                   if (zooKeeperSaslClient.getSaslState() == ZooKeeperSaslClient.SaslState.INITIAL) {
+                       try {
+                           zooKeeperSaslClient.initialize(ClientCnxn.this);
+                       } catch (SaslException e) {
+                          LOG.error("SASL authentication with Zookeeper Quorum member failed: " + e);
+                           state = States.AUTH_FAILED;
+                           sendAuthEvent = true;
+                       }
+                   }
+                   KeeperState authState = zooKeeperSaslClient.getKeeperState();
+                   
+                   // 权限认证
+                   if (authState != null) {
+                       if (authState == KeeperState.AuthFailed) {
+                           // An authentication error occurred during authentication with the Zookeeper Server.
+                           state = States.AUTH_FAILED;
+                           sendAuthEvent = true;
+                       } else {
+                           if (authState == KeeperState.SaslAuthenticated) {
+                               sendAuthEvent = true;
+                           }
+                       }
+                   }
+
+                   if (sendAuthEvent) {
+                       eventThread.queueEvent(new WatchedEvent(
+                             Watcher.Event.EventType.None,
+                             authState,null));
+                       if (state == States.AUTH_FAILED) {
+                         eventThread.queueEventOfDeath();
+                       }
+                   }
+               }
+               to = readTimeout - clientCnxnSocket.getIdleRecv();
+           } else {
+               to = connectTimeout - clientCnxnSocket.getIdleRecv();
+           }
+           
+           // 检查超时
+           if (to <= 0) {
+               String warnInfo;
+               warnInfo = "Client session timed out, have not heard from server in "
+                   + clientCnxnSocket.getIdleRecv()
+                   + "ms"
+                   + " for sessionid 0x"
+                   + Long.toHexString(sessionId);
+               LOG.warn(warnInfo);
+               throw new SessionTimeoutException(warnInfo);
+           }
+           if (state.isConnected()) {
+               //1000(1 second) is to prevent race condition missing to send the second ping
+               //also make sure not to send too many pings when readTimeout is small 
+               int timeToNextPing = readTimeout / 2 - clientCnxnSocket.getIdleSend() - 
+                       ((clientCnxnSocket.getIdleSend() > 1000) ? 1000 : 0);
+               //send a ping request either time is due or no packet sent out within MAX_SEND_PING_INTERVAL
+               if (timeToNextPing <= 0 || clientCnxnSocket.getIdleSend() > MAX_SEND_PING_INTERVAL) {
+               
+                   // 发送心跳
+                   sendPing();
+                   clientCnxnSocket.updateLastSend();
+               } else {
+                   if (timeToNextPing < to) {
+                       to = timeToNextPing;
+                   }
+               }
+           }
+
+           // If we are in read-only mode, seek for read/write server
+           if (state == States.CONNECTEDREADONLY) {
+               long now = Time.currentElapsedTime();
+               int idlePingRwServer = (int) (now - lastPingRwServer);
+               if (idlePingRwServer >= pingRwTimeout) {
+                   lastPingRwServer = now;
+                   idlePingRwServer = 0;
+                   pingRwTimeout =
+                       Math.min(2*pingRwTimeout, maxPingRwTimeout);
+                   pingRwServer();
+               }
+               to = Math.min(to, pingRwTimeout - idlePingRwServer);
+           }
+           
+           // 传输请求
+           clientCnxnSocket.doTransport(to, pendingQueue, ClientCnxn.this);
+       } catch (Throwable e) {
+           if (closing) {
+               if (LOG.isDebugEnabled()) {
+                   // closing so this is expected
+                   LOG.debug("An exception was thrown while closing send thread for session 0x"
+                           + Long.toHexString(getSessionId())
+                           + " : " + e.getMessage());
+               }
+               break;
+           } else {
+               // this is ugly, you have a better way speak up
+               if (e instanceof SessionExpiredException) {
+                   LOG.info(e.getMessage() + ", closing socket connection");
+               } else if (e instanceof SessionTimeoutException) {
+                   LOG.info(e.getMessage() + RETRY_CONN_MSG);
+               } else if (e instanceof EndOfStreamException) {
+                   LOG.info(e.getMessage() + RETRY_CONN_MSG);
+               } else if (e instanceof RWServerFoundException) {
+                   LOG.info(e.getMessage());
+               } else if (e instanceof SocketException) {
+                   LOG.info("Socket error occurred: {}: {}", serverAddress, e.getMessage());
+               } else {
+                   LOG.warn("Session 0x{} for server {}, unexpected error{}",
+                                   Long.toHexString(getSessionId()),
+                                   serverAddress,
+                                   RETRY_CONN_MSG,
+                                   e);
+               }
+               // At this point, there might still be new packets appended to outgoingQueue.
+               // they will be handled in next connection or cleared up if closed.
+               cleanAndNotifyState();
+           }
+       }
+   }
+   synchronized (state) {
+       // When it comes to this point, it guarantees that later queued
+       // packet to outgoingQueue will be notified of death.
+       cleanup();
+   }
+   clientCnxnSocket.close();
+   if (state.isAlive()) {
+       eventThread.queueEvent(new WatchedEvent(Event.EventType.None,
+               Event.KeeperState.Disconnected, null));
+   }
+   eventThread.queueEvent(new WatchedEvent(Event.EventType.None,
+               Event.KeeperState.Closed, null));
+   ZooTrace.logTraceMessage(LOG, ZooTrace.getTextTraceLevel(),
+           "SendThread exited loop for session: 0x"
+                  + Long.toHexString(getSessionId()));
+}
+```
+11. `org.apache.zookeeper.ClientCnxn.SendThread#startConnect`
+```java
+private void startConnect(InetSocketAddress addr) throws IOException {
+   // initializing it for new connection
+   saslLoginFailed = false;
+   if(!isFirstConnect){
+       try {
+           Thread.sleep(r.nextInt(1000));
+       } catch (InterruptedException e) {
+           LOG.warn("Unexpected exception", e);
+       }
+   }
+   state = States.CONNECTING;
+
+   String hostPort = addr.getHostString() + ":" + addr.getPort();
+   MDC.put("myid", hostPort);
+   setName(getName().replaceAll("\\(.*\\)", "(" + hostPort + ")"));
+   if (clientConfig.isSaslClientEnabled()) {
+       try {
+           if (zooKeeperSaslClient != null) {
+               zooKeeperSaslClient.shutdown();
+           }
+           zooKeeperSaslClient = new ZooKeeperSaslClient(SaslServerPrincipal.getServerPrincipal(addr, clientConfig),
+               clientConfig);
+       } catch (LoginException e) {
+           LOG.warn("SASL configuration failed: " + e + " Will continue connection to Zookeeper server without "
+             + "SASL authentication, if Zookeeper server allows it.");
+           eventThread.queueEvent(new WatchedEvent(
+             Watcher.Event.EventType.None,
+             Watcher.Event.KeeperState.AuthFailed, null));
+           saslLoginFailed = true;
+       }
+   }
+   logStartConnect(addr);
+
+   clientCnxnSocket.connect(addr);
+}
+```
+12. `org.apache.zookeeper.ClientCnxnSocketNIO#connect`
+```java
+void connect(InetSocketAddress addr) throws IOException {
+  SocketChannel sock = createSock();
+  try {
+     registerAndConnect(sock, addr);
+} catch (IOException e) {
+      LOG.error("Unable to open socket to " + addr);
+      sock.close();
+      throw e;
+  }
+  initialized = false;
+
+  /*
+   * Reset incomingBuffer
+   */
+  lenBuffer.clear();
+  incomingBuffer = lenBuffer;
+}
+```
+13. `org.apache.zookeeper.ClientCnxnSocketNIO#registerAndConnect`
+```java
+void registerAndConnect(SocketChannel sock, InetSocketAddress addr) 
+throws IOException {
+  sockKey = sock.register(selector, SelectionKey.OP_CONNECT);
+  boolean immediateConnect = sock.connect(addr);
+  if (immediateConnect) {
+      sendThread.primeConnection();
+  }
+}
+```
+14. `org.apache.zookeeper.ClientCnxnSocketNIO#doTransport`
+```java
+void doTransport(int waitTimeOut, List<Packet> pendingQueue, ClientCnxn cnxn)
+      throws IOException, InterruptedException {
+  
+  // nio 阻塞    
+  selector.select(waitTimeOut);
+  Set<SelectionKey> selected;
+  synchronized (this) {
+      selected = selector.selectedKeys();
+  }
+  // Everything below and until we get back to the select is
+  // non blocking, so time is effectively a constant. That is
+  // Why we just have to do this once, here
+  updateNow();
+  for (SelectionKey k : selected) {
+      SocketChannel sc = ((SocketChannel) k.channel());
+      
+      // 没有连接成功，再次尝试连接
+      if ((k.readyOps() & SelectionKey.OP_CONNECT) != 0) {
+          if (sc.finishConnect()) {
+              updateLastSendAndHeard();
+              updateSocketAddresses();
+              sendThread.primeConnection();
+          }
+      } else if ((k.readyOps() & (SelectionKey.OP_READ | SelectionKey.OP_WRITE)) != 0) {
+      
+          // 处理 io
+          doIO(pendingQueue, cnxn);
+      }
+  }
+  if (sendThread.getZkState().isConnected()) {
+      if (findSendablePacket(outgoingQueue,
+              sendThread.tunnelAuthInProgress()) != null) {
+          enableWrite();
+      }
+  }
+  selected.clear();
+}
+```
+15. `org.apache.zookeeper.ClientCnxnSocketNIO#doIO`
+```java
+void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
+      throws InterruptedException, IOException {
+  SocketChannel sock = (SocketChannel) sockKey.channel();
+  if (sock == null) {
+      throw new IOException("Socket is null!");
+  }
+  
+  // 读就绪，服务端响应消息
+  if (sockKey.isReadable()) {
+      
+      int rc = sock.read(incomingBuffer);
+      
+      // 读到末尾了
+      if (rc < 0) {
+          throw new EndOfStreamException(
+                  "Unable to read additional data from server sessionid 0x"
+                          + Long.toHexString(sessionId)
+                          + ", likely server has closed socket");
+      }
+      
+      // 如果还有数据
+      if (!incomingBuffer.hasRemaining()) {
+      
+          // 谢欢模式
+          incomingBuffer.flip();
+          if (incomingBuffer == lenBuffer) {
+          
+              // 新增接收次数
+              recvCount.getAndIncrement();
+              
+              // 取 len 并给 incomingBuffer 分配对应空间
+              readLength();
+              
+          // 如果连接还未初始化    
+          } else if (!initialized) {
+          
+              // 读取 connect 并回复
+              readConnectResult();
+              
+              // 监听读事件
+              enableRead();
+              if (findSendablePacket(outgoingQueue,
+                      sendThread.tunnelAuthInProgress()) != null) {
+                  // Since SASL authentication has completed (if client is configured to do so),
+                  // outgoing packets waiting in the outgoingQueue can now be sent.
+                  enableWrite();
+              }
+              lenBuffer.clear();
+              incomingBuffer = lenBuffer;
+              updateLastHeard();
+              
+              // 初始化完成
+              initialized = true;
+              
+          // 读取服务端响应的数据    
+          } else {
+              
+              // 读响应
+              sendThread.readResponse(incomingBuffer);
+              lenBuffer.clear();
+              incomingBuffer = lenBuffer;
+              
+              // 跟新上次接收事件
+              updateLastHeard();
+          }
+      }
+  }
+  
+  // 写就绪
+  if (sockKey.isWritable()) {
+  
+      // 从队列中获取请求 Packet
+      Packet p = findSendablePacket(outgoingQueue,
+              sendThread.tunnelAuthInProgress());
+
+      if (p != null) {
+          updateLastSend();
+          // If we already started writing p, p.bb will already exist
+          if (p.bb == null) {
+              if ((p.requestHeader != null) &&
+                      (p.requestHeader.getType() != OpCode.ping) &&
+                      (p.requestHeader.getType() != OpCode.auth)) {
+                  p.requestHeader.setXid(cnxn.getXid());
+              }
+              p.createBB();
+          }
+          
+          // nio 写，发送给服务端
+          sock.write(p.bb);
+          
+          // 数据全部写完
+          if (!p.bb.hasRemaining()) {
+              sentCount.getAndIncrement();
+              outgoingQueue.removeFirstOccurrence(p);
+              if (p.requestHeader != null
+                      && p.requestHeader.getType() != OpCode.ping
+                      && p.requestHeader.getType() != OpCode.auth) {
+                  synchronized (pendingQueue) {
+                      pendingQueue.add(p);
+                  }
+              }
+          }
+      }
+      
+      // 队列是空的，关闭写事件
+      if (outgoingQueue.isEmpty()) {
+          disableWrite();
+      } else if (!initialized && p != null && !p.bb.hasRemaining()) {
+          disableWrite();
+      } else {
+          // Just in case
+          enableWrite();
+      }
+  }
+}
+```
+16. `org.apache.zookeeper.ClientCnxn.SendThread#readResponse`
+```java
+void readResponse(ByteBuffer incomingBuffer) throws IOException {
+   ByteBufferInputStream bbis = new ByteBufferInputStream(
+           incomingBuffer);
+   BinaryInputArchive bbia = BinaryInputArchive.getArchive(bbis);
+   ReplyHeader replyHdr = new ReplyHeader();
+
+   replyHdr.deserialize(bbia, "header");
+   
+   // ping 心跳
+   if (replyHdr.getXid() == -2) {
+       // -2 is the xid for pings
+       if (LOG.isDebugEnabled()) {
+           LOG.debug("Got ping response for sessionid: 0x"
+                   + Long.toHexString(sessionId)
+                   + " after "
+                   + ((System.nanoTime() - lastPingSentNs) / 1000000)
+                   + "ms");
+       }
+       return;
+   }
+   
+   // 权限认证
+   if (replyHdr.getXid() == -4) {
+       // -4 is the xid for AuthPacket               
+       if(replyHdr.getErr() == KeeperException.Code.AUTHFAILED.intValue()) {
+           state = States.AUTH_FAILED;                    
+           eventThread.queueEvent( new WatchedEvent(Watcher.Event.EventType.None, 
+                   Watcher.Event.KeeperState.AuthFailed, null) );
+           eventThread.queueEventOfDeath();
+       }
+       if (LOG.isDebugEnabled()) {
+           LOG.debug("Got auth sessionid:0x"
+                   + Long.toHexString(sessionId));
+       }
+       return;
+   }
+   
+   // 事件
+   if (replyHdr.getXid() == -1) {
+       // -1 means notification
+       if (LOG.isDebugEnabled()) {
+           LOG.debug("Got notification sessionid:0x"
+               + Long.toHexString(sessionId));
+       }
+       
+       // 监听事件
+       WatcherEvent event = new WatcherEvent();
+       event.deserialize(bbia, "response");
+
+       // convert from a server path to a client path
+       if (chrootPath != null) {
+           String serverPath = event.getPath();
+           if(serverPath.compareTo(chrootPath)==0)
+               event.setPath("/");
+           else if (serverPath.length() > chrootPath.length())
+               event.setPath(serverPath.substring(chrootPath.length()));
+           else {
+               LOG.warn("Got server path " + event.getPath()
+                       + " which is too short for chroot path "
+                       + chrootPath);
+           }
+       }
+
+       WatchedEvent we = new WatchedEvent(event);
+       if (LOG.isDebugEnabled()) {
+           LOG.debug("Got " + we + " for sessionid 0x"
+                   + Long.toHexString(sessionId));
+       }
+
+       // 添加到 eventThread 线程中的队列，等待该线程处理
+       eventThread.queueEvent( we );
+       return;
+   }
+
+   // If SASL authentication is currently in progress, construct and
+   // send a response packet immediately, rather than queuing a
+   // response as with other packets.
+   if (tunnelAuthInProgress()) {
+       GetSASLRequest request = new GetSASLRequest();
+       request.deserialize(bbia,"token");
+       zooKeeperSaslClient.respondToServer(request.getToken(),
+         ClientCnxn.this);
+       return;
+   }
+
+   Packet packet;
+   synchronized (pendingQueue) {
+       if (pendingQueue.size() == 0) {
+           throw new IOException("Nothing in the queue, but got "
+                   + replyHdr.getXid());
+       }
+       packet = pendingQueue.remove();
+   }
+   /*
+    * Since requests are processed in order, we better get a response
+    * to the first request!
+    */
+   try {
+   
+       // 读取响应
+       if (packet.requestHeader.getXid() != replyHdr.getXid()) {
+           packet.replyHeader.setErr(
+                   KeeperException.Code.CONNECTIONLOSS.intValue());
+           throw new IOException("Xid out of order. Got Xid "
+                   + replyHdr.getXid() + " with err " +
+                   + replyHdr.getErr() +
+                   " expected Xid "
+                   + packet.requestHeader.getXid()
+                   + " for a packet with details: "
+                   + packet );
+       }
+
+       // 设置应答头
+       packet.replyHeader.setXid(replyHdr.getXid());
+       packet.replyHeader.setErr(replyHdr.getErr());
+       packet.replyHeader.setZxid(replyHdr.getZxid());
+       if (replyHdr.getZxid() > 0) {
+           lastZxid = replyHdr.getZxid();
+       }
+       if (packet.response != null && replyHdr.getErr() == 0) {
+       
+           // 设置响应数据
+           packet.response.deserialize(bbia, "response");
+       }
+
+       if (LOG.isDebugEnabled()) {
+           LOG.debug("Reading reply sessionid:0x"
+                   + Long.toHexString(sessionId) + ", packet:: " + packet);
+       }
+   } finally {
+       // 业务流程执行结束，唤醒阻塞的线程
+       finishPacket(packet);
+   }
+}
+```
+17. `org.apache.zookeeper.ZooKeeperMain#run`
+```java
+void run() throws CliException, IOException, InterruptedException {
+  if (cl.getCommand() == null) {
+      System.out.println("Welcome to ZooKeeper!");
+
+      boolean jlinemissing = false;
+      // only use jline if it's in the classpath
+      try {
+          Class<?> consoleC = Class.forName("jline.console.ConsoleReader");
+          Class<?> completorC =
+              Class.forName("org.apache.zookeeper.JLineZNodeCompleter");
+
+          System.out.println("JLine support is enabled");
+
+          Object console =
+              consoleC.getConstructor().newInstance();
+
+          Object completor =
+              completorC.getConstructor(ZooKeeper.class).newInstance(zk);
+          Method addCompletor = consoleC.getMethod("addCompleter",
+                  Class.forName("jline.console.completer.Completer"));
+          addCompletor.invoke(console, completor);
+
+          String line;
+          Method readLine = consoleC.getMethod("readLine", String.class);
+          while ((line = (String)readLine.invoke(console, getPrompt())) != null) {
+              
+              // 一行一行读取客户端指令
+              executeLine(line);
+          }
+      } catch (ClassNotFoundException e) {
+          LOG.debug("Unable to start jline", e);
+          jlinemissing = true;
+      } catch (NoSuchMethodException e) {
+          LOG.debug("Unable to start jline", e);
+          jlinemissing = true;
+      } catch (InvocationTargetException e) {
+          LOG.debug("Unable to start jline", e);
+          jlinemissing = true;
+      } catch (IllegalAccessException e) {
+          LOG.debug("Unable to start jline", e);
+          jlinemissing = true;
+      } catch (InstantiationException e) {
+          LOG.debug("Unable to start jline", e);
+          jlinemissing = true;
+      }
+
+      if (jlinemissing) {
+          System.out.println("JLine support is disabled");
+          BufferedReader br =
+              new BufferedReader(new InputStreamReader(System.in));
+
+          String line;
+          while ((line = br.readLine()) != null) {
+              executeLine(line);
+          }
+      }
+  } else {
+      // Command line args non-null.  Run what was passed.
+      processCmd(cl);
+  }
+  System.exit(exitCode);
+}
+```
+18. `org.apache.zookeeper.ZooKeeperMain#executeLine`
+```java
+public void executeLine(String line) throws CliException, InterruptedException, IOException {
+   if (!line.equals("")) {
+     cl.parseCommand(line);
+     addToHistory(commandCount,line);
+     processCmd(cl);
+     commandCount++;
+   }
+}
+```
+19. `org.apache.zookeeper.ZooKeeperMain#processCmd`
+```java
+protected boolean processCmd(MyCommandOptions co) throws CliException, IOException, InterruptedException {
+  boolean watch = false;
+  try {
+      watch = processZKCmd(co);
+      exitCode = 0;
+  } catch (CliException ex) {
+      exitCode = ex.getExitCode();
+      System.err.println(ex.getMessage());
+  }
+  return watch;
+}
+```
+20. `org.apache.zookeeper.ZooKeeperMain#processZKCmd`
+```java
+protected boolean processZKCmd(MyCommandOptions co) throws CliException, IOException, InterruptedException {
+  String[] args = co.getArgArray();
+  String cmd = co.getCommand();
+  if (args.length < 1) {
+      usage();
+      throw new MalformedCommandException("No command entered");
+  }
+
+  if (!commandMap.containsKey(cmd)) {
+      usage();
+      throw new CommandNotFoundException("Command not found " + cmd);
+  }
+  
+  boolean watch = false;
+  LOG.debug("Processing " + cmd);
+
+
+  if (cmd.equals("quit")) {
+      zk.close();
+      System.exit(exitCode);
+  } else if (cmd.equals("redo") && args.length >= 2) {
+      Integer i = Integer.decode(args[1]);
+      if (commandCount <= i || i < 0) { // don't allow redoing this redo
+          throw new MalformedCommandException("Command index out of range");
+      }
+      cl.parseCommand(history.get(i));
+      if (cl.getCommand().equals("redo")) {
+          throw new MalformedCommandException("No redoing redos");
+      }
+      history.put(commandCount, history.get(i));
+      processCmd(cl);
+  } else if (cmd.equals("history")) {
+      for (int i = commandCount - 10; i <= commandCount; ++i) {
+          if (i < 0) continue;
+          System.out.println(i + " - " + history.get(i));
+      }
+  } else if (cmd.equals("printwatches")) {
+      if (args.length == 1) {
+          System.out.println("printwatches is " + (printWatches ? "on" : "off"));
+      } else {
+          printWatches = args[1].equals("on");
+      }
+  } else if (cmd.equals("connect")) {
+      if (args.length >= 2) {
+          connectToZK(args[1]);
+      } else {
+          connectToZK(host);
+      }
+  }
+  
+  // Below commands all need a live connection
+  if (zk == null || !zk.getState().isAlive()) {
+      System.out.println("Not connected");
+      return false;
+  }
+  
+  // execute from commandMap
+  CliCommand cliCmd = commandMapCli.get(cmd);
+  if(cliCmd != null) {
+      cliCmd.setZk(zk);
+      watch = cliCmd.parse(args).exec();
+  } else if (!commandMap.containsKey(cmd)) {
+       usage();
+  }
+  return watch;
+}
+```
 
 ## 附录
 
@@ -2330,6 +4705,649 @@ numChildren = 0
 
 ### 常用命令
 ls、get、create、delete ...
+
+
+
+### Watch 监听事件
+#### 客户端注册 Watcher
+1. `org.apache.zookeeper.ZooKeeper#getData`
+```java
+public byte[] getData(final String path, Watcher watcher, Stat stat)
+  throws KeeperException, InterruptedException
+{
+  final String clientPath = path;
+  PathUtils.validatePath(clientPath);
+
+  // the watch contains the un-chroot path
+  WatchRegistration wcb = null;
+  if (watcher != null) {
+      
+      // 将 watcher 封装为 DataWatchRegistration，保存 watcher 和监听路径的关系
+      wcb = new DataWatchRegistration(watcher, clientPath);
+  }
+
+  final String serverPath = prependChroot(clientPath);
+
+  RequestHeader h = new RequestHeader();
+  h.setType(ZooDefs.OpCode.getData);
+  GetDataRequest request = new GetDataRequest();
+  request.setPath(serverPath);
+  
+  // 标记 request 为监听状态
+  request.setWatch(watcher != null);
+  GetDataResponse response = new GetDataResponse();
+  
+  // 向服务器提交请求
+  ReplyHeader r = cnxn.submitRequest(h, request, response, wcb);
+  if (r.getErr() != 0) {
+      throw KeeperException.create(KeeperException.Code.get(r.getErr()),
+              clientPath);
+  }
+  if (stat != null) {
+      DataTree.copyStat(response.getStat(), stat);
+  }
+  return response.getData();
+}
+```
+2. `org.apache.zookeeper.ClientCnxn#submitRequest`
+```java
+public ReplyHeader submitRequest(RequestHeader h, Record request,
+      Record response, WatchRegistration watchRegistration)
+      throws InterruptedException {
+  return submitRequest(h, request, response, watchRegistration, null);
+}
+
+public ReplyHeader submitRequest(RequestHeader h, Record request,
+      Record response, WatchRegistration watchRegistration,
+      WatchDeregistration watchDeregistration)
+      throws InterruptedException {
+  ReplyHeader r = new ReplyHeader();
+  Packet packet = queuePacket(h, r, request, response, null, null, null,
+          null, watchRegistration, watchDeregistration);
+  synchronized (packet) {
+      if (requestTimeout > 0) {
+          // Wait for request completion with timeout
+          waitForPacketFinish(r, packet);
+      } else {
+          // Wait for request completion infinitely
+          while (!packet.finished) {
+              packet.wait();
+          }
+      }
+  }
+  if (r.getErr() == Code.REQUESTTIMEOUT.intValue()) {
+      sendThread.cleanAndNotifyState();
+  }
+  return r;
+}
+```
+3. `org.apache.zookeeper.ClientCnxn#queuePacket`
+```java
+public Packet queuePacket(RequestHeader h, ReplyHeader r, Record request,
+      Record response, AsyncCallback cb, String clientPath,
+      String serverPath, Object ctx, WatchRegistration watchRegistration,
+      WatchDeregistration watchDeregistration) {
+  Packet packet = null;
+
+  // Note that we do not generate the Xid for the packet yet. It is
+  // generated later at send-time, by an implementation of ClientCnxnSocket::doIO(),
+  // where the packet is actually sent.
+  packet = new Packet(h, r, request, response, watchRegistration);
+  packet.cb = cb;
+  packet.ctx = ctx;
+  packet.clientPath = clientPath;
+  packet.serverPath = serverPath;
+  packet.watchDeregistration = watchDeregistration;
+  // The synchronized block here is for two purpose:
+  // 1. synchronize with the final cleanup() in SendThread.run() to avoid race
+  // 2. synchronized against each packet. So if a closeSession packet is added,
+  // later packet will be notified.
+  synchronized (state) {
+      if (!state.isAlive() || closing) {
+          conLossPacket(packet);
+      } else {
+          // If the client is asking to close the session then
+          // mark as closing
+          if (h.getType() == OpCode.closeSession) {
+              closing = true;
+          }
+          
+          // 加入发送队列 outgoingQueue 
+          outgoingQueue.add(packet);
+      }
+  }
+  sendThread.getClientCnxnSocket().packetAdded();
+  return packet;
+}
+```
+4. `org.apache.zookeeper.ClientCnxn.SendThread#readResponse`用来接收服务端的响应，接收响应并处理后，会执行 finally 块的逻辑，用于将Watch注册到ZKWatchManager中
+5. `org.apache.zookeeper.ClientCnxn#finishPacket`
+```java
+protected void finishPacket(Packet p) {
+  int err = p.replyHeader.getErr();
+  if (p.watchRegistration != null) {
+      
+      // 将Watch注册到ZKWatchManager中
+      p.watchRegistration.register(err);
+  }
+  // Add all the removed watch events to the event queue, so that the
+  // clients will be notified with 'Data/Child WatchRemoved' event type.
+  if (p.watchDeregistration != null) {
+      Map<EventType, Set<Watcher>> materializedWatchers = null;
+      try {
+          materializedWatchers = p.watchDeregistration.unregister(err);
+          for (Entry<EventType, Set<Watcher>> entry : materializedWatchers
+                  .entrySet()) {
+              Set<Watcher> watchers = entry.getValue();
+              if (watchers.size() > 0) {
+                  queueEvent(p.watchDeregistration.getClientPath(), err,
+                          watchers, entry.getKey());
+                  // ignore connectionloss when removing from local
+                  // session
+                  p.replyHeader.setErr(Code.OK.intValue());
+              }
+          }
+      } catch (KeeperException.NoWatcherException nwe) {
+          p.replyHeader.setErr(nwe.code().intValue());
+      } catch (KeeperException ke) {
+          p.replyHeader.setErr(ke.code().intValue());
+      }
+  }
+
+  if (p.cb == null) {
+      synchronized (p) {
+          p.finished = true;
+          
+          // 唤醒阻塞的线程
+          p.notifyAll();
+      }
+  } else {
+      p.finished = true;
+      eventThread.queuePacket(p);
+  }
+}
+```
+
+#### 服务端处理 Watcher
+1. `org.apache.zookeeper.server.FinalRequestProcessor#processRequest`
+
+FinalRequestProcessor.processRequest用来处理客户端发过来的请求。
+```java
+public void processRequest(Request request) {
+        // ...
+        try {
+            // 判断请求的类型
+            switch (request.type) {
+            case OpCode.getData: {
+                lastOp = "GETD";
+                GetDataRequest getDataRequest = new GetDataRequest();
+                ByteBufferInputStream.byteBuffer2Record(request.request, getDataRequest);
+                DataNode n = zks.getZKDatabase().getNode(getDataRequest.getPath());
+                
+                // 处理路径不存在的逻辑
+                if (n == null) {
+                    throw new KeeperException.NoNodeException();
+                }
+                
+                // 检查访问控制
+                PrepRequestProcessor.checkACL(zks, zks.getZKDatabase().aclForNode(n), ZooDefs.Perms.READ, request.authInfo);
+                Stat stat = new Stat();
+                
+                // 判断是否传入 watch
+                byte b[] = zks.getZKDatabase().getData(getDataRequest.getPath(), stat, getDataRequest.getWatch() ? cnxn : null);
+                rsp = new GetDataResponse(b, stat);
+                break;
+            }
+        } catch (SessionMovedException e) {
+
+        }
+        // ...
+        try {
+            
+            // 
+            cnxn.sendResponse(hdr, rsp, "response");
+            if (request.type == OpCode.closeSession) {
+                cnxn.sendCloseSession();
+            }
+        } catch (IOException e) {
+            LOG.error("FIXMSG",e);
+        }
+    }
+```
+#### 服务端触发监听
+当节点发生事件时，服务器触发这个path的监听。比如 setData()。数据发生变化就会触发`org.apache.zookeeper.server.DataTree#processTxn`（处理事务请求，创建节点、删除节点和其他的各种事务操作等）
+1. `org.apache.zookeeper.server.DataTree#setData`
+```java
+public Stat setData(String path, byte data[], int version, long zxid,
+      long time) throws KeeperException.NoNodeException {
+  Stat s = new Stat();
+  DataNode n = nodes.get(path);
+  if (n == null) {
+      throw new KeeperException.NoNodeException();
+  }
+  byte lastdata[] = null;
+  synchronized (n) {
+      lastdata = n.data;
+      n.data = data;
+      n.stat.setMtime(time);
+      n.stat.setMzxid(zxid);
+      n.stat.setVersion(version);
+      n.copyStat(s);
+  }
+  // now update if the path is in a quota subtree.
+  String lastPrefix = getMaxPrefixWithQuota(path);
+  if(lastPrefix != null) {
+    this.updateBytes(lastPrefix, (data == null ? 0 : data.length)
+        - (lastdata == null ? 0 : lastdata.length));
+  }
+  
+  // 当客户端执行一个path的setData后，服务器触发这个path的监听（其他事务操作监听类似）
+  dataWatches.triggerWatch(path, EventType.NodeDataChanged);
+  return s;
+}
+```
+2. `org.apache.zookeeper.server.WatchManager#triggerWatch`
+```java
+Set<Watcher> triggerWatch(String path, EventType type) {
+  return triggerWatch(path, type, null);
+}
+
+Set<Watcher> triggerWatch(String path, EventType type, Set<Watcher> supress) {
+  // WatchedEvent参数：(事件类型，会话状态，节点)
+  WatchedEvent e = new WatchedEvent(type, KeeperState.SyncConnected, path);
+  
+  // 收集需要触发的监听
+  HashSet<Watcher> watchers;
+  synchronized (this) {
+      
+      // 移除监听，一次监听只能用一次，并赋值给 watchers，用于执行回调
+      watchers = watchTable.remove(path);
+      if (watchers == null || watchers.isEmpty()) {
+          if (LOG.isTraceEnabled()) {
+              ZooTrace.logTraceMessage(LOG,
+                      ZooTrace.EVENT_DELIVERY_TRACE_MASK,
+                      "No watchers for " + path);
+          }
+          return null;
+      }
+      
+      // 循环通知客户端调用监听
+      for (Watcher w : watchers) {
+          HashSet<String> paths = watch2Paths.get(w);
+          if (paths != null) {
+              paths.remove(path);
+          }
+      }
+  }
+  for (Watcher w : watchers) {
+      if (supress != null && supress.contains(w)) {
+          continue;
+      }
+      
+      // 触发实现类回调
+      w.process(e);
+  }
+  return watchers;
+}
+```
+`NIOServerCnxn`实现了`Watcher`接口，所以`NIOServerCnxn`会执行`process()`。发送事件通知
+3. `org.apache.zookeeper.server.NIOServerCnxn#process`
+```java
+public void process(WatchedEvent event) {
+  ReplyHeader h = new ReplyHeader(-1, -1L, 0);
+  if (LOG.isTraceEnabled()) {
+      ZooTrace.logTraceMessage(LOG, ZooTrace.EVENT_DELIVERY_TRACE_MASK,
+                               "Deliver event " + event + " to 0x"
+                               + Long.toHexString(this.sessionId)
+                               + " through " + this);
+  }
+
+  // Convert WatchedEvent to a type that can be sent over the wire
+  WatcherEvent e = event.getWrapper();
+
+  sendResponse(h, e, "notification");
+}
+
+public void sendResponse(ReplyHeader h, Record r, String tag) {
+  try {
+      super.sendResponse(h, r, tag);
+      if (h.getXid() > 0) {
+          // check throttling
+          if (outstandingRequests.decrementAndGet() < 1 ||
+              zkServer.getInProcess() < outstandingLimit) {
+              enableRecv();
+          }
+      }
+   } catch(Exception e) {
+      LOG.warn("Unexpected exception. Destruction averted.", e);
+   }
+}
+
+// 父类：org.apache.zookeeper.server.ServerCnxn#sendResponse
+public void sendResponse(ReplyHeader h, Record r, String tag) throws IOException {
+  ByteArrayOutputStream baos = new ByteArrayOutputStream();
+  // Make space for length
+  BinaryOutputArchive bos = BinaryOutputArchive.getArchive(baos);
+  try {
+      baos.write(fourBytes);
+      bos.writeRecord(h, "header");
+      if (r != null) {
+          bos.writeRecord(r, tag);
+      }
+      baos.close();
+  } catch (IOException e) {
+      LOG.error("Error serializing response");
+  }
+  byte b[] = baos.toByteArray();
+  serverStats().updateClientResponseSize(b.length - 4);
+  ByteBuffer bb = ByteBuffer.wrap(b);
+  bb.putInt(b.length - 4).rewind();
+  sendBuffer(bb);
+}
+```
+
+#### 客户端回调
+客户端使用`SendThread#readResponse`接收服务端的事件通知。`replyHdr.getXid() == -1`是事件通知。大致逻辑就是：收集需要触发的监听，并包装成WatcherSetEventPair对象，放到waitingEvents队列中以便稍后处理。
+1. `org.apache.zookeeper.ClientCnxn.EventThread#queueEvent`
+```java
+public void queueEvent(WatchedEvent event) {
+   queueEvent(event, null);
+}
+
+private void queueEvent(WatchedEvent event, Set<Watcher> materializedWatchers) {
+   if (event.getType() == EventType.None
+           && sessionState == event.getState()) {
+       return;
+   }
+   sessionState = event.getState();
+   final Set<Watcher> watchers;
+   if (materializedWatchers == null) {
+       // 获取需要触发的监听，如果是非持久化的监听，则从 ZKWatchManager 中移除
+       watchers = watcher.materialize(event.getState(), event.getType(), event.getPath());
+   } else {
+       watchers = new HashSet<Watcher>();
+       watchers.addAll(materializedWatchers);
+   }
+   WatcherSetEventPair pair = new WatcherSetEventPair(watchers, event);
+   // 将监听 pair 对象放到队列中稍后进程处理
+   waitingEvents.add(pair);
+}
+```
+2. `org.apache.zookeeper.ZooKeeper.ZKWatchManager#materialize`
+```java
+public Set<Watcher> materialize(Watcher.Event.KeeperState state,
+                                        Watcher.Event.EventType type,
+                                        String clientPath)
+{
+   Set<Watcher> result = new HashSet<Watcher>();
+
+   switch (type) {
+   case None:
+       result.add(defaultWatcher);
+       boolean clear = disableAutoWatchReset && state != Watcher.Event.KeeperState.SyncConnected;
+       synchronized(dataWatches) {
+           for(Set<Watcher> ws: dataWatches.values()) {
+               result.addAll(ws);
+           }
+           if (clear) {
+               dataWatches.clear();
+           }
+       }
+
+       synchronized(existWatches) {
+           for(Set<Watcher> ws: existWatches.values()) {
+               result.addAll(ws);
+           }
+           if (clear) {
+               existWatches.clear();
+           }
+       }
+
+       synchronized(childWatches) {
+           for(Set<Watcher> ws: childWatches.values()) {
+               result.addAll(ws);
+           }
+           if (clear) {
+               childWatches.clear();
+           }
+       }
+
+       return result;
+   case NodeDataChanged:
+   
+   // 收集需要触发的 watcher，并从 dataWatches 中移除
+   case NodeCreated:
+       synchronized (dataWatches) {
+           addTo(dataWatches.remove(clientPath), result);
+       }
+       synchronized (existWatches) {
+           addTo(existWatches.remove(clientPath), result);
+       }
+       break;
+   case NodeChildrenChanged:
+       synchronized (childWatches) {
+           addTo(childWatches.remove(clientPath), result);
+       }
+       break;
+   case NodeDeleted:
+       synchronized (dataWatches) {
+           addTo(dataWatches.remove(clientPath), result);
+       }
+       // XXX This shouldn't be needed, but just in case
+       synchronized (existWatches) {
+           Set<Watcher> list = existWatches.remove(clientPath);
+           if (list != null) {
+               addTo(list, result);
+               LOG.warn("We are triggering an exists watch for delete! Shouldn't happen!");
+           }
+       }
+       synchronized (childWatches) {
+           addTo(childWatches.remove(clientPath), result);
+       }
+       break;
+   default:
+       String msg = "Unhandled watch event type " + type
+           + " with state " + state + " on path " + clientPath;
+       LOG.error(msg);
+       throw new RuntimeException(msg);
+   }
+
+   return result;
+}
+```
+而`EventThread#run()`会不断的处理`waitingEvents`队列，每次从`waitingEvents`队列中取出一个，并串行的去触发
+3. `org.apache.zookeeper.ClientCnxn.EventThread#run`
+```java
+public void run() {
+  try {
+     isRunning = true;
+     while (true) {
+        Object event = waitingEvents.take();
+        if (event == eventOfDeath) {
+           wasKilled = true;
+        } else {
+           processEvent(event);
+        }
+        if (wasKilled)
+           synchronized (waitingEvents) {
+              if (waitingEvents.isEmpty()) {
+                 isRunning = false;
+                 break;
+              }
+           }
+     }
+  } catch (InterruptedException e) {
+     LOG.error("Event thread exiting due to interruption", e);
+  }
+
+   LOG.info("EventThread shut down for session: 0x{}",
+            Long.toHexString(getSessionId()));
+}
+```
+4. ``
+```java
+private void processEvent(Object event) {
+ try {
+ 
+     // 监听事件被包装为 WatcherSetEventPair
+     if (event instanceof WatcherSetEventPair) {
+         // each watcher will process the event
+         WatcherSetEventPair pair = (WatcherSetEventPair) event;
+         for (Watcher watcher : pair.watchers) {
+             try {
+                 
+                 // 调用具体的监听回调
+                 watcher.process(pair.event);
+             } catch (Throwable t) {
+                 LOG.error("Error while calling watcher ", t);
+             }
+         }
+       } else if (event instanceof LocalCallback) {
+           LocalCallback lcb = (LocalCallback) event;
+           if (lcb.cb instanceof StatCallback) {
+               ((StatCallback) lcb.cb).processResult(lcb.rc, lcb.path,
+                       lcb.ctx, null);
+           } else if (lcb.cb instanceof DataCallback) {
+               ((DataCallback) lcb.cb).processResult(lcb.rc, lcb.path,
+                       lcb.ctx, null, null);
+           } else if (lcb.cb instanceof ACLCallback) {
+               ((ACLCallback) lcb.cb).processResult(lcb.rc, lcb.path,
+                       lcb.ctx, null, null);
+           } else if (lcb.cb instanceof ChildrenCallback) {
+               ((ChildrenCallback) lcb.cb).processResult(lcb.rc,
+                       lcb.path, lcb.ctx, null);
+           } else if (lcb.cb instanceof Children2Callback) {
+               ((Children2Callback) lcb.cb).processResult(lcb.rc,
+                       lcb.path, lcb.ctx, null, null);
+           } else if (lcb.cb instanceof StringCallback) {
+               ((StringCallback) lcb.cb).processResult(lcb.rc,
+                       lcb.path, lcb.ctx, null);
+           } else {
+               ((VoidCallback) lcb.cb).processResult(lcb.rc, lcb.path,
+                       lcb.ctx);
+           }
+       } else {
+         Packet p = (Packet) event;
+         int rc = 0;
+         String clientPath = p.clientPath;
+         if (p.replyHeader.getErr() != 0) {
+             rc = p.replyHeader.getErr();
+         }
+         if (p.cb == null) {
+             LOG.warn("Somehow a null cb got to EventThread!");
+         } else if (p.response instanceof ExistsResponse
+                 || p.response instanceof SetDataResponse
+                 || p.response instanceof SetACLResponse) {
+             StatCallback cb = (StatCallback) p.cb;
+             if (rc == 0) {
+                 if (p.response instanceof ExistsResponse) {
+                     cb.processResult(rc, clientPath, p.ctx,
+                             ((ExistsResponse) p.response)
+                                     .getStat());
+                 } else if (p.response instanceof SetDataResponse) {
+                     cb.processResult(rc, clientPath, p.ctx,
+                             ((SetDataResponse) p.response)
+                                     .getStat());
+                 } else if (p.response instanceof SetACLResponse) {
+                     cb.processResult(rc, clientPath, p.ctx,
+                             ((SetACLResponse) p.response)
+                                     .getStat());
+                 }
+             } else {
+                 cb.processResult(rc, clientPath, p.ctx, null);
+             }
+         } else if (p.response instanceof GetDataResponse) {
+             DataCallback cb = (DataCallback) p.cb;
+             GetDataResponse rsp = (GetDataResponse) p.response;
+             if (rc == 0) {
+                 cb.processResult(rc, clientPath, p.ctx, rsp
+                         .getData(), rsp.getStat());
+             } else {
+                 cb.processResult(rc, clientPath, p.ctx, null,
+                         null);
+             }
+         } else if (p.response instanceof GetACLResponse) {
+             ACLCallback cb = (ACLCallback) p.cb;
+             GetACLResponse rsp = (GetACLResponse) p.response;
+             if (rc == 0) {
+                 cb.processResult(rc, clientPath, p.ctx, rsp
+                         .getAcl(), rsp.getStat());
+             } else {
+                 cb.processResult(rc, clientPath, p.ctx, null,
+                         null);
+             }
+         } else if (p.response instanceof GetChildrenResponse) {
+             ChildrenCallback cb = (ChildrenCallback) p.cb;
+             GetChildrenResponse rsp = (GetChildrenResponse) p.response;
+             if (rc == 0) {
+                 cb.processResult(rc, clientPath, p.ctx, rsp
+                         .getChildren());
+             } else {
+                 cb.processResult(rc, clientPath, p.ctx, null);
+             }
+         } else if (p.response instanceof GetChildren2Response) {
+             Children2Callback cb = (Children2Callback) p.cb;
+             GetChildren2Response rsp = (GetChildren2Response) p.response;
+             if (rc == 0) {
+                 cb.processResult(rc, clientPath, p.ctx, rsp
+                         .getChildren(), rsp.getStat());
+             } else {
+                 cb.processResult(rc, clientPath, p.ctx, null, null);
+             }
+         } else if (p.response instanceof CreateResponse) {
+             StringCallback cb = (StringCallback) p.cb;
+             CreateResponse rsp = (CreateResponse) p.response;
+             if (rc == 0) {
+                 cb.processResult(rc, clientPath, p.ctx,
+                         (chrootPath == null
+                                 ? rsp.getPath()
+                                 : rsp.getPath()
+                           .substring(chrootPath.length())));
+             } else {
+                 cb.processResult(rc, clientPath, p.ctx, null);
+             }
+         } else if (p.response instanceof Create2Response) {
+             Create2Callback cb = (Create2Callback) p.cb;
+             Create2Response rsp = (Create2Response) p.response;
+             if (rc == 0) {
+                 cb.processResult(rc, clientPath, p.ctx,
+                         (chrootPath == null
+                                 ? rsp.getPath()
+                                 : rsp.getPath()
+                           .substring(chrootPath.length())), rsp.getStat());
+             } else {
+                 cb.processResult(rc, clientPath, p.ctx, null, null);
+             }                   
+         } else if (p.response instanceof MultiResponse) {
+             MultiCallback cb = (MultiCallback) p.cb;
+             MultiResponse rsp = (MultiResponse) p.response;
+             if (rc == 0) {
+                 List<OpResult> results = rsp.getResultList();
+                 int newRc = rc;
+                 for (OpResult result : results) {
+                     if (result instanceof ErrorResult
+                             && KeeperException.Code.OK.intValue() != (newRc = ((ErrorResult) result)
+                             .getErr())) {
+                         break;
+                     }
+                 }
+                 cb.processResult(newRc, clientPath, p.ctx, results);
+             } else {
+                 cb.processResult(rc, clientPath, p.ctx, null);
+             }
+         }  else if (p.cb instanceof VoidCallback) {
+             VoidCallback cb = (VoidCallback) p.cb;
+             cb.processResult(rc, clientPath, p.ctx);
+         }
+     }
+ } catch (Throwable t) {
+     LOG.error("Caught unexpected throwable", t);
+ }
+}
+```
+总结：
+* Watch使用了推拉相结合发布/订阅的模式。客户端主动向服务器注册监听的节点，一旦节点发生变化，服务器就会主动向客户端发送watcher事件通知，客户端接收到这个通知后，可以主动到服务器获取最新的数据。而且监听是有时序性和顺序性的保证。监听是一次性的，触发后就会移除掉，除非重新注册监听，但是在3.6版本开始可以使用addWatch设置持久递归的监听。
+
 
 
 
