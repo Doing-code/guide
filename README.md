@@ -4,7 +4,6 @@
 - [ ] [JUC](JavaGuide/JUC.md)
 - [ ] [JVM](JavaGuide/JVM.md)
 - [ ] [Kafka](JavaGuide/Kafka.md)
-- [ ] [Linux](JavaGuide/Linux.md)
 - [x] [MyBatis](https://github.com/Doing-code/MyBatisFramework)
 - [x] [Spring](https://github.com/Doing-code/SpringFramework)
 - [x] [MySQL](JavaGuide/MySQL.md)
@@ -13,9 +12,8 @@
 - [ ] [Redis](JavaGuide/Redis.md)
 
 [comment]: <> (- [ ] [RocketMQ]&#40;JavaGuide/RocketMQ.md&#41;)
-- [ ] [SpringBoot](JavaGuide/SpringBoot.md)
+- [x] [SpringBoot](JavaGuide/SpringBoot.md)
 - [x] [Zookeeper](JavaGuide/Zookeeper.md)
-
 
 | 文档     | 视频     | 时长     |
 | -------- | -------- | -------- |
@@ -36,6 +34,7 @@
 | SpringCloud | `https://www.bilibili.com/video/BV18E411x7eT/` | 25h36' |
 |  |  | 249h479'（一天8h，32天） |
 
+## Linux常用命令
 
 ## 面试题整理
 ### Dubbo
