@@ -910,13 +910,499 @@ Heap
 虽然改进了标记-清除算法，但依然存在下面这些问题：
 * 可用内存变小：可用内存缩小为原来的一半。
 * 不适合老年代：如果存活对象数量比较大，复制性能会变得很差。
-
 ### 分代垃圾回收
+![](../image/jvm_垃圾回收_分代回收.png)
+
+* 对象首先会被分配在伊甸园区域。
+* 当新生代空间不足时，会触发`Minor GC`，伊甸园和 from 存活 的对象使用复制（Copying）收集算法复制到 to 中，存活的对象年龄加1并且交换 from to 的位置。
+* `Minor GC`会引发 stop the world，暂停其他用户的线程，等待垃圾回收结束，用户线程才能恢复运行。
+* 当对象年龄超过阈值时，会晋升至老年代，最大年龄时15（4bit）。
+* 当老年代空间不足时，会先尝试触发`Minor GC`，如果空间仍不足，那么触发`Full GC`，STW的时间更长。
+
+#### 相关JVM参数
+| 说明                      | 参数                                                      |
+| ------------------------- | --------------------------------------------------------- |
+| 堆初始内存                | -Xms                                                      |
+| 堆最大内存                | -Xmx 或 -XX:MaxHeapSize=size                              |
+| 新生代内存                | -Xmn 或（-XX:NewSize=size -XX:MaxNewSize=size）           |
+| 幸存区比例（动态）        | -XX:InitialSurvivorRatio=ratio -XX:+UseAdaptiveSizePolicy |
+| 幸存区比例                | -XX:SurvivorRatio=ratio (ratio是伊甸园的占比，剩下的from-to平分，默认8)                                  |
+| 晋升阈值                  | -XX:MaxTenuringThreshold=threshold                        |
+| 晋升详情                  | -XX:+PrintTenuringDistribution                            |
+| GC详情                    | -XX:PrintGCDetails                                        |
+| FUll GC 前先执行 Minor GC | -XX:+ScavengeBeforeFullGC                                 |
+
+#### GC分析
+GC信息的含义：
+```txt
+Heap
+ 
+ /*
+   新生代
+      total：总大小（幸存区 to 的内存是不能用的，所以是9M）
+      used：已使用
+ */
+ def new generation   total 9216K, used 2179K [0x00000000fec00000, 0x00000000ff600000, 0x00000000ff600000)
+  eden space 8192K,  26% used [0x00000000fec00000, 0x00000000fee20d50, 0x00000000ff400000)
+  from space 1024K,   0% used [0x00000000ff400000, 0x00000000ff400000, 0x00000000ff500000)
+  to   space 1024K,   0% used [0x00000000ff500000, 0x00000000ff500000, 0x00000000ff600000)
+ 
+ // 老年代 
+ tenured generation   total 10240K, used 0K [0x00000000ff600000, 0x0000000100000000, 0x0000000100000000)
+   the space 10240K,   0% used [0x00000000ff600000, 0x00000000ff600000, 0x00000000ff600200, 0x0000000100000000)
+ Metaspace       used 3300K, capacity 4496K, committed 4864K, reserved 1056768K
+  class space    used 359K, capacity 388K, committed 512K, reserved 1048576K
+```
+##### GC分析1
+```java
+public class Application {
+    private static final int _512KB = 512 * 1024;
+    private static final int _1MB = 1024 * 1024;
+    private static final int _6MB = 6 * 1024 * 1024;
+    private static final int _7MB = 7 * 1024 * 1024;
+    private static final int _8MB = 8 * 1024 * 1024;
+    
+    /**
+     * -Xms20m -Xmx20m -Xmn10m -XX:+UseSerialGC -XX:+PrintGCDetails
+     * @param args
+     * @throws Exception
+     */
+    public static void main(String[] args) throws Exception {
+        ArrayList<byte[]> list = new ArrayList<>();
+        list.add(new byte[_7MB]);
+    }
+}
+```
+输出结果：
+```txt
+/*
+   [GC (Allocation Failure) ：Minor GC
+   [DefNew: 2015K->633K(9216K), 0.0164374 secs] ：新生代：回收前占用 -> 回收后占用(新生代总大小) 回收用时
+   2015K->633K(19456K), 0.0164996 secs] ：整个堆回收前占用 -> 整个堆回收后占用(堆总大小)  回收用时
+   [Times: user=0.01 sys=0.00, real=0.02 secs] 
+*/
+[GC (Allocation Failure) [DefNew: 2015K->633K(9216K), 0.0164374 secs] 2015K->633K(19456K), 0.0164996 secs] [Times: user=0.01 sys=0.00, real=0.02 secs] 
+Heap
+ def new generation   total 9216K, used 8047K [0x00000000fec00000, 0x00000000ff600000, 0x00000000ff600000)
+  eden space 8192K,  90% used [0x00000000fec00000, 0x00000000ff33d8c0, 0x00000000ff400000)
+  from space 1024K,  61% used [0x00000000ff500000, 0x00000000ff59e5b8, 0x00000000ff600000)
+  to   space 1024K,   0% used [0x00000000ff400000, 0x00000000ff400000, 0x00000000ff500000)
+ tenured generation   total 10240K, used 0K [0x00000000ff600000, 0x0000000100000000, 0x0000000100000000)
+   the space 10240K,   0% used [0x00000000ff600000, 0x00000000ff600000, 0x00000000ff600200, 0x0000000100000000)
+ Metaspace       used 3301K, capacity 4496K, committed 4864K, reserved 1056768K
+  class space    used 359K, capacity 388K, committed 512K, reserved 1048576K
+```
+##### GC分析2
+```java
+public class Application {
+    private static final int _512KB = 512 * 1024;
+    private static final int _1MB = 1024 * 1024;
+    private static final int _6MB = 6 * 1024 * 1024;
+    private static final int _7MB = 7 * 1024 * 1024;
+    private static final int _8MB = 8 * 1024 * 1024;
+
+    /**
+     * -Xms20m -Xmx20m -Xmn10m -XX:+UseSerialGC -XX:+PrintGCDetails
+     * @param args
+     * @throws Exception
+     */
+    public static void main(String[] args) throws Exception {
+        ArrayList<byte[]> list = new ArrayList<>();
+        list.add(new byte[_7MB]);
+        list.add(new byte[_512KB]);
+        list.add(new byte[_512KB]);
+    }
+}
+```
+输出结果：
+```txt
+[GC (Allocation Failure) [DefNew: 2015K->633K(9216K), 0.0017179 secs] 2015K->633K(19456K), 0.0017712 secs] [Times: user=0.00 sys=0.00, real=0.00 secs] 
+[GC (Allocation Failure) [DefNew: 8477K->512K(9216K), 0.0065384 secs] 8477K->8309K(19456K), 0.0065718 secs] [Times: user=0.00 sys=0.00, real=0.01 secs] 
+Heap
+ def new generation   total 9216K, used 1106K [0x00000000fec00000, 0x00000000ff600000, 0x00000000ff600000)
+  eden space 8192K,   7% used [0x00000000fec00000, 0x00000000fec94930, 0x00000000ff400000)
+  from space 1024K,  50% used [0x00000000ff400000, 0x00000000ff480048, 0x00000000ff500000)
+  to   space 1024K,   0% used [0x00000000ff500000, 0x00000000ff500000, 0x00000000ff600000)
+ tenured generation   total 10240K, used 7797K [0x00000000ff600000, 0x0000000100000000, 0x0000000100000000)
+   the space 10240K,  76% used [0x00000000ff600000, 0x00000000ffd9d740, 0x00000000ffd9d800, 0x0000000100000000)
+ Metaspace       used 3301K, capacity 4496K, committed 4864K, reserved 1056768K
+  class space    used 359K, capacity 388K, committed 512K, reserved 1048576K
+```
+##### GC分析3
+```java
+public class Application {
+    private static final int _512KB = 512 * 1024;
+    private static final int _1MB = 1024 * 1024;
+    private static final int _6MB = 6 * 1024 * 1024;
+    private static final int _7MB = 7 * 1024 * 1024;
+    private static final int _8MB = 8 * 1024 * 1024;
+
+    /**
+     * -Xms20m -Xmx20m -Xmn10m -XX:+UseSerialGC -XX:+PrintGCDetails
+     * @param args
+     * @throws Exception
+     */
+    public static void main(String[] args) throws Exception {
+        ArrayList<byte[]> list = new ArrayList<>();
+        list.add(new byte[_8MB]);
+    }
+}
+```
+输出结果：
+```txt
+Heap
+ def new generation   total 9216K, used 2179K [0x00000000fec00000, 0x00000000ff600000, 0x00000000ff600000)
+  eden space 8192K,  26% used [0x00000000fec00000, 0x00000000fee20d50, 0x00000000ff400000)
+  from space 1024K,   0% used [0x00000000ff400000, 0x00000000ff400000, 0x00000000ff500000)
+  to   space 1024K,   0% used [0x00000000ff500000, 0x00000000ff500000, 0x00000000ff600000)
+ tenured generation   total 10240K, used 8192K [0x00000000ff600000, 0x0000000100000000, 0x0000000100000000)
+   the space 10240K,  80% used [0x00000000ff600000, 0x00000000ffe00010, 0x00000000ffe00200, 0x0000000100000000)
+ Metaspace       used 3300K, capacity 4496K, committed 4864K, reserved 1056768K
+  class space    used 359K, capacity 388K, committed 512K, reserved 1048576K
+```
+* 如果新生代不足以容纳大对象，会直接放入老年代。
+
+##### GC分析4
+```java
+public class Application {
+    private static final int _512KB = 512 * 1024;
+    private static final int _1MB = 1024 * 1024;
+    private static final int _6MB = 6 * 1024 * 1024;
+    private static final int _7MB = 7 * 1024 * 1024;
+    private static final int _8MB = 8 * 1024 * 1024;
+
+    /**
+     * -Xms20m -Xmx20m -Xmn10m -XX:+UseSerialGC -XX:+PrintGCDetails
+     * @param args
+     * @throws Exception
+     */
+    public static void main(String[] args) throws Exception {
+        new Thread(()-> {
+            ArrayList<byte[]> list = new ArrayList<>();
+            list.add(new byte[_8MB]);
+            list.add(new byte[_8MB]);
+        }).start();
+
+        System.out.println("主线程");
+        Thread.sleep(1000L);
+    }
+}
+```
+输出结果：
+```txt
+主线程
+[GC (Allocation Failure) [DefNew: 3991K->838K(9216K), 0.0022727 secs][Tenured: 8192K->9028K(10240K), 0.0032998 secs] 12183K->9028K(19456K), [Metaspace: 4195K->4195K(1056768K)], 0.0224217 secs] [Times: user=0.00 sys=0.01, real=0.02 secs] 
+[Full GC (Allocation Failure) [Tenured: 9028K->8972K(10240K), 0.0029273 secs] 9028K->8972K(19456K), [Metaspace: 4195K->4195K(1056768K)], 0.0029738 secs] [Times: user=0.00 sys=0.00, real=0.00 secs] 
+Exception in thread "Thread-0" java.lang.OutOfMemoryError: Java heap space
+	at cn.forbearance.spring.Application.lambda$main$0(Application.java:25)
+	at cn.forbearance.spring.Application$$Lambda$1/1324119927.run(Unknown Source)
+	at java.lang.Thread.run(Thread.java:748)
+Heap
+ def new generation   total 9216K, used 1375K [0x00000000fec00000, 0x00000000ff600000, 0x00000000ff600000)
+  eden space 8192K,  16% used [0x00000000fec00000, 0x00000000fed57cf8, 0x00000000ff400000)
+  from space 1024K,   0% used [0x00000000ff500000, 0x00000000ff500000, 0x00000000ff600000)
+  to   space 1024K,   0% used [0x00000000ff400000, 0x00000000ff400000, 0x00000000ff500000)
+ tenured generation   total 10240K, used 8972K [0x00000000ff600000, 0x0000000100000000, 0x0000000100000000)
+   the space 10240K,  87% used [0x00000000ff600000, 0x00000000ffec31e8, 0x00000000ffec3200, 0x0000000100000000)
+ Metaspace       used 4730K, capacity 4804K, committed 4992K, reserved 1056768K
+  class space    used 526K, capacity 560K, committed 640K, reserved 1048576K
+```
+* 子线程的`OutOfMemory`不会影响主线程的程序，
+
 ### 垃圾回收器
+1. 串行
+   * 单线程。
+   * 堆内存较小，适合个人电脑。
+2. 吞吐量优先
+   * 多线程。
+   * 堆内存较大，多核CPU。
+   * 尽可能让单位时间内，STW的时间最短。（一个小时触发了2次GC，每次0.2秒，0.4秒）
+3. 响应时间优先
+   * 多线程。
+   * 堆内存较大，多核CPU。
+   * 尽可能让单次STW的时间最短。（一个小时触发了5次GC，每次0.1秒，0.5秒）
+   
+#### 串行
+使用串行的GC虚拟机参数：`-XX:+UseSerialGC`，等同于使用`Serial`（复制，新生代Minor CG）和`SerialOld`（标记整理，老年代Full GC）。
+
+![](../image/jvm_垃圾回收_串行.png)
 #### 吞吐量优先
+使用吞吐量优先的GC虚拟机参数：`-XX:+UseParallelGC -XX:+UseParallelOldGC`，前者是新生代GC（复制），后者是老年代GC（标记整理）。只用开启一个，默认会把另一个也开启。（Java8默认是开启的）。Parallel（并行）
+```txt
+-XX:+UseAdaptiveSizePolicy    // 自适应调整新生代内存大小
+-XX:GCTimeRatio=ratio         // 垃圾回收时间和总时间的占比（默认ratio=99）
+-XX:MaxGCPauseMillis=ms       // 最大暂停毫秒数（默认200ms）
+-XX:ParallelGCThreads=n       // 指定垃圾回收线程数
+
+// -XX:GCTimeRatio=ratio：公式为（1/1+ratio），通常会设置ratio=19，（1/1+19 =  0.05，100分钟允许5分钟用于垃圾回收 100*0.05=5 ）。
+// 99一般很难达到，100分钟只能有一分钟用于垃圾回收。
+```
+![](../image/jvm_垃圾回收_吞吐量优先.png)
 #### 响应时间优先
+使用响应时间优先的GC虚拟机参数：`-XX:+UserConcMarkSweepGC -XX:+UseParNewGC`，当`ConcMarkSweepGC`（标记清除,老年代GC，产生过多的内存碎片）并发失败的时候，老年代GC会从 CMS 会退化为 SerialOld（串行，标记整理，老年代Full GC）
+```txt
+-XX:ParallelGCThreads=n ~ -XX:ConcGCThreads=threads   // 控制线程数（ConcGCThreads设置为ParallelGCThreads的四分之一）
+-XX:CMSInitiatingOccupancyFraction=percent   // 执行 CMS 的内存占比，比如 percen=80（80%），当老年代内存占用达到80%时就执行一次垃圾回收。预留一些空间给浮动垃圾
+-XX:+CMSScavengeBeforeRemark  // 重新标记之前，先执行一次新生代垃圾回收
+```
+![](../image/jvm_垃圾回收_响应时间优先.png)
+
+CMS 问题：使用的是标记-清除算法，会产生内存碎片，内存碎片过多，容纳不下对象了，那么在并发垃圾回收失败时就会退化为 SerialOld（串行，标记整理，老年代Full GC）。那么这个响应时间就会一下子飙升。
+#### G1
+JDK9默认。
+
+适用场景：
+* 同时注重吞吐量和低延迟，默认的暂停目标是200ms。
+* 超大堆内存，会将堆划分为多个大小相等的 Region（区域）。（Region：每个区域都能独立作为伊甸园、幸存区、老年代）
+* 整体上是标记+整理算法，但两个区域之间是复制算法。
+
+相关JVM参数：
+```txt
+-XX:+UseG1GC
+-XX:G1HeapRegionSize=size  // 指定每个区域堆的大小
+-XX:MaxGCPauseMillis=time  // 指定暂停时间（毫秒）
+```
+##### G1回收阶段
+![](../image/jvm_垃圾回收_G1回收阶段.png)
+
+G1垃圾收集器的回收过程包括多个阶段，其中回收阶段是其中的一部分。下面是G1垃圾收集器的回收阶段：
+1. 初始标记（Initial Mark）：在初始标记阶段，G1垃圾收集器会暂停所有应用线程，然后标记出根对象直接关联的对象，并记录下这些对象的存活状态。
+2. 并发标记（Concurrent Mark）：在并发标记阶段，G1垃圾收集器会启动多个线程，并行地对剩余的对象进行标记。这个过程是与应用程序并发执行的，不会暂停应用线程。
+3. 最终标记（Final Mark）：在并发标记阶段完成后，G1垃圾收集器会再次暂停所有应用线程，执行最终标记。这个阶段的目的是标记在并发标记阶段发生变化的对象，确保标记的准确性。
+4. 筛选回收（Live Data Counting）：在最终标记阶段完成后，G1垃圾收集器会对各个区域的存活对象进行统计，并根据回收目标进行筛选。筛选出存活对象数量最少的区域进行回收。
+5. 复制（Evacuation）：在筛选回收阶段完成后，G1垃圾收集器会将选中的区域中的存活对象复制到空闲的区域中，并更新对象引用。
+6. 清理（Cleanup）：在复制阶段完成后，G1垃圾收集器会对已复制的区域进行清理，回收无效的对象所占用的内存空间。
+7. 混合收集（Mixed Collection）：在清理阶段完成后，G1垃圾收集器可能会执行混合收集。混合收集是对整个堆内存进行回收的过程，包括年轻代和老年代。它的目的是收集那些在Young Collection期间晋升为老年代的对象，以确保整个堆内存的回收。
+
+![](../image/jvm_g1-garbage-collector.png)
+##### Young Collection
+会 STW。
+
+在Young GC阶段，G1垃圾收集器会对年轻代进行回收。它首先标记年轻代中的存活对象，然后将存活对象复制到Survivor（幸存区）区域或老年代中，并清理年轻代的垃圾对象。Young GC是一个短暂的暂停，只涉及年轻代的部分内存区域。
+
+##### Young Collection + CM
+* 在 Young GC 时会进行 GC Roots 的初始标记。
+* 老年代占用空间比例达到阈值时，会进行并发标记（不会STW）。由`-XX:InitiatingHeapOccupancyPercent=percent`JVM参数控制。（默认45%）
+##### Mined Collection
+会对Eden、Survivor以及Old区域进行全面的垃圾回收。
+* 最终标记（Remark）会 STW。
+* 拷贝存活（Evacuation）会 STW。
+
+使用JVM参数`-XX:MaxGCPauseMillis=ms`设置最大暂停时间。
+
+G1 收集器在后台维护了一个优先列表，每次根据允许的收集时间（最大暂停时间），优先选择回收价值最大的 Region(这也就是它的名字 Garbage-First 的由来) 。这种使用 Region 划分内存空间以及有优先级的区域回收方式，保证了 G1 收集器在有限时间内可以尽可能高的收集效率（把内存化整为零）。主要目的就是达到最大暂停时间的目标。
+##### Full GC 概念辨析
+* Serial GC
+   * 新生代内存不足发生的垃圾收集（Minor GC）
+   * 老年代内存不足发生的垃圾收集（Full GC）
+* Parallel GC
+   * 新生代内存不足发生的垃圾收集（Minor GC）
+   * 老年代内存不足发生的垃圾收集（Full GC）
+* CMS
+   * 新生代内存不足发生的垃圾收集（Minor GC）
+   * 老年代内存不足
+* G1
+   * 新生代内存不足发生的垃圾收集（Minor GC）
+   * 老年代内存不足
+
+G1垃圾回收器在回收速度高于垃圾产生的速度则不会产生 Full GC，还是一个并发标记，并发回收的GC。只有当回收速度低于垃圾产生的速度才会引发FUll GC。出现并发失败就会FUll GC。（G1即使Full GC 也是多线程的）
+##### Young Collection 跨代引用
+在G1垃圾收集器的Young Collection（年轻代收集）阶段中，可能会出现跨代引用的情况，即年轻代对象引用了老年代对象。
+
+在垃圾收集器的新生代回收过程中，通常采用的是复制算法。年轻代被分为Eden区和两个Survivor区（通常是From和To），对象首先被分配到Eden区，经过一次或多次垃圾回收后，仍然存活的对象会被复制到Survivor区，然后在下一次垃圾回收中，从From区复制到To区，最终存活的对象会被晋升到老年代。
+
+在这个过程中（查找根对象 GC Root），如果年轻代的对象引用了老年代中的对象，就出现了跨代引用的情况。这种跨代引用可能导致问题，因为在新生代回收时，无法直接判断被引用的老年代对象是否仍然存活，从而影响垃圾回收的准确性和效率。
+
+在Java垃圾回收中，Remembered Sets和卡表（Card Table）都是用于解决跨代引用问题的机制。
+* Remembered Sets 是用于标记年轻代对象对老年代对象的引用关系的数据结构。它的作用是在新生代回收过程中快速定位年轻代对象中引用了老年代对象的部分。Remembered Sets通常是一种位图或类似的数据结构，每个位表示一个引用关系。当发生新生代回收时，只需扫描Remembered Sets中被标记的位，而不是全局扫描整个老年代，从而大大减少了扫描的开销。
+* 卡表（Card Table）是用于记录老年代中引用了新生代对象的卡片的数据结构。卡表将老年代划分为一组固定大小的卡片，每个卡片对应一块内存区域。当新生代对象晋升到老年代时，会更新卡表中相应的卡片，标记该卡片内的内存区域引用了新生代对象（脏卡）。在新生代回收过程中，只需扫描被标记的卡片，而不需要扫描整个老年代，从而减少了扫描的范围。
+
+这两个机制都是为了在新生代回收时快速定位和处理跨代引用的问题，提高垃圾回收的效率。Remembered Sets主要应用于标记-复制（Mark-Compact）算法的垃圾收集器，而卡表主要应用于分代收集算法中的增量更新和并发标记清除算法。
+
+`Post-write barrier`（写屏障）是一段特殊的代码，它会在Java程序中进行引用写入操作后执行。当有一个引用变更时，该代码会检测变更的位置和范围，并将受影响的卡片标记为"需要更新"（脏卡）的状态。
+
+`Dirty card queue`是一个队列，用于保存所有被标记为"需要更新"（脏卡）的卡片。这些卡片记录了老年代中引用了新生代对象的位置信息。
+
+Remembered Set的更新是通过并发细化线程（`concurrent refinement threads`）来完成的。这些线程负责在应用程序运行的同时，异步地扫描新生代对象中的引用，并将跨代引用信息添加到Remembered Set中。
+##### Remark
+在G1垃圾收集器中，G1 Remark（G1重新标记）是垃圾回收的一个重要阶段。它是G1垃圾收集器在并发标记完成后的一个短暂停顿阶段（最终标记），用于完成对新生代与老年代之间的引用关系进行最终确认。
+
+G1 Remark的主要目的是处理在并发标记期间可能发生的引用变化。由于并发标记是并发进行的，应用程序仍然在运行，因此可能存在引用关系的变化。G1 Remark会检查并修正这些变化，以确保垃圾回收的准确性。G1 Remark的停顿时间相对较短。
+
+如果发生引用变更，会将引用变化的对象放到稳定标记队列中（`stab_mark_queue`）。
+
+`stab_mark_queue`就是用来存储需要进行稳定标记的对象的队列。当应用程序在并发标记期间进行引用变更时，相关的对象会被添加到`stab_mark_queue`中。然后，在G1 Remark阶段的稳定标记过程中，垃圾收集器会遍历`stab_mark_queue`中的对象，并对其进行稳定标记。
+
+`stab_mark_queue`只在G1 Remark阶段使用，用于临时存储引用变更的对象，并不是持久性的数据结构。在G1 Remark阶段结束后，`stab_mark_queue`会被清空，为下一次垃圾回收做准备。
+
+具体的G1 Remark流程如下：
+1. 暂停应用线程：G1 Remark会暂停应用程序的执行，以便进行标记的更新。
+2. 重新扫描根区域：G1 Remark会重新扫描根区域，包括根对象和根区域中的引用。
+3. 跨区扫描：G1 Remark会从根区域出发，逐一扫描所有与根区域相关的区域。它会检查引用关系的变化，并修正之前的标记信息。
+4. 完成重新标记：完成重新标记后，G1 Remark会更新各个区域的标记状态，并生成一个最终的标记快照。
+5. 重新启动应用线程：完成G1 Remark后，应用线程会重新启动，继续执行应用程序。
+
+在Java G1垃圾收集器中，G1 Remark阶段通过写屏障（Write Barrier）来保证并发标记期间的引用变更不会被遗漏。写屏障是一种机制，用于在引用发生变更时通知垃圾收集器进行相应的处理。
+
+具体到G1 Remark阶段，写屏障主要有以下几个作用：
+1. 保证引用变更的可见性：当应用程序对引用进行写操作时，写屏障会确保这个变更对垃圾收集器可见。这样，在G1 Remark阶段时，垃圾收集器能够获取到最新的引用信息，避免遗漏或错误地处理引用变更。
+2. 更新Remembered Set：G1 Remark阶段会重新扫描根区域以及与根区域相关的区域。写屏障会在应用程序对引用进行写操作时，将发生变更的引用添加到相应的Remembered Set中。Remembered Set是用于记录新生代与老年代之间引用关系的数据结构，它帮助G1垃圾收集器准确地追踪引用关系。
+3. 触发卡表更新：G1垃圾收集器使用卡表（Card Table）来跟踪老年代中与新生代之间的引用关系。写屏障会触发卡表的更新，将引用变更的信息记录到相应的卡表项中。这样，在G1 Remark阶段时，垃圾收集器可以遍历卡表来检查引用的变化，并进行相应的修正。
+
+写屏障的应用也会带来一定的性能开销，但这是为了保证垃圾收集的正确性和一致性而必要的代价。
+##### JDK 8u20 字符串去重&G1优化
+```java
+String s1 = new String("hello");    // char[]{'h', 'e', 'l', 'l', 'o'}
+String s2 = new String("hello");    // char[]{'h', 'e', 'l', 'l', 'o'}
+```
+使用虚拟机参数`-XX:+UseStringDeduplication`开启String去重功能，默认是开启的。
+
+* 将所有新分配的字符串方法一个队列中。
+* 当新生代回收时，G1并发检查是否有字符串重复。
+* 如果有字符串重复（值一样），则让它们引用同一个`char[]`。
+* 与 `String.intern()` 不一样
+   * `String.intern()`关注的是字符串对象。
+   * 而字符串去重关注的是 `char[]`。
+   * 在 JVM 内部，是用来不同的字符串表。
+
+- 优点：节省大量内存。
+- 缺点，略微多占用了 CPU 时间，新生代回收时间略微增加。
+##### JDK 8u40 并发标记类卸载&G1优化
+所有对象都经过并发标记后，就能知道哪些类不再被使用，当一个类加载器所加载的类都不再使用，则卸载它所加载的全部类。
+
+使用JVM参数`-XX:+ClassUnloadingWithConcurrentMark`开启，默认是开启的。
+##### JDK 8u60 回收巨型对象&G1优化
+一个对象大于 Region 的一半时，称之为巨型对象。
+* G1不会对巨型对象进行拷贝。
+* 回收时优先被考虑
+* G1会跟踪老年代所有 incoming 引用，这样老年代 incoming 引用为0的巨型对象就可以在新生代垃圾回收时处理掉。（也就是巨型对象不被任何老年代对象所引用了，可以回收）
+##### JDK9 并发标记动态起始时间的调整
+* 并发标记必须在堆空间占满前完成，否则会退化为 FullGC。
+* JDK9 之前需要使用`-XX:InitialingHeapOccupancyPercent`来指定堆空间占比。堆内存占用超过占比就会触发 GC。
+* JDK9 可以动态调整
+   * `-XX:InitialingHeapOccupancyPercent`只是用来设置初始值
+   * G1 会进行数据采样并动态调整（动态设置堆空间占比）。
+   * 总会添加一个安全的空档空间。
+
+#### JDK9及之后的调优
+
+> 官网：https://docs.oracle.com/en/java/javase/12/gctuning/
+
+#### ZGC
+
+Java11 的时候推出的一款垃圾收集器。在 ZGC 中出现 Stop The World 的情况会更少！
 
 ### 垃圾回收调优
+> Java 命令及参数_官网：https://docs.oracle.com/en/java/javase/11/tools/java.html#GUID-3B1CE181-CD30-4178-9602-230B800D4FAE
+
+如果想熟练JVM调优的话：
+* 掌握`GC`相关的`VM`参数，会基本的空间调整。
+* 掌握相关工具
+* 调优跟应用、环境有关，没有放之四海而皆准的法则。
+
+查看虚拟机运行参数（默认值，Windows系统）
+```txt
+A:\etc\guide>"A:\usr\Software\Java\jdk1.8.0_271\bin\java" -XX:+PrintFlagsFinal -version | findstr "GC"
+    uintx AdaptiveSizeMajorGCDecayTimeScale         = 10                                  {product}
+    uintx AutoGCSelectPauseMillis                   = 5000                                {product}
+     bool BindGCTaskThreadsToCPUs                   = false                               {product}
+    uintx CMSFullGCsBeforeCompaction                = 0                                   {product}
+    uintx ConcGCThreads                             = 0                                   {product}
+     bool DisableExplicitGC                         = false                               {product}
+     bool ExplicitGCInvokesConcurrent               = false                               {product}
+     bool ExplicitGCInvokesConcurrentAndUnloadsClasses  = false                               {product}
+    uintx G1MixedGCCountTarget                      = 8                                   {product}
+    uintx GCDrainStackTargetSize                    = 64                                  {product}
+    uintx GCHeapFreeLimit                           = 2                                   {product}
+    uintx GCLockerEdenExpansionPercent              = 5                                   {product}
+     bool GCLockerInvokesConcurrent                 = false                               {product}
+    uintx GCLogFileSize                             = 8192                                {product}
+    uintx GCPauseIntervalMillis                     = 0                                   {product}
+    uintx GCTaskTimeStampEntries                    = 200                                 {product}
+    uintx GCTimeLimit                               = 98                                  {product}
+    uintx GCTimeRatio                               = 99                                  {product}
+     bool HeapDumpAfterFullGC                       = false                               {manageable}
+     bool HeapDumpBeforeFullGC                      = false                               {manageable}
+    uintx HeapSizePerGCThread                       = 87241520                            {product}
+    uintx MaxGCMinorPauseMillis                     = 4294967295                          {product}
+    uintx MaxGCPauseMillis                          = 4294967295                          {product}
+    uintx NumberOfGCLogFiles                        = 0                                   {product}
+     intx ParGCArrayScanChunk                       = 50                                  {product}
+    uintx ParGCDesiredObjsFromOverflowList          = 20                                  {product}
+     bool ParGCTrimOverflow                         = true                                {product}
+     bool ParGCUseLocalOverflow                     = false                               {product}
+    uintx ParallelGCBufferWastePct                  = 10                                  {product}
+    uintx ParallelGCThreads                         = 4                                   {product}
+     bool ParallelGCVerbose                         = false                               {product}
+     bool PrintClassHistogramAfterFullGC            = false                               {manageable}
+     bool PrintClassHistogramBeforeFullGC           = false                               {manageable}
+     bool PrintGC                                   = false                               {manageable}
+     bool PrintGCApplicationConcurrentTime          = false                               {product}
+     bool PrintGCApplicationStoppedTime             = false                               {product}
+     bool PrintGCCause                              = true                                {product}
+     bool PrintGCDateStamps                         = false                               {manageable}
+     bool PrintGCDetails                            = false                               {manageable}
+     bool PrintGCID                                 = false                               {manageable}
+     bool PrintGCTaskTimeStamps                     = false                               {product}
+     bool PrintGCTimeStamps                         = false                               {manageable}
+     bool PrintHeapAtGC                             = false                               {product rw}
+     bool PrintHeapAtGCExtended                     = false                               {product rw}
+     bool PrintJNIGCStalls                          = false                               {product}
+     bool PrintParallelOldGCPhaseTimes              = false                               {product}
+     bool PrintReferenceGC                          = false                               {product}
+     bool ScavengeBeforeFullGC                      = true                                {product}
+     bool TraceDynamicGCThreads                     = false                               {product}
+     bool TraceParallelOldGCTasks                   = false                               {product}
+     bool UseAdaptiveGCBoundary                     = false                               {product}
+     bool UseAdaptiveSizeDecayMajorGCCost           = true                                {product}
+     bool UseAdaptiveSizePolicyWithSystemGC         = false                               {product}
+     bool UseAutoGCSelectPolicy                     = false                               {product}
+     bool UseConcMarkSweepGC                        = false                               {product}
+     bool UseDynamicNumberOfGCThreads               = false                               {product}
+     bool UseG1GC                                   = false                               {product}
+     bool UseGCLogFileRotation                      = false                               {product}
+     bool UseGCOverheadLimit                        = true                                {product}
+     bool UseGCTaskAffinity                         = false                               {product}
+     bool UseMaximumCompactionOnSystemGC            = true                                {product}
+     bool UseParNewGC                               = false                               {product}
+     bool UseParallelGC                            := true                                {product}
+     bool UseParallelOldGC                          = true                                {product}
+     bool UseSerialGC                               = false                               {product}
+java version "1.8.0_271"
+Java(TM) SE Runtime Environment (build 1.8.0_271-b09)
+Java HotSpot(TM) 64-Bit Server VM (build 25.271-b09, mixed mode)
+```
+
+#### 确定目标
+【低延迟】还是【高吞吐量】，选择合适的回收器。
+* 响应时间优先【低延时】：CMS、G1、ZGC
+* 【高吞吐量】：ParallelGC
+
+#### 最快的GC是不发生GC
+查看`Full GC`前后的内存占用，考虑下面几个问题
+1. 数据是不是太多？
+2. 数据表示是否台臃肿？
+   * 对象图
+   * 对象大小
+3. 是否存在内存泄露？
+
+#### 新生代调优
+新生代特点
+* 所有的 new 操作的内存分配非常廉价。原因是基于 `TLAB thread-local- allocation buffer`。
+* 不被引用的对象的回收代价是零。
+* 大部分对象用过就会被回收。
+* Minor GC 的 时间远远低于 FUll GC。
+
+（`-Xmn`）新生代内存空间应在堆内存的`25%-50%`之间。
+
+那么到底新生代内存设置多大合适呢？
+   * 有一个估算公式：理想情况下，新生代能容纳所有（并发量 * (请求-响应)（请求、响应的占用内存））的数据。
+
+幸存区要大到能容纳（当前活跃对象 + 需要晋升对象）
+
+#### 老年代调优
+
+#### 案例
 
 ## 类加载与字节码
 
@@ -948,3 +1434,19 @@ String s1 = new String("abc");
 `ldc`命令用于判断字符串常量池中是否保存了对应的字符串对象的引用，如果保存了的话直接返回，如果没有保存的话，会在堆中创建对应的字符串对象并将该字符串对象的引用保存到字符串常量池中。
 
 ### JVM 常量池中存储的是对象还是引用呢？
+
+### 如何判断一个类是无用的类？
+方法区主要回收的是无用的类，判定一个常量是否是“废弃常量”比较简单，而要判定一个类是否是“无用的类”的条件则相对苛刻许多。类需要同时满足下面 3 个条件才能算是 “无用的类”：
+* 该类所有的实例都已经被回收，也就是 Java 堆中不存在该类的任何实例。
+* 加载该类的 ClassLoader 已经被回收。
+* 该类对应的 java.lang.Class 对象没有在任何地方被引用，无法在任何地方通过反射访问该类的方法。
+
+虚拟机可以对满足上述 3 个条件的无用类进行回收，这里说的仅仅是“可以”，而并不是和对象一样不使用了就会必然被回收。
+
+### JIT 编译器&逃逸分析
+
+
+
+```txt
+工作中需要做jvm调优的人，在公司里也算得上核心骨干了
+```
