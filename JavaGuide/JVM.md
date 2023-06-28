@@ -571,7 +571,7 @@ public class Application {
     }
 }
 ```
-执行`javap -v Application.class`反汇编字节码。`-v`输出详细信息
+执行`javap -v Application.class`反解析字节码。`-v`输出详细信息
 ```txt
 ==============================================类基本信息==================================================================
 Classfile /A:/etc/Java/test_spring_annotation/target/classes/cn/forbearance/spring/Application.class
@@ -1387,24 +1387,888 @@ Java HotSpot(TM) 64-Bit Server VM (build 25.271-b09, mixed mode)
 3. 是否存在内存泄露？
 
 #### 新生代调优
-新生代特点
-* 所有的 new 操作的内存分配非常廉价。原因是基于 `TLAB thread-local- allocation buffer`。
-* 不被引用的对象的回收代价是零。
-* 大部分对象用过就会被回收。
-* Minor GC 的 时间远远低于 FUll GC。
+- 新生代特点
+   * 所有的 new 操作的内存分配非常廉价。原因是基于 `TLAB thread-local- allocation buffer`。
+   * 不被引用的对象的回收代价是零。
+   * 大部分对象用过就会被回收。
+   * Minor GC 的 时间远远低于 FUll GC。
 
-（`-Xmn`）新生代内存空间应在堆内存的`25%-50%`之间。
+- （`-Xmn`）新生代内存空间应在堆内存的`25%-50%`之间。
 
-那么到底新生代内存设置多大合适呢？
+- 那么到底新生代内存设置多大合适呢？
    * 有一个估算公式：理想情况下，新生代能容纳所有（并发量 * (请求-响应)（请求、响应的占用内存））的数据。
 
-幸存区要大到能容纳（当前活跃对象 + 需要晋升对象）
+- 幸存区要大到能容纳（当前活跃对象 + 需要晋升对象）
+- 幸存区晋升阈值配置得当，让长时间存活的对象尽快晋升
+```txt
+# 设置最大年龄晋升阈值
+-XX:MaxTenuringThreshold=threshold
 
+# 打印幸存区信息
+-XX:PrintTenuringDistribution
+```
 #### 老年代调优
-
+以 CMS 为例
+- CMS 的老年代内存越大越好
+- 先尝试不做调优，如果没有FullGC就不用调优，否则先尝试调优新生代。
+- 如果还是经常发生FullGC，观察发生FUllGC时老年代内存占用，将老年代内存预设调大 1/4 ~ 1/3。
+```txt
+# 执行 CMS 的内存占比，比如 percen=80（80%），当老年代内存占用达到80%时就执行一次垃圾回收
+-XX:CMSInitiatingOccupancyFraction=percent
+```
+- 一般设置为`75% ~ 80%`，预留一些空间给浮动垃圾
 #### 案例
+##### 案例1
+- FUll GC 和 Minor GC 频繁。
+##### 案例2
+- 请求高峰期发生 FUll GC，单词暂停时间特别长（CMS）
+
+```txt
+# 在CMS重新标记前，执行一次 Minor GC
+-XX:CMSScavengeBeforeRemark
+```
+##### 案例3
+- 老年代充裕情况下，发生 FUll GC（CMS 1.7）
+
+1.7 是永久代，在堆中，1.8 是元空间，在堆外内存中。
 
 ## 类加载与字节码
+### 类文件结构
+```java
+/**
+ * @author cristina
+ */
+public class HelloWorld {
+    public static void main(String[] args) throws Exception {
+        System.out.println("Hello World");
+    }
+}
+```
+1. 执行编译命令`javac -parameters -d . HelloWorld.java`
+2. 编译后的字节码：`od -t xC HelloWorld.class`，16进制。
+
+```txt
+[root@server7 ~]# od -t xC HelloWorld.class 
+0000000 ca fe ba be 00 00 00 34 00 22 0a 00 06 00 13 09
+0000020 00 14 00 15 08 00 16 0a 00 17 00 18 07 00 19 07
+0000040 00 1a 01 00 06 3c 69 6e 69 74 3e 01 00 03 28 29
+0000060 56 01 00 04 43 6f 64 65 01 00 0f 4c 69 6e 65 4e
+0000100 75 6d 62 65 72 54 61 62 6c 65 01 00 04 6d 61 69
+0000120 6e 01 00 16 28 5b 4c 6a 61 76 61 2f 6c 61 6e 67
+0000140 2f 53 74 72 69 6e 67 3b 29 56 01 00 0a 45 78 63
+0000160 65 70 74 69 6f 6e 73 07 00 1b 01 00 10 4d 65 74
+0000200 68 6f 64 50 61 72 61 6d 65 74 65 72 73 01 00 04
+0000220 61 72 67 73 01 00 0a 53 6f 75 72 63 65 46 69 6c
+0000240 65 01 00 0f 48 65 6c 6c 6f 57 6f 72 6c 64 2e 6a
+0000260 61 76 61 0c 00 07 00 08 07 00 1c 0c 00 1d 00 1e
+0000300 01 00 0b 48 65 6c 6c 6f 20 57 6f 72 6c 64 07 00
+0000320 1f 0c 00 20 00 21 01 00 0a 48 65 6c 6c 6f 57 6f
+0000340 72 6c 64 01 00 10 6a 61 76 61 2f 6c 61 6e 67 2f
+0000360 4f 62 6a 65 63 74 01 00 13 6a 61 76 61 2f 6c 61
+0000400 6e 67 2f 45 78 63 65 70 74 69 6f 6e 01 00 10 6a
+0000420 61 76 61 2f 6c 61 6e 67 2f 53 79 73 74 65 6d 01
+0000440 00 03 6f 75 74 01 00 15 4c 6a 61 76 61 2f 69 6f
+0000460 2f 50 72 69 6e 74 53 74 72 65 61 6d 3b 01 00 13
+0000500 6a 61 76 61 2f 69 6f 2f 50 72 69 6e 74 53 74 72
+0000520 65 61 6d 01 00 07 70 72 69 6e 74 6c 6e 01 00 15
+0000540 28 4c 6a 61 76 61 2f 6c 61 6e 67 2f 53 74 72 69
+0000560 6e 67 3b 29 56 00 21 00 05 00 06 00 00 00 00 00
+0000600 02 00 01 00 07 00 08 00 01 00 09 00 00 00 1d 00
+0000620 01 00 01 00 00 00 05 2a b7 00 01 b1 00 00 00 01
+0000640 00 0a 00 00 00 06 00 01 00 00 00 04 00 09 00 0b
+0000660 00 0c 00 03 00 09 00 00 00 25 00 02 00 01 00 00
+0000700 00 09 b2 00 02 12 03 b6 00 04 b1 00 00 00 01 00
+0000720 0a 00 00 00 0a 00 02 00 00 00 06 00 08 00 07 00
+0000740 0d 00 00 00 04 00 01 00 0e 00 0f 00 00 00 05 01
+0000760 00 10 00 00 00 01 00 11 00 00 00 02 00 12
+0000776
+```
+根据JVM规范，类文件结构如下
+```java
+ClassFile {
+   u4             magic;
+   u2             minor_version;
+   u2             major_version;
+   u2             constant_pool_count;
+   cp_info        constant_pool[constant_pool_count-1];
+   u2             access_flags;
+   u2             this_class;
+   u2             super_class;
+   u2             interfaces_count
+   u2             interfaces[interfaces_count];
+   u2             fields_count;
+   field_info     fields[fields_count];
+   u2             methods_count;
+   method_info    methods[methods_count];
+   u2             attributes_count;
+   attribute_info attributes[attributes_count];
+}
+```
+`u4、u2`表示字节数。
+
+通过分析 ClassFile 的内容，我们便可以知道 class 文件的组成。
+
+![](../image/jvm_类文件结构.jpeg)
+#### 魔数
+- 0~3字节，表示它是否是`class`类型的文件
+
+0000000 `ca fe ba be` 00 00 00 34 00 22 0a 00 06 00 13 09
+#### 版本
+- 4~7字节，表示类的版本`00 34`（52），表示是 Java 8，小版本没有体现。
+  0000000 ca fe ba be `00 00 00 34` 00 22 0a 00 06 00 13 09
+#### 常量池
+开始的第一位是一个 u1 类型的标志位（Value）来标识常量的类型，代表当前这个常量属于哪种常量类型
+| Constant Type                    | Value | 描述                   |
+| -------------------------------- | ----- | ---------------------- |
+| CONSTANT_utf8_info               | 1     | UTF-8 编码的字符串     |
+| CONSTANT_Integer_info            | 3     | 整形字面量             |
+| CONSTANT_Float_info              | 4     | 浮点型字面量           |
+| CONSTANT_Long_info               | ５    | 长整型字面量           |
+| CONSTANT_Double_info             | ６    | 双精度浮点型字面量     |
+| CONSTANT_Class_info              | ７    | 类或接口的符号引用     |
+| CONSTANT_String_info             | ８    | 字符串类型字面量       |
+| CONSTANT_FieldRef_info           | ９    | 字段的符号引用         |
+| CONSTANT_MethodRef_info          | 10    | 类中方法的符号引用     |
+| CONSTANT_InterfaceMethodRef_info | 11    | 接口中方法的符号引用   |
+| CONSTANT_NameAndType_info        | 12    | 字段或方法的符号引用   |
+| CONSTANT_MethodType_info         | 16    | 标志方法类型           |
+| CONSTANT_MethodHandle_info       | 15    | 表示方法句柄           |
+| CONSTANT_InvokeDynamic_info      | 18    | 表示一个动态方法调用点 |
+- 8~9字节，表示常量池长度`00 22`（34），表示常量池有 #1~#33 项，#0项不计入，也没有值，索引值为 0 代表“不引用任何一个常量池项”
+
+0000000 ca fe ba be 00 00 00 34 `00 22` 0a 00 06 00 13 09
+- 第#1项 `0a`表示一个 Method 信息（方法引用），`00 06`和`00 13`（19）表示引用了常量池中#6和#19项来获得这个方法的所属类和方法名。
+
+0000000 ca fe ba be 00 00 00 34 00 22 `0a 00 06 00 13` 09
+
+剩余部分不再分析了，节省时间进入下一章节的复习。附上反汇编的结果。
+```txt
+[root@server7 ~]# javap -v HelloWorld.class 
+Classfile /root/HelloWorld.class
+  Last modified 2023-6-28; size 510 bytes
+  MD5 checksum 03f7f4cfbfe1dd1d273f73655465dffc
+  Compiled from "HelloWorld.java"
+public class HelloWorld
+  minor version: 0
+  major version: 52
+  flags: ACC_PUBLIC, ACC_SUPER
+Constant pool:
+   #1 = Methodref          #6.#19         // java/lang/Object."<init>":()V
+   #2 = Fieldref           #20.#21        // java/lang/System.out:Ljava/io/PrintStream;
+   #3 = String             #22            // Hello World
+   #4 = Methodref          #23.#24        // java/io/PrintStream.println:(Ljava/lang/String;)V
+   #5 = Class              #25            // HelloWorld
+   #6 = Class              #26            // java/lang/Object
+   #7 = Utf8               <init>
+   #8 = Utf8               ()V
+   #9 = Utf8               Code
+  #10 = Utf8               LineNumberTable
+  #11 = Utf8               main
+  #12 = Utf8               ([Ljava/lang/String;)V
+  #13 = Utf8               Exceptions
+  #14 = Class              #27            // java/lang/Exception
+  #15 = Utf8               MethodParameters
+  #16 = Utf8               args
+  #17 = Utf8               SourceFile
+  #18 = Utf8               HelloWorld.java
+  #19 = NameAndType        #7:#8          // "<init>":()V
+  #20 = Class              #28            // java/lang/System
+  #21 = NameAndType        #29:#30        // out:Ljava/io/PrintStream;
+  #22 = Utf8               Hello World
+  #23 = Class              #31            // java/io/PrintStream
+  #24 = NameAndType        #32:#33        // println:(Ljava/lang/String;)V
+  #25 = Utf8               HelloWorld
+  #26 = Utf8               java/lang/Object
+  #27 = Utf8               java/lang/Exception
+  #28 = Utf8               java/lang/System
+  #29 = Utf8               out
+  #30 = Utf8               Ljava/io/PrintStream;
+  #31 = Utf8               java/io/PrintStream
+  #32 = Utf8               println
+  #33 = Utf8               (Ljava/lang/String;)V
+{
+  public HelloWorld();
+    descriptor: ()V
+    flags: ACC_PUBLIC
+    Code:
+      stack=1, locals=1, args_size=1
+         0: aload_0
+         1: invokespecial #1                  // Method java/lang/Object."<init>":()V
+         4: return
+      LineNumberTable:
+        line 4: 0
+
+  public static void main(java.lang.String[]) throws java.lang.Exception;
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=2, locals=1, args_size=1
+         0: getstatic     #2                  // Field java/lang/System.out:Ljava/io/PrintStream;
+         3: ldc           #3                  // String Hello World
+         5: invokevirtual #4                  // Method java/io/PrintStream.println:(Ljava/lang/String;)V
+         8: return
+      LineNumberTable:
+        line 6: 0
+        line 7: 8
+    Exceptions:
+      throws java.lang.Exception
+    MethodParameters:
+      Name                           Flags
+      args
+}
+SourceFile: "HelloWorld.java"
+```
+#### 访问标识和继承信息
+#### field
+#### method-init
+#### method-main
+#### 附加属性
+
+### 字节码指令
+#### 入门
+> 指令集：https://docs.oracle.com/javase/specs/jvms/se8/html/jvms-6.html
+
+接着上一节，研究两组字节码指令
+
+- 构造方法的字节码指令`public HelloWorld()`
+
+0000620 01 00 01 00 00 00 05 `2a b7 00 01 b1` 00 00 00 01
+1. `2a`表示 aload_0 加载 slot0 的局部变量，即this，作为下面的 invokespecial 构造方法调用的参数。
+2. `b7`表示 invokespecial 预备调用构造方法，哪个方法呢？
+3. `00 01`表示引用常量池中#1项，即 `Method java/lang/Object."<init>":()V`。
+4. `b1`表示返回。
+- 主方法的字节码指令`public static void main(String[] args)`
+
+0000700 00 09 `b2 00 02 12 03 b6 00 04 b1` 00 00 00 01 00
+1. `b2`表示 getstatic 用来加载静态变量，哪个变量呢？
+2. `00 02`表示引用常量池中#2项，即`Field java/lang/System.out:Ljava/io/PrintStream;`
+3. `12`表示 ldc 加载参数，哪个参数呢？
+4. `03`表示引用常量池中#3项，即`String Hello World`
+5. `b6`表示 invokevirtual 预备调用成员方法，哪个方法呢？
+6. `00 04`表示引用常量池中#4项，即`Method java/io/PrintStream.println:(Ljava/lang/String;)V`
+7. `b1`表示返回
+#### javap 工具
+
+javap是jdk自带的反解析工具。它的作用就是根据class字节码文件，反解析出当前类对应的code区 （字节码指令）、局部变量表、异常表和代码行偏移量映射表、常量池等信息。
+
+```txt
+[root@server7 ~]# javap -v HelloWorld.class 
+Classfile /root/HelloWorld.class
+  Last modified 2023-6-28; size 510 bytes
+  MD5 checksum 03f7f4cfbfe1dd1d273f73655465dffc
+  Compiled from "HelloWorld.java"
+public class HelloWorld
+  minor version: 0
+  major version: 52
+  flags: ACC_PUBLIC, ACC_SUPER
+Constant pool:
+   #1 = Methodref          #6.#19         // java/lang/Object."<init>":()V
+   #2 = Fieldref           #20.#21        // java/lang/System.out:Ljava/io/PrintStream;
+   #3 = String             #22            // Hello World
+   #4 = Methodref          #23.#24        // java/io/PrintStream.println:(Ljava/lang/String;)V
+   #5 = Class              #25            // HelloWorld
+   #6 = Class              #26            // java/lang/Object
+   #7 = Utf8               <init>
+   #8 = Utf8               ()V
+   #9 = Utf8               Code
+  #10 = Utf8               LineNumberTable
+  #11 = Utf8               main
+  #12 = Utf8               ([Ljava/lang/String;)V
+  #13 = Utf8               Exceptions
+  #14 = Class              #27            // java/lang/Exception
+  #15 = Utf8               MethodParameters
+  #16 = Utf8               args
+  #17 = Utf8               SourceFile
+  #18 = Utf8               HelloWorld.java
+  #19 = NameAndType        #7:#8          // "<init>":()V
+  #20 = Class              #28            // java/lang/System
+  #21 = NameAndType        #29:#30        // out:Ljava/io/PrintStream;
+  #22 = Utf8               Hello World
+  #23 = Class              #31            // java/io/PrintStream
+  #24 = NameAndType        #32:#33        // println:(Ljava/lang/String;)V
+  #25 = Utf8               HelloWorld
+  #26 = Utf8               java/lang/Object
+  #27 = Utf8               java/lang/Exception
+  #28 = Utf8               java/lang/System
+  #29 = Utf8               out
+  #30 = Utf8               Ljava/io/PrintStream;
+  #31 = Utf8               java/io/PrintStream
+  #32 = Utf8               println
+  #33 = Utf8               (Ljava/lang/String;)V
+{
+  public HelloWorld();
+    descriptor: ()V
+    flags: ACC_PUBLIC
+    Code:
+      stack=1, locals=1, args_size=1
+         0: aload_0
+         1: invokespecial #1                  // Method java/lang/Object."<init>":()V
+         4: return
+      LineNumberTable:
+        line 4: 0
+
+  public static void main(java.lang.String[]) throws java.lang.Exception;
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=2, locals=1, args_size=1
+         0: getstatic     #2                  // Field java/lang/System.out:Ljava/io/PrintStream;
+         3: ldc           #3                  // String Hello World
+         5: invokevirtual #4                  // Method java/io/PrintStream.println:(Ljava/lang/String;)V
+         8: return
+      LineNumberTable:
+        line 6: 0
+        line 7: 8
+    Exceptions:
+      throws java.lang.Exception
+    MethodParameters:
+      Name                           Flags
+      args
+}
+SourceFile: "HelloWorld.java"
+```
+#### 图解运行流程
+##### 演示：字节码指令和操作数栈、常量池的关系
+```java
+public class Test01 {
+    public static void main(String[] args) throws Exception {
+        int a = 10;
+        int b = Short.MAX_VALUE + 1;
+        int c = a + b;
+        System.out.println(c);
+    }
+}
+```
+使用`javap`反解析后的文件
+```txt
+[root@server7 ~]# javap -v Test01.class 
+Classfile /root/Test01.class
+  Last modified 2023-6-28; size 430 bytes
+  MD5 checksum 9c23888c3f753d31bc2eba3913afb32f
+  Compiled from "Test01.java"
+public class Test01
+  minor version: 0
+  major version: 52
+  flags: ACC_PUBLIC, ACC_SUPER
+Constant pool:
+   #1 = Methodref          #7.#16         // java/lang/Object."<init>":()V
+   #2 = Class              #17            // java/lang/Short
+   #3 = Integer            32768
+   #4 = Fieldref           #18.#19        // java/lang/System.out:Ljava/io/PrintStream;
+   #5 = Methodref          #20.#21        // java/io/PrintStream.println:(I)V
+   #6 = Class              #22            // Test01
+   #7 = Class              #23            // java/lang/Object
+   #8 = Utf8               <init>
+   #9 = Utf8               ()V
+  #10 = Utf8               Code
+  #11 = Utf8               LineNumberTable
+  #12 = Utf8               main
+  #13 = Utf8               ([Ljava/lang/String;)V
+  #14 = Utf8               SourceFile
+  #15 = Utf8               Test01.java
+  #16 = NameAndType        #8:#9          // "<init>":()V
+  #17 = Utf8               java/lang/Short
+  #18 = Class              #24            // java/lang/System
+  #19 = NameAndType        #25:#26        // out:Ljava/io/PrintStream;
+  #20 = Class              #27            // java/io/PrintStream
+  #21 = NameAndType        #28:#29        // println:(I)V
+  #22 = Utf8               Test01
+  #23 = Utf8               java/lang/Object
+  #24 = Utf8               java/lang/System
+  #25 = Utf8               out
+  #26 = Utf8               Ljava/io/PrintStream;
+  #27 = Utf8               java/io/PrintStream
+  #28 = Utf8               println
+  #29 = Utf8               (I)V
+{
+  public Test01();
+    descriptor: ()V
+    flags: ACC_PUBLIC
+    Code:
+      stack=1, locals=1, args_size=1
+         0: aload_0
+         1: invokespecial #1                  // Method java/lang/Object."<init>":()V
+         4: return
+      LineNumberTable:
+        line 1: 0
+
+  public static void main(java.lang.String[]);
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=2, locals=4, args_size=1
+         0: bipush        10
+         2: istore_1
+         3: ldc           #3                  // int 32768
+         5: istore_2
+         6: iload_1
+         7: iload_2
+         8: iadd
+         9: istore_3
+        10: getstatic     #4                  // Field java/lang/System.out:Ljava/io/PrintStream;
+        13: iload_3
+        14: invokevirtual #5                  // Method java/io/PrintStream.println:(I)V
+        17: return
+      LineNumberTable:
+        line 3: 0
+        line 4: 3
+        line 5: 6
+        line 6: 10
+        line 7: 17
+}
+SourceFile: "Test01.java"
+```
+##### 1、常量池载入运行时常量池
+
+![](../image/jvm_类文件结构_图解运行流程1.png)
+
+##### 2、方法字节码载入方法区
+
+![](../image/jvm_类文件结构_图解运行流程2.png)
+
+##### 3、main 线程开始运行，分配栈帧内存。
+
+`stack=2（操作数栈）, locals=4（局部变量表）`
+
+![](../image/jvm_类文件结构_图解运行流程3.png)
+
+##### 4、执行引擎开始执行字节码
+
+###### bipush 10
+
+* `bipush 10`表示将一个 byte 压入操作数栈（byte是一个字节，操作数栈的宽度是4个字节，其长度会补齐4个字节），类似的指令还有：
+* `sipush` 将一个 short 压入操作数栈（其长度会补齐4个字节）
+* `ldc`将一个 int 压入操作数栈
+* `ldc2_w`将一个 long 压入操作数栈（分两次压入，long 是8个字节）
+* 这里小的数字都是和字节码指令存在一起，超过 short 范围的数组会存入常量池。
+
+![](../image/jvm_类文件结构_图解运行流程4.png)
+
+###### istore_1
+
+将操作数栈顶数据弹出，存入局部变量表的 slot 1。
+
+![](../image/jvm_类文件结构_图解运行流程5.png)
+
+![](../image/jvm_类文件结构_图解运行流程5_1.png)
+
+`bipush istore`对应着 Java 源代码`a = 10`；
+
+###### ldc #3
+
+从常量池加载 #3 数据到操作数栈
+
+`Short.MAX_VALUE` 是 32767，所以 `32768 = Short.MAX_VALUE + 1` 实际上是在编译期间就计算好的。
+
+![](../image/jvm_类文件结构_图解运行流程6.png)
+
+###### istore_2
+
+将操作数栈顶数据弹出，存入局部变量表的 slot 2。
+
+![](../image/jvm_类文件结构_图解运行流程7.png)
+
+![](../image/jvm_类文件结构_图解运行流程7_1.png)
+
+###### iload
+
+* `iload_1`把局部变量1槽位的值读取到操作数栈中。
+* `iload_2`把局部变量2槽位的值读取到操作数栈中。
+
+![](../image/jvm_类文件结构_图解运行流程8.png)
+
+![](../image/jvm_类文件结构_图解运行流程8_1.png)
+
+###### iadd
+
+`iadd`用于对两个操作数栈上的值进行int类型的加法运算（会把操作数栈的两个值弹出栈），并把结果重新存入到操作栈顶。
+
+![](../image/jvm_类文件结构_图解运行流程8_2.png)
+
+![](../image/jvm_类文件结构_图解运行流程8_3.png)
+
+###### istore_3
+
+将操作数栈顶数据弹出，存入局部变量表的 slot 3。
+
+![](../image/jvm_类文件结构_图解运行流程9.png)
+
+![](../image/jvm_类文件结构_图解运行流程9_1.png)
+
+###### getstatic #4
+
+- `getstatic `从常量池  #4 项获取类中静态字段
+
+![](../image/jvm_类文件结构_图解运行流程10.png)
+
+![](../image/jvm_类文件结构_图解运行流程10_1.png)
+
+###### iload_3
+
+- `iload_3` 从局部变量3中装载int类型值到操作数栈。
+
+![](../image/jvm_类文件结构_图解运行流程10_2.png)
+
+![](../image/jvm_类文件结构_图解运行流程10_3.png)
+
+###### invokevirtual #5
+
+1. invokestatic：该指令用于调用静态方法，即使用 static 关键字修饰的方法；
+2. invokespecial：该指令用于三种场景：调用实例构造方法，调用私有方法（即private关键字修饰的方法）和父类方法（即super关键字调用的方法）；
+3. invokeinterface：该指令用于调用接口方法，在运行时再确定一个实现此接口的对象；
+
+4. invokevirtual：该指令用于调用虚方法（除了上述三种情况之外的方法）
+
+* 找到常量池 #5 项。
+* 定位到方法区`java/io/PrintStream.println:(I)V`方法。
+* 生成新的栈帧（分配 locals、stack等）
+* 传递参数，执行新栈帧中的字节码。
+
+![](../image/jvm_类文件结构_图解运行流程11.png)
+
+###### 执行完毕，弹出栈帧
+
+* 清除 main 操作数栈内容。
+
+![](../image/jvm_类文件结构_图解运行流程12.png)
+
+###### return
+
+* 完成 main 方法调用，弹出 main 栈帧。
+* 程序结束。
+
+#### 分析 a++
+```java
+public class Test01 {
+    public static void main(String[] args) throws Exception {
+        int a = 10;
+        int b = a++ + ++a + a--;
+        System.out.println(a);
+        System.out.println(b);
+    }
+}
+```
+使用`javap`命令反解析字节码文件
+```txt
+[root@server7 ~]# javap -v Test01.class 
+Classfile /root/Test01.class
+  Last modified 2023-6-28; size 419 bytes
+  MD5 checksum 0521b3e1b1667f518c711d0366246347
+  Compiled from "Test01.java"
+public class Test01
+  minor version: 0
+  major version: 52
+  flags: ACC_PUBLIC, ACC_SUPER
+Constant pool:
+   #1 = Methodref          #5.#14         // java/lang/Object."<init>":()V
+   #2 = Fieldref           #15.#16        // java/lang/System.out:Ljava/io/PrintStream;
+   #3 = Methodref          #17.#18        // java/io/PrintStream.println:(I)V
+   #4 = Class              #19            // Test01
+   #5 = Class              #20            // java/lang/Object
+   #6 = Utf8               <init>
+   #7 = Utf8               ()V
+   #8 = Utf8               Code
+   #9 = Utf8               LineNumberTable
+  #10 = Utf8               main
+  #11 = Utf8               ([Ljava/lang/String;)V
+  #12 = Utf8               SourceFile
+  #13 = Utf8               Test01.java
+  #14 = NameAndType        #6:#7          // "<init>":()V
+  #15 = Class              #21            // java/lang/System
+  #16 = NameAndType        #22:#23        // out:Ljava/io/PrintStream;
+  #17 = Class              #24            // java/io/PrintStream
+  #18 = NameAndType        #25:#26        // println:(I)V
+  #19 = Utf8               Test01
+  #20 = Utf8               java/lang/Object
+  #21 = Utf8               java/lang/System
+  #22 = Utf8               out
+  #23 = Utf8               Ljava/io/PrintStream;
+  #24 = Utf8               java/io/PrintStream
+  #25 = Utf8               println
+  #26 = Utf8               (I)V
+{
+  public Test01();
+    descriptor: ()V
+    flags: ACC_PUBLIC
+    Code:
+      stack=1, locals=1, args_size=1
+         0: aload_0
+         1: invokespecial #1                  // Method java/lang/Object."<init>":()V
+         4: return
+      LineNumberTable:
+        line 1: 0
+
+  public static void main(java.lang.String[]);
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=2, locals=3, args_size=1
+         0: bipush        10
+         2: istore_1
+         3: iload_1
+         4: iinc          1, 1
+         7: iinc          1, 1
+        10: iload_1
+        11: iadd
+        12: iload_1
+        13: iinc          1, -1
+        16: iadd
+        17: istore_2
+        18: getstatic     #2                  // Field java/lang/System.out:Ljava/io/PrintStream;
+        21: iload_1
+        22: invokevirtual #3                  // Method java/io/PrintStream.println:(I)V
+        25: getstatic     #2                  // Field java/lang/System.out:Ljava/io/PrintStream;
+        28: iload_2
+        29: invokevirtual #3                  // Method java/io/PrintStream.println:(I)V
+        32: return
+      LineNumberTable:
+        line 3: 0
+        line 4: 3
+        line 5: 18
+        line 6: 25
+        line 7: 32
+}
+SourceFile: "Test01.java"
+```
+* `iinc`指令是直接在局部变量 slot 上进行运算。
+* a++ 和 ++a 的区别是先执行`iload`还是先执行`iinc`。
+    * a++：先`iload`再`iinc`。
+    * ++a：先`iinc`再`iload`。
+    
+```txt
+ 0: bipush        10      // 将 10 压入操作数栈
+ 2: istore_1              // 将操作数栈顶数据弹出，存入局部变量表的 slot 1。将 10 放入局部变量表（a = 10）
+ 3: iload_1               // 将局部变量表槽位1的数值读取到操作数栈中 （a=10）
+ 4: iinc          1, 1    // 局部变量表1槽位自增1，（a=11）
+ 7: iinc          1, 1    // 局部变量表1槽位自增1，（a=12）
+10: iload_1               // 将局部变量表槽位1的数值读取到操作数栈中 （a=12）
+11: iadd                  // 此时操作数栈中有两个数值，进行加法运算（10 + 22 = 22）
+12: iload_1               // 将局部变量表槽位1的数值读取到操作数栈中 （a=12）
+13: iinc          1, -1   // 局部变量表1槽位自减1，（a=11）
+16: iadd                  // 此时操作数栈中有两个数值，进行加法运算（22 + 12 = 34）
+17: istore_2              // 将操作数栈顶数据弹出，存入局部变量表的 slot 2。将 34 放入局部变量表（b = 34）
+```
+
+> 图解 a++ 原理：https://www.bilibili.com/video/BV1yE411Z7AP?p=112
+
+#### 条件判断指令
+* byte、short、char 都会按 int 比较，因为操作数栈宽度是 4 个字节。
+* goto 是用来进行跳转到指定行号的字节码。
+* 从`-1 ~ 5`之间的数用`iconst`表示。`lconst_0、fconst_0 ...`
+* ldc2_w 把常量池中long类型或者double类型的项压入栈。
+#### 循环控制指令
+while 和 for 的字节码是一样的。
+#### 构造方法
+##### <cinit\>()V
+```java
+public class Application {
+    static int i = 10;
+
+    static {
+        i = 20;
+    }
+
+    static {
+        i = 30;
+    }
+}
+```
+编译器会按从上到下的顺序，收集所有 static 静态代码块和静态成员赋值的代码，合并为一个特殊的方法`<cinit()V>`。
+```txt
+ 0: bipush        10
+ 2: putstatic     #2                  // Field i:I
+ 5: bipush        20
+ 7: putstatic     #2                  // Field i:I
+10: bipush        30
+12: putstatic     #2                  // Field i:I
+15: return
+```
+`<cinit()V>`方法会在类加载的初始化阶段被调用。（`<cinit()V>`是类构造方法）
+##### <init\>()V
+`<init>()V`是每个实例对象的构造方法。
+```java
+public class Application {
+
+    private String a = "s1";
+
+    {
+        b = 20;
+    }
+
+    private int b = 10;
+
+    {
+        a = "s2";
+    }
+
+    public Application() {
+    }
+
+    public Application(String a, int b) {
+        this.a = a;
+        this.b = b;
+    }
+
+    public static void main(String[] args) {
+        Application application = new Application("s3", 30);
+        System.out.println(application.a);
+        System.out.println(application.b);
+    }
+}
+```
+编译器会按从上至下的顺序，收集所有`{}`代码块和成员变量赋值的代码，形成新的构造方法，但原始构造方法内的代码总是再最后。
+```txt
+public cn.forbearance.spring.Application(java.lang.String, int);
+    descriptor: (Ljava/lang/String;I)V
+    flags: ACC_PUBLIC
+    Code:
+      stack=2, locals=3, args_size=3
+         0: aload_0
+         1: invokespecial #1                  // super."<init>":()V
+         4: aload_0
+         5: ldc           #2                  // String s1
+         7: putfield      #3                  // this.a
+        10: aload_0
+        11: bipush        20
+        13: putfield      #4                  // this.b
+        16: aload_0
+        17: bipush        10
+        19: putfield      #4                  // this.b
+        22: aload_0
+        23: ldc           #5                  // String s2
+        25: putfield      #3                  // this.a
+        28: aload_0                           // --------原始构造---------
+        29: aload_1                           // slot 1(a)  "s3"        |
+        30: putfield      #3                  // this.a                 |
+        33: aload_0                                                     |
+        34: iload_2                           // slot 2(b)  30          |
+        35: putfield      #4                  // this.b -----------------
+        38: return
+      LineNumberTable: ...
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            0      39     0  this   Lcn/forbearance/spring/Application;
+            0      39     1     a   Ljava/lang/String;
+            0      39     2     b   I
+```
+#### 方法调用
+```java
+public class Application {
+
+    public Application() {}
+
+    private void test1() {}
+
+    private final void test2() {}
+
+    public void test3() {}
+
+    public static void test4() {}
+
+    public static void main(String[] args) {
+        Application application = new Application();
+        application.test1();
+        application.test2();
+        application.test3();
+        application.test4();
+        Application.test4();
+    }
+}
+```
+字节码：
+```txt
+ 0: new           #2                  // class cn/forbearance/spring/Application
+ 3: dup
+ 4: invokespecial #3                  // Method "<init>":()V
+ 7: astore_1
+ 8: aload_1
+ 9: invokespecial #4                  // Method test1:()V
+12: aload_1
+13: invokespecial #5                  // Method test2:()V
+16: aload_1
+17: invokevirtual #6                  // Method test3:()V
+20: aload_1
+21: pop
+22: invokestatic  #7                  // Method test4:()V
+25: invokestatic  #7                  // Method test4:()V
+28: return
+```
+* `invokevirtual`称为动态绑定，需要在运行时确定。（实现一个方法的多态调用）
+* `new`在堆空间分配内存，分配成功会将对象的引用放入操作数栈。
+* `dup`在操作数栈复制了一份对象引用。（原因是main方法的操作数栈调用构造函数后，栈顶元素出栈。栈不能为空 空了就结束了）
+* 通过对象调用静态方法会产生两条不必要的指令。`aload_1，pop`一入栈就出栈了。
+
+#### 多态的原理
+演示多态原理，需要加上JVM参数`-XX:-UseCompressedOops -XX:-UseCompressedClassPointers`，禁用指针压缩。
+```java
+public class Application {
+
+    public static void test(Animal animal) {
+        animal.eat();
+        System.out.println(animal.toString());
+    }
+
+    public static void main(String[] args) throws Exception {
+        test(new Dog());
+        test(new Cat());
+        System.in.read();
+    }
+
+}
+abstract class Animal {
+    public abstract void eat();
+
+    @Override
+    public String toString() {
+        return "" + this.getClass().getSimpleName();
+    }
+}
+
+class Dog extends Animal {
+
+    @Override
+    public void eat() {
+        System.out.println("吃骨头");
+    }
+}
+
+class Cat extends Animal {
+
+    @Override
+    public void eat() {
+        System.out.println("吃鱼");
+    }
+}
+```
+1. 运行 Java 程序。使用`jps`获取进行id。
+2. 运行 HSDB 工具，进入 JDK 安装目录，执行`java -classpath "%JAVA_HOME%/lib/sa-jdi.jar" sun.jvm.hotspot.HSDB`。
+##### HSDB
+###### 查找某个对象
+![](../image/jvm_类文件结构_多态原理_对象头.png)
+* 对象头一共 16 个字节，前8个字节（Mark Word）包含对象的 hash 码，以及对象加锁时的锁标记。
+* 后8个字节（Klass Word）是对象的类型指针，根据类型指针可以找到对象的Class类。
+* 如果是数组对象则：对象头 = Mark Word + Klass Word + 数组长度
+###### 查找对象内存结构
+![](../image/jvm_类文件结构_HSDB查找对象内存结构.png)
+###### 查找对象Class的内存地址
+![](../image/jvm_类文件结构_HSDB查找对象Class内存地址.png)
+###### 查找类的 vtable
+vtable 地址和 Class 地址偏移 `1B8`，在 Class 地址加上`1B8`就得到 vtable 地址。
+
+![](../image/jvm_类文件结构_多态原理.png)
+
+通过对象找到Class类，通过Class类能够知道虚方法表，确定方法的实际物理地址。虚方法表在类加载的链接阶段生成的。
+##### 小结
+当执行 invokevirtual 指令时
+1. 先通过栈帧中的对象引用找到对象（在JVM中的地址）。
+2. 分析对象头，找到对象的实际 Class。
+3. Class 结构中有 vtable（虚方法表），它在类加载的链接阶段就已经根据方法的重写规则生成好了。
+4. 查 vtable 得到方法的具体地址。
+5. 执行方法的字节码。
+### 编译期处理
+### 类加载阶段
+### 类加载器
+### 运行期优化
 
 ## Java内存模型
 
@@ -1450,3 +2314,8 @@ String s1 = new String("abc");
 ```txt
 工作中需要做jvm调优的人，在公司里也算得上核心骨干了
 ```
+
+### JVM指令注记符
+> https://blog.csdn.net/A598853607/article/details/125026953
+
+### 讲讲什么是多态，底层原理是啥

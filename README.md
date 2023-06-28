@@ -43,6 +43,8 @@
 top
 
 ps
+
+查看文件大小 ls -lh filepath
 ```
 
 ## 面试题整理
