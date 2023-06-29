@@ -2021,12 +2021,7 @@ Constant pool:
         28: iload_2
         29: invokevirtual #3                  // Method java/io/PrintStream.println:(I)V
         32: return
-      LineNumberTable:
-        line 3: 0
-        line 4: 3
-        line 5: 18
-        line 6: 25
-        line 7: 32
+      LineNumberTable:...
 }
 SourceFile: "Test01.java"
 ```
@@ -2036,7 +2031,9 @@ SourceFile: "Test01.java"
     * ++a：先`iinc`再`iload`。
     
 ```txt
- 0: bipush        10      // 将 10 压入操作数栈
+# int b = a++ + ++a + a--;
+
+0: bipush        10      // 将 10 压入操作数栈
  2: istore_1              // 将操作数栈顶数据弹出，存入局部变量表的 slot 1。将 10 放入局部变量表（a = 10）
  3: iload_1               // 将局部变量表槽位1的数值读取到操作数栈中 （a=10）
  4: iinc          1, 1    // 局部变量表1槽位自增1，（a=11）
@@ -2056,8 +2053,99 @@ SourceFile: "Test01.java"
 * goto 是用来进行跳转到指定行号的字节码。
 * 从`-1 ~ 5`之间的数用`iconst`表示。`lconst_0、fconst_0 ...`
 * ldc2_w 把常量池中long类型或者double类型的项压入栈。
+```java
+public class Application {
+    public static void main(String[] args) {
+        long a = 6l;
+        if (a > 10l) {
+            a = 5l;
+        } else {
+            a = 20l;
+        }
+    }
+}
+```
+字节码：
+```txt
+stack=4, locals=3, args_size=1
+ 0: ldc2_w        #2                  // long 6l
+ 3: lstore_1
+ 4: lload_1
+ 5: ldc2_w        #4                  // long 10l
+ 8: lcmp
+ 9: ifle          19
+12: ldc2_w        #6                  // long 5l
+15: lstore_1
+16: goto          23
+19: ldc2_w        #8                  // long 20l
+22: lstore_1
+23: return
+```
 #### 循环控制指令
 while 和 for 的字节码是一样的。
+```java
+public class Application {
+    public static void main(String[] args) {
+        int i = 0;
+        while (i < 10) {
+            i++;
+        }
+    }
+}
+```
+字节码：
+```txt
+ 0: iconst_0
+ 1: istore_1
+ 2: iload_1
+ 3: bipush        10
+ 5: if_icmple     14
+ 8: iinc          1, 1
+11: goto          2
+14: return
+```
+for 循环
+```java
+public class Application {
+    public static void main(String[] args) {
+        for (int i = 0; i < 10; i++) {
+
+        }
+    }
+}
+```
+字节码：
+```txt
+ 0: iconst_0
+ 1: istore_1
+ 2: iload_1
+ 3: bipush        10
+ 5: if_icmpge     14
+ 8: iinc          1, 1
+11: goto          2
+14: return
+```
+do while 循环
+```java
+public class Application {
+    public static void main(String[] args) {
+        int i = 0;
+        do {
+            i++;
+        }while (i < 10);
+    }
+}
+```
+字节码：
+```txt
+ 0: iconst_0
+ 1: istore_1
+ 2: iinc          1, 1
+ 5: iload_1
+ 6: bipush        10
+ 8: if_icmplt     2
+11: return
+```
 #### 构造方法
 ##### <cinit\>()V
 ```java
@@ -2265,9 +2353,1039 @@ vtable 地址和 Class 地址偏移 `1B8`，在 Class 地址加上`1B8`就得到
 3. Class 结构中有 vtable（虚方法表），它在类加载的链接阶段就已经根据方法的重写规则生成好了。
 4. 查 vtable 得到方法的具体地址。
 5. 执行方法的字节码。
+
+#### 异常处理
+##### try catch
+```java
+public class Application {
+    public static void main(String[] args) {
+        int i = 0;
+        try {
+            i = 20;
+        } catch (Exception e) {
+            i = 10;
+        }
+    }
+}
+```
+字节码：
+```txt
+public static void main(java.lang.String[]);
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=1, locals=3, args_size=1
+         0: iconst_0
+         1: istore_1
+         2: bipush        20
+         4: istore_1
+         5: goto          12
+         8: astore_2
+         9: bipush        10
+        11: istore_1
+        12: return
+      Exception table:
+         from    to  target type
+             2     5     8   Class java/lang/Exception
+      LineNumberTable: ...
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            9       3     2     e   Ljava/lang/Exception;
+            0      13     0  args   [Ljava/lang/String;
+            2      11     1     i   I
+```
+* 可以看到多出来一个 Exception table 的结构，[from, to)时包头不包尾的检测范围（前闭后开），一旦这个范围内的字节码执行出现异常，则通过 type 匹配异常类型，如果一致，就会进入 target 所指示的行号。
+* `8: astore_2`指令是将异常对象引用存入局部变量表的 slot 2位置。
+##### 多个 catch 块
+```java
+public class Application {
+    public static void main(String[] args) {
+        int i = 0;
+        try {
+            i = 20;
+        } catch (ArithmeticException e) {
+            i = 50;
+        } catch (NullPointerException e) {
+            i = 100;
+        } catch (Exception e) {
+            i = 80;
+        }
+    }
+}
+```
+字节码：
+```txt
+public static void main(java.lang.String[]);
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=1, locals=3, args_size=1
+         0: iconst_0
+         1: istore_1
+         2: bipush        20
+         4: istore_1
+         5: goto          26
+         8: astore_2
+         9: bipush        50
+        11: istore_1
+        12: goto          26
+        15: astore_2
+        16: bipush        100
+        18: istore_1
+        19: goto          26
+        22: astore_2
+        23: bipush        80
+        25: istore_1
+        26: return
+      Exception table:
+         from    to  target type
+             2     5     8   Class java/lang/ArithmeticException
+             2     5    15   Class java/lang/NullPointerException
+             2     5    22   Class java/lang/Exception
+      LineNumberTable: ...
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            9       3     2     e   Ljava/lang/ArithmeticException;
+           16       3     2     e   Ljava/lang/NullPointerException;
+           23       3     2     e   Ljava/lang/Exception;
+            0      27     0  args   [Ljava/lang/String;
+            2      25     1     i   I
+```
+与一个 catch 块的字节码有所不同，多个异常会共用一个局部变量表槽位。因为异常出现时，只能进入其中一个 Exception table 分支。
+##### multi-catch
+```java
+public class Application {
+    public static void main(String[] args) {
+        try {
+            Method method = Application.class.getMethod("test");
+            method.invoke(null);
+        } catch (NoSuchMethodException | IllegalAccessException | InvocationTargetException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public static void test() {
+        System.out.println("ok");
+    }
+}
+```
+字节码：
+```txt
+public static void main(java.lang.String[]);
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=3, locals=2, args_size=1
+         0: ldc           #2                  // class cn/forbearance/spring/Application
+         2: ldc           #3                  // String test
+         4: iconst_0
+         5: anewarray     #4                  // class java/lang/Class
+         8: invokevirtual #5                  // Method java/lang/Class.getMethod:(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;
+        11: astore_1
+        12: aload_1
+        13: aconst_null
+        14: iconst_0
+        15: anewarray     #6                  // class java/lang/Object
+        18: invokevirtual #7                  // Method java/lang/reflect/Method.invoke:(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;
+        21: pop
+        22: goto          30
+        25: astore_1
+        26: aload_1
+        27: invokevirtual #11                 // Method java/lang/ReflectiveOperationException.printStackTrace:()V
+        30: return
+      Exception table:
+         from    to  target type
+             0    22    25   Class java/lang/NoSuchMethodException
+             0    22    25   Class java/lang/IllegalAccessException
+             0    22    25   Class java/lang/reflect/InvocationTargetException
+      LineNumberTable: ...
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+           12      10     1 method   Ljava/lang/reflect/Method;
+           26       4     1     e   Ljava/lang/ReflectiveOperationException;
+            0      31     0  args   [Ljava/lang/String;
+```
+multi-catch 对比多个 catch 块来讲，没有什么特别的，但是 Exception table 异常检测的入口都是一样的。并且 test 方法和异常共用一个槽位（虚拟机计算的）。
+##### finally
+```java
+public class Application {
+    public static void main(String[] args) {
+        int i = 0;
+        try {
+            i = 20;
+        } catch (Exception e) {
+            i = 80;
+        } finally {
+            i = 100;
+        }
+    }
+}
+```
+字节码：
+```txt
+ public static void main(java.lang.String[]);
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=1, locals=4, args_size=1
+         0: iconst_0
+         1: istore_1            // 0 > i ，0 赋值给 i
+         2: bipush        20    // try ----------------------
+         4: istore_1            // 20 > i                   |
+         5: bipush        100   // finally                  |
+         7: istore_1            // 100 > i                  |
+         8: goto          27    // return ------------------|
+        11: astore_2            // catch Exception > e -----
+        12: bipush        80    //                          |
+        14: istore_1            // 80 > i                   |
+        15: bipush        100   // finally                  |
+        17: istore_1            // 100 > i                  |
+        18: goto          27    // return -------------------
+        21: astore_3            // catch any > slot 3 ------|
+        22: bipush        100   // finally                  |
+        24: istore_1            // 30 > i                   |
+        25: aload_3             // < slot 3                 |
+        26: athrow              // throw --------------------
+        27: return
+      Exception table:
+         from    to  target type
+             2     5    11   Class java/lang/Exception
+             2     5    21   any    // 剩余的异常类型 比如 Error
+            11    15    21   any    // 剩余的异常类型 比如 Error
+      LineNumberTable: ...
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+           12       3     2     e   Ljava/lang/Exception;
+            0      28     0  args   [Ljava/lang/String;
+            2      26     1     i   I
+```
+可以看到 finally 中的代码被赋值了3份，分别放入 try、catch以及剩余的异常类型（Error）。这也是 finally 最后执行的原因。
+#### 练习-finally面试题
+##### finally return
+```java
+public class Application {
+    public static void main(String[] args) {
+        System.out.println(test());
+    }
+
+    public static int test() {
+        try {
+            return 10;
+        } finally {
+            return 20;
+        }
+    }
+}
+```
+字节码：
+```txt
+public static int test();
+    descriptor: ()I
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=1, locals=2, args_size=0
+         0: bipush        10    // 10 放入栈顶
+         2: istore_0            // 将操作数栈顶数据弹出，存入局部变量表的 slot 0。
+         3: bipush        20    // 20 放入栈顶
+         5: ireturn             // 返回栈顶 int(20)
+         6: astore_1            // 将异常存入局部变量表的 slot 1
+         7: bipush        20    // 20 放入栈顶
+         9: ireturn             // 返回栈顶 int(20)
+      Exception table:
+         from    to  target type
+             0     3     6   any
+```
+在 catch 块字节码中如果出现其他异常（Error），不会 athrow，finally 如果出现 return，会吞掉异常。不建议在 finally 中 return。
+##### finally 没有return
+finally 如果没有return，只是修改了变量的值，是不会改变返回结果的。会将 try 中 return 的值进行暂存。
+```java
+public class Application {
+    public static void main(String[] args) {
+        System.out.println(test());
+    }
+
+    public static int test() {
+        int i = 10;
+        try {
+            return i;
+        } finally {
+            i = 20;
+        }
+    }
+}
+```
+字节码：
+```txt
+  public static int test();
+    descriptor: ()I
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=1, locals=3, args_size=0
+         0: bipush        10    // 10 放入栈顶
+         2: istore_0            // 将操作数栈顶数据弹出，存入局部变量表的 slot 0。
+         3: iload_0             // 将局部变量表0槽位数据加载到操作数栈
+         4: istore_1            // 将操作数栈顶数据弹出，存入局部变量表的 slot 1。（10 暂存至 slot 1，目的是为了固定返回值）
+         5: bipush        20    // 20 放入栈顶
+         7: istore_0            // 将操作数栈顶数据弹出，存入局部变量表的 slot 0。
+         8: iload_1             // 将局部变量表1槽位数据加载到操作数栈 10
+         9: ireturn             // 返回栈顶 int(10)
+        10: astore_2
+        11: bipush        20
+        13: istore_0
+        14: aload_2
+        15: athrow
+      Exception table:
+         from    to  target type
+             3     5    10   any
+      LineNumberTable: ...
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            3      13     0     i   I
+```
+#### synchronized
+```java
+public class Application {
+    public static void main(String[] args) {
+        Object obj = new Object();
+        synchronized (obj) {
+            System.out.println("ok");
+        }
+    }
+}
+```
+字节码：
+```txt
+public static void main(java.lang.String[]);
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC
+    Code:
+      stack=2, locals=4, args_size=1
+         0: new           #2                  // new Object
+         3: dup                               // 拷贝引用
+         4: invokespecial #1                  // 一个引用给调用构造器使用 invokespecial <init>:()V，调用完会弹出栈，另一个给锁使用
+         7: astore_1                          // lock 引用，将操作数栈顶数据弹出（dup），存入局部变量表的 slot 1
+         8: aload_1                           // 将局部变量表的 slot 1，加载到操作数栈顶
+         9: dup                               // 拷贝引用
+        10: astore_2                          // lock 引用，将操作数栈顶数据弹出（dup），存入局部变量表的 slot 2
+        11: monitorenter                      // monitorenter(lock引用) 加锁
+        12: getstatic     #3                  // System.out
+        15: ldc           #4                  // "ok"
+        17: invokevirtual #5                  // invokevirtual println:(Ljava/lang/String;)V
+        20: aload_2                           //  将局部变量表的 slot 2 加载到操作数栈顶
+        21: monitorexit                       // monitorexit(lock引用) 解锁
+        22: goto          30
+        25: astore_3                          // 异常，存入 slot 3
+        26: aload_2                           // 将局部变量表的 slot 2，加载到操作数栈顶，(lock引用)
+        27: monitorexit                       // monitorexit(lock引用) 解锁
+        28: aload_3
+        29: athrow
+        30: return
+      Exception table:
+         from    to  target type
+            12    22    25   any
+            25    28    25   any
+      LineNumberTable: ...
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            0      31     0  args   [Ljava/lang/String;
+            8      23     1   obj   Ljava/lang/Object;
+```
+方法级别的 synchronized 不会在字节码指令中体现。
 ### 编译期处理
+所谓的语法糖，就是指 Java 编译器将源代码编译为 class 字节码的过程中，自动生成和转换一些代码。编译期的优化和处理。
+#### 默认构造器
+一个类如果没有构造器，编译器默认会给这个类加上一个无参构造，调用父类 Object 的无参构造，java/lang/Object."<init>":()V 
+```java
+public class Candy {}
+```
+编译后：
+```java
+public class Candy {
+    public Candy {
+        super();
+    }
+}
+```
+#### 自动拆装箱
+```java
+public class Application {
+    public static void main(String[] args) {
+        Integer x  = 1;
+        int y = x;
+    }
+}
+```
+字节码：
+```txt
+0: iconst_1
+ 1: invokestatic  #2                  // Method java/lang/Integer.valueOf:(I)Ljava/lang/Integer;
+ 4: astore_1
+ 5: aload_1
+ 6: invokevirtual #3                  // Method java/lang/Integer.intValue:()I
+ 9: istore_2
+10: return
+```
+装箱就是调用包装类的`valueOf`方法，拆箱就是调用包装类的`xxxValue`方法。由编译器在编译期阶段完成。
+
+但是自动拆装箱在 JDK 5 之前时无法通过编译的，必须显式拆装箱。
+```java
+public class Application {
+    public static void main(String[] args) {
+        Integer x  = Integer.valueOf(1);
+        int y = x.intValue();
+    }
+}
+```
+#### 泛型擦除
+泛型也是在 JDK 5 加入的新特性，但是在编译泛型代码后会执行泛型擦除。即泛型信息在编译为字节码后就丢失了。实际的类型都当作 Object 类型来处理。
+```java
+public class Application {
+    public static void main(String[] args) {
+        ArrayList<Integer> list = new ArrayList<>();
+        // 实际调用的是 list.add(Object o) 。（ArrayList.add:(Ljava/lang/Object;)）
+        list.add(10);   
+        // 实际调用的是 Object num = list.get(int index)。（ArrayList.get:(I)Ljava/lang/Object;）
+        Integer num = list.get(0);  
+    }
+}
+```
+字节码：
+```txt
+ 0: new           #2                  // class java/util/ArrayList
+ 3: dup
+ 4: invokespecial #3                  // Method java/util/ArrayList."<init>":()V
+ 7: astore_1
+ 8: aload_1
+ 9: bipush        10
+11: invokestatic  #4                  // Method java/lang/Integer.valueOf:(I)Ljava/lang/Integer;
+14: invokevirtual #5                  // Method java/util/ArrayList.add:(Ljava/lang/Object;)Z
+17: pop
+18: aload_1
+19: iconst_0
+20: invokevirtual #6                  // Method java/util/ArrayList.get:(I)Ljava/lang/Object;
+23: checkcast     #7                  // class java/lang/Integer
+26: astore_2
+27: return
+```
+所以在取值时，编译器还需要额外做一个类型转换的操作（checkcast）
+```java
+Integer num = (Integer) list.get(0);
+```
+擦除的时字节码中的泛型信息，但是 LocalVariableTypeTable 仍保留了方法参数泛型的信息，通过反射不能直接获取到 LocalVariableTypeTable
+```txt
+... ...
+LocalVariableTable:
+    Start  Length  Slot  Name   Signature
+        0      28     0  args   [Ljava/lang/String;
+        8      20     1  list   Ljava/util/ArrayList;
+       27       1     2   num   Ljava/lang/Integer;
+LocalVariableTypeTable:
+Start  Length  Slot  Name   Signature
+    8      20     1  list   Ljava/util/ArrayList<Ljava/lang/Integer;>;
+```
+使用反射能够获取方法参数和返回值的泛型信息。
+#### 可变参数
+JDK 5 新特性
+```java
+public class Application {
+    public static void main(String[] args) {
+        test("a", "b", "c");
+    }
+
+    public static void test(String... str) {
+        System.out.println(str);
+    }
+}
+```
+字节码：
+```txt
+ public static void test(java.lang.String...);
+    descriptor: ([Ljava/lang/String;)V
+    flags: ACC_PUBLIC, ACC_STATIC, ACC_VARARGS
+    Code:
+      stack=2, locals=1, args_size=1
+         0: getstatic     #7                  // Field java/lang/System.out:Ljava/io/PrintStream;
+         3: aload_0
+         4: invokevirtual #8                  // Method java/io/PrintStream.println:(Ljava/lang/Object;)V
+         7: return
+      LineNumberTable:
+        line 13: 0
+        line 14: 7
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            0       8     0   str   [Ljava/lang/String;
+```
+从字节码中`descriptor: ([Ljava/lang/String;)V`也能看到可变参数实际是一个数组。如果调用`test()`等价于`test(new String[]{})`，创建一个空的数组，而不会传递 null。
+#### foreach
+JDK 5 新特性
+```java
+public class Application {
+    public static void main(String[] args) {
+        int[] arr = {1, 2, 3, 4, 5};
+        for (int i : arr) {
+            System.out.println(i);
+        }
+    }
+}
+```
+字节码：
+```txt
+ 0: iconst_5
+ 1: newarray       int
+ 3: dup
+ 4: iconst_0
+ 5: iconst_1
+ 6: iastore
+ 7: dup
+ 8: iconst_1
+ 9: iconst_2
+10: iastore
+11: dup
+12: iconst_2
+13: iconst_3
+14: iastore
+15: dup
+16: iconst_3
+17: iconst_4
+18: iastore
+19: dup
+20: iconst_4
+21: iconst_5
+22: iastore
+23: astore_1
+24: aload_1
+25: astore_2
+26: aload_2
+27: arraylength
+28: istore_3
+29: iconst_0
+30: istore        4
+32: iload         4
+34: iload_3
+35: if_icmpge     58
+38: aload_2
+39: iload         4
+41: iaload
+42: istore        5
+44: getstatic     #2                  // Field java/lang/System.out:Ljava/io/PrintStream;
+47: iload         5
+49: invokevirtual #3                  // Method java/io/PrintStream.println:(I)V
+52: iinc          4, 1
+55: goto          32
+58: return
+```
+通过字节码可以看出，实际上 foreach 循环会被编译器转换为for循环：
+```java
+public class Application {
+    public Application() {}
+    public static void main(String[] args) {
+        int[] arr = new int[]{1, 2, 3, 4, 5};
+        for (int j = 0; j < arr.length; ++j) {
+            int i = arr[j];
+            System.out.println(i);
+        }
+    }
+}
+```
+如果是集合的 foreach 循环，会被编译器转换为迭代器的调用：
+```java
+public class Application {
+    public static void main(String[] args) {
+        ArrayList<Integer> arr = new ArrayList<>();
+        for (Integer i : arr) {
+            System.out.println(i);
+        }
+    }
+}
+```
+foreach 配合集合使用时，需要集合类实现 Iterable 接口。Iterable 用来获取集合迭代器（Iterator）
+字节码：
+```txt
+ 0: new           #2                  // class java/util/ArrayList
+ 3: dup
+ 4: invokespecial #3                  // Method java/util/ArrayList."<init>":()V
+ 7: astore_1
+ 8: aload_1
+ 9: invokevirtual #4                  // Method java/util/ArrayList.iterator:()Ljava/util/Iterator;
+12: astore_2
+13: aload_2
+14: invokeinterface #5,  1            // InterfaceMethod java/util/Iterator.hasNext:()Z
+19: ifeq          42
+22: aload_2
+23: invokeinterface #6,  1            // InterfaceMethod java/util/Iterator.next:()Ljava/lang/Object;
+28: checkcast     #7                  // class java/lang/Integer
+31: astore_3
+32: getstatic     #8                  // Field java/lang/System.out:Ljava/io/PrintStream;
+35: aload_3
+36: invokevirtual #9                  // Method java/io/PrintStream.println:(Ljava/lang/Object;)V
+39: goto          13
+42: return
+```
+#### switch 字符串
+JDK 7新特性，switch 配合 String 和枚举使用时，变量不能为 null。
+```java
+public class Application {
+    public static void main(String[] args) {
+        String str = "hello";
+        switch (str) {
+            case "hello":  
+                System.out.println(str);
+                break;
+            case "world":   
+                System.out.println(str);
+                break;
+        }
+    }
+}
+```
+字节码：
+```txt
+ 0: ldc           #2                  // String hello
+ 2: astore_1
+ 3: aload_1
+ 4: astore_2
+ 5: iconst_m1
+ 6: istore_3
+ 7: aload_2
+ 8: invokevirtual #3                  // Method java/lang/String.hashCode:()I
+ 
+ // 先比较 hashCode 
+11: lookupswitch  { // 2
+        99162322: 36
+       113318802: 50
+         default: 61
+    }
+36: aload_2
+37: ldc           #2                  // String hello
+
+// 再用 equals 比较
+39: invokevirtual #4                  // Method java/lang/String.equals:(Ljava/lang/Object;)Z
+42: ifeq          61
+45: iconst_0
+46: istore_3
+47: goto          61
+50: aload_2
+
+// 再用 equals 比较
+51: ldc           #5                  // String world
+53: invokevirtual #4                  // Method java/lang/String.equals:(Ljava/lang/Object;)Z
+56: ifeq          61
+59: iconst_1
+60: istore_3
+61: iload_3
+62: lookupswitch  { // 2
+               0: 88
+               1: 98
+         default: 105
+    }
+88: getstatic     #6                  // Field java/lang/System.out:Ljava/io/PrintStream;
+91: aload_1
+92: invokevirtual #7                  // Method java/io/PrintStream.println:(Ljava/lang/String;)V
+95: goto          105
+98: getstatic     #6                  // Field java/lang/System.out:Ljava/io/PrintStream;
+101: aload_1
+102: invokevirtual #7                  // Method java/io/PrintStream.println:(Ljava/lang/String;)V
+105: return
+```
+通过class字节码文件可以得知，执行了两遍`lookupswitch`。而原始代码会被编译器转换为如下代码（伪代码）：
+```java
+public class Application {
+    public Application() {
+    }
+
+    public static void main(String[] args) {
+        byte x = -1;
+        String str = "hello";
+        switch (str.hashCode()) {
+            case 99162322:   // hello hashCode
+                if (str.equals("hello")) {
+                    x = 0;
+                }
+            break;
+            case 113318802: // world hashCode
+                if (str.equals("world")) {
+                    x = 1;
+                }
+                break;
+        }
+
+        switch (x) {
+            case 0:
+                System.out.println(str);
+                break;
+            case 1:
+                System.out.println(str);
+                break;
+        }
+    }
+}
+```
+hashCode 比较是为了提高效率，hashCode 不相等那么对象就不相等。接着用 equals 比较，是为了防止 hashCode 冲突，比如 "BM" 和 "C." 的 hashCode 都是 2123，但它们的值不一样。hashCode相等，equals也相等，才算是对象相等。否则就不匹配。
+#### switch 枚举
+```java
+enum Gender {
+    BOY, GIRL
+}
+public class Application {
+    public Application() {
+    }
+
+    public static void main(Gender gender) {
+        switch (gender) {
+            case BOY:
+                System.out.println("男");
+                break;
+            case GIRL:
+                System.out.println("女");
+                break;
+        }
+    }
+}
+```
+字节码：
+```txt
+ 0: getstatic     #2                  // Field cn/forbearance/spring/Application$1.$SwitchMap$cn$forbearance$spring$Gender:[I
+ 3: aload_0
+ 4: invokevirtual #3                  // Method cn/forbearance/spring/Gender.ordinal:()I
+ 7: iaload
+ 8: lookupswitch  { // 2
+               1: 36
+               2: 47
+         default: 55
+    }
+36: getstatic     #4                  // Field java/lang/System.out:Ljava/io/PrintStream;
+39: ldc           #5                  // String 男
+41: invokevirtual #6                  // Method java/io/PrintStream.println:(Ljava/lang/String;)V
+44: goto          55
+47: getstatic     #4                  // Field java/lang/System.out:Ljava/io/PrintStream;
+50: ldc           #7                  // String 女
+52: invokevirtual #6                  // Method java/io/PrintStream.println:(Ljava/lang/String;)V
+55: return
+```
+只有一个`lookupswitch`，怎么回事呢？原因是枚举类在 jvm 内部会定义一个合成类（对用户不可见，仅 jvm 使用），用来映射枚举的 ordinal 与数组元素的关系。枚举的 ordinal 表示枚举对象的序号，从0开始。转换后的代码如下：
+```java
+public class Application {
+    public Application() {
+    }
+    
+    static class $MAP {
+        static int[]  map = new int[2];
+        static {
+            map[Gender.BOY.ordinal()] = 1;
+            map[Gender.GIRL.ordinal()] = 2;
+        }
+    }
+
+    public static void main(Gender gender) {
+        int x = $MAP.map[gender.ordinal()];
+        switch (x) {
+            case 1:
+                System.out.println("男");
+                break;
+            case 2:
+                System.out.println("女");
+                break;
+        }
+    }
+}
+```
+#### 枚举类
+`https://www.bilibili.com/video/BV1yE411Z7AP?p=138`
+#### try catch resources
+JDK 7 新特性，资源对象需要实现 AutoCloseable 接口，使用 try catch resources 可以不用写 finally 语句块，编译器会帮助生成关闭资源代码。
+```java
+public class Application {
+
+    public static void main() {
+        try (InputStream is = new FileInputStream("")) {
+            System.out.println(is);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}
+```
+字节码：
+```txt
+ 0: new           #2                  // class java/io/FileInputStream
+ 3: dup
+ 4: ldc           #3                  // String
+ 6: invokespecial #4                  // Method java/io/FileInputStream."<init>":(Ljava/lang/String;)V
+ 9: astore_0
+10: aconst_null
+
+// 将异常为 null 存入 局部变量表 槽位
+11: astore_1
+12: getstatic     #5                  // Field java/lang/System.out:Ljava/io/PrintStream;
+15: aload_0
+16: invokevirtual #6                  // Method java/io/PrintStream.println:(Ljava/lang/Object;)V
+19: aload_0
+20: ifnull        88
+23: aload_1
+24: ifnull        43
+27: aload_0
+28: invokevirtual #7                  // Method java/io/InputStream.close:()V
+31: goto          88
+34: astore_2
+35: aload_1
+36: aload_2
+37: invokevirtual #9                  // Method java/lang/Throwable.addSuppressed:(Ljava/lang/Throwable;)V
+40: goto          88
+43: aload_0
+44: invokevirtual #7                  // Method java/io/InputStream.close:()V
+47: goto          88
+50: astore_2
+51: aload_2
+52: astore_1
+53: aload_2
+54: athrow
+55: astore_3
+56: aload_0
+57: ifnull        86
+60: aload_1
+61: ifnull        82
+64: aload_0
+65: invokevirtual #7                  // Method java/io/InputStream.close:()V
+68: goto          86
+71: astore        4
+73: aload_1
+74: aload         4
+76: invokevirtual #9                  // Method java/lang/Throwable.addSuppressed:(Ljava/lang/Throwable;)V
+79: goto          86
+82: aload_0
+83: invokevirtual #7                  // Method java/io/InputStream.close:()V
+86: aload_3
+87: athrow
+88: goto          96
+91: astore_0
+92: aload_0
+93: invokevirtual #11                 // Method java/io/IOException.printStackTrace:()V
+96: return
+```
+可以看到`invokevirtual #7 / Method java/io/InputStream.close:()V`，说明编译器生成了关闭资源的代码。在底层还是使用的 finally。
+#### 方法重写时的桥接方法
+方法重写时对返回值分两种情况：
+* 父子类的返回值一致。
+* 子类返回值可以是父类返回值的子类。（如父类返回值是 Number，子类返回值是 Integer，Integer 是 Number 子类）
+```java
+class A {
+    public Number m() {
+        return 1;
+    }
+}
+class B extends A {
+    @Override
+    public Integer m() {
+        return 2;
+    }
+}
+```
+字节码：
+```txt
+{
+  cn.forbearance.spring.B();
+    descriptor: ()V
+    flags:
+    Code:
+      stack=1, locals=1, args_size=1
+         0: aload_0
+         1: invokespecial #1                  // Method cn/forbearance/spring/A."<init>":()V
+         4: return
+      LineNumberTable:
+        line 13: 0
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            0       5     0  this   Lcn/forbearance/spring/B;
+
+  public java.lang.Integer m();
+    descriptor: ()Ljava/lang/Integer;
+    flags: ACC_PUBLIC
+    Code:
+      stack=1, locals=1, args_size=1
+         0: iconst_2
+         1: invokestatic  #2                  // Method java/lang/Integer.valueOf:(I)Ljava/lang/Integer;
+         4: areturn
+      LineNumberTable:
+        line 16: 0
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            0       5     0  this   Lcn/forbearance/spring/B;
+
+  public java.lang.Number m();
+    descriptor: ()Ljava/lang/Number;
+    flags: ACC_PUBLIC, ACC_BRIDGE, ACC_SYNTHETIC
+    Code:
+      stack=1, locals=1, args_size=1
+         0: aload_0
+         1: invokevirtual #3                  // Method m:()Ljava/lang/Integer;
+         4: areturn
+      LineNumberTable:
+        line 13: 0
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            0       5     0  this   Lcn/forbearance/spring/B;
+}
+```
+从class字节码中发现有两个m方法`Integer m()`、`.Number m()`，对于子类，编译器会做如下处理：
+```java
+class B extends A {
+    @Override
+    public Integer m() {
+        return 2;
+    }
+    
+    // 桥接方法，真正重写父类的方法
+    public synthetic bridge Number m() {
+        // 子类 Integer m() 方法
+        return m();
+    }
+}
+```
+桥接方法（合成方法）仅对 jvm 可见，并且子类`Integer m()`方法没有命名冲突，可以用反射来验证。
+```java
+for (Method method : B.class.getDeclaredMethods()) {
+    System.out.println(method);
+}
+```
+输出：
+```txt
+public java.lang.Integer spring.B.m()
+public java.lang.Number spring.B.m()
+```
+#### 匿名内部类
+```java
+class Application {
+    public static void main(String[] args) {
+        Runnable runnable = new Runnable() {
+            @Override
+            public void run() {
+                System.out.println("ok");
+            }
+        };
+    }
+}
+```
+字节码：
+```txt
+# javap -v Application.class
+0: new           #2                  // class cn/forbearance/spring/Application$1
+3: dup
+4: invokespecial #3                  // Method cn/forbearance/spring/Application$1."<init>":()V
+7: astore_1
+8: return
+
+# javap -v Application$1.class（编译器生成的class字节码文件）
+final class cn.forbearance.spring.Application$1 implements java.lang.Runnable
+  minor version: 0
+  major version: 52
+  flags: ACC_FINAL, ACC_SUPER
+  ... ...
+  
+  public void run();
+    descriptor: ()V
+    flags: ACC_PUBLIC
+    Code:
+      stack=2, locals=1, args_size=1
+         0: getstatic     #2                  // Field java/lang/System.out:Ljava/io/PrintStream;
+         3: ldc           #3                  // String ok
+         5: invokevirtual #4                  // Method java/io/PrintStream.println:(Ljava/lang/String;)V
+         8: return
+      LineNumberTable:
+        line 13: 0
+        line 14: 8
+      LocalVariableTable:
+        Start  Length  Slot  Name   Signature
+            0       9     0  this   Lcn/forbearance/spring/Application$1;
+```
+从字节码文件中也能发现，编译器会对这个匿名内部类额外生成类（`Application$1.java`）伪代码：
+```java
+final class Application$1 implements Runnable {
+    Application$1() {}
+    public void run() {
+        System.out.println("ok");
+    }
+}
+```
+在底层等价于`Runnable runnable = new Application$1();`
+
+如果引用局部变量的匿名内部类，在底层会额外生成一个类，这个类有一个有参构造，将局部变量传递给构造方法。
+```java
+final class Application$1 implements Runnable {
+    int val$x;
+    Application$1(int x) {
+        this.val$x = x
+    }
+    public void run() {
+        System.out.println("ok" + this.val$x);
+    }
+}
+```
+匿名内部类引用局部变量时，局部变量必须是 final 的。Java为了避免数据不同步的问题，做出了匿名内部类只可以访问final的局部变量的限制。这是因为匿名内部类会创建一个对局部变量的拷贝，并且这个拷贝必须是不可修改的，以确保在内部类中使用局部变量时保持一致性。
 ### 类加载阶段
+#### 加载
+加载这一步主要是通过 类加载器 完成的。不过，数组类不是通过 ClassLoader 创建的，而是 JVM 在需要的时候自动创建的。
+
+类加载是将类的字节码载入方法区中，内部采用 c++ 的 instanceKlass 描述 Java 类，其重要的 field 有：
+* _java_mirror：Java 的类镜像，例如对 String 来说，就是 String.class。作用是把 klass 暴露给 Java 使用。
+* _super：父类
+* _fields：成员变量
+* _methods：方法
+* _constants：常量池
+* _class_loader：类加载器
+* _vtable：虚方法表
+* _itable：接口方法表
+
+如果这个类还有父类没有加载，先加载父类。加载和链接有可能是交替执行的。（加载阶段尚未结束，连接阶段可能就已经开始了。）
+
+instanceKlass 这样的元数据是存储在方法区（1.8以后是元空间）的，但`_java_mirror`是存储在堆中的。
+
+![](../image/jvm_类加载_class.png)
+
+类对象（Person.class）持有`instanceKlass`中`_java_mirror`内存地址，`instanceKlass`中`_java_mirror`持有 类对象（Person.class）的内存地址。
+#### 链接
+类链接分为三个步骤：
+- 验证：验证类是否符合 JVM 规范，安全性检查，比如验证魔数是否符合格式。
+- 准备：为 static 变量分配空间，设置默认值。
+    * static 变量在 JDK7 以前是存储在 instanceKlass 末尾，从 JDK7 开始，存储在 _java_mirror（也就是类对象，在堆中） 末尾。
+    * static 变量分配空间和赋值是两个步骤，分配空间在准备阶段完成，赋值在初始化阶段完成。
+    * 如果 static 变量是 final 的基本类型以及字符串常量，那么值在编译阶段就确定了，赋值就会在准备阶段完成。
+    * 如果 static 变量是 final，但属于引用类型，赋值则会在初始化阶段（类的加载）完成。
+- 解析：将常量池中的符号引用解析为直接引用（实际的内存地址）
+#### 初始化
+##### <cinit\>()V
+初始化就会调用`<cinit>()V`，即执行类的构造方法，虚拟机会保证这个类的构造方法的线程安全。
+
+javap输出的 static{} 就是 <clinit> 方法。
+##### 初始化时机
+类初始化是懒惰的，只有需要用到这个类的时候才会执行初始化。
+
+会导致类初始化的情况：
+* main 方法所在的类，总会被首先初始化。
+* 首次访问这个类的静态变量或静态方法。
+* 子类初始化，如果父类还没初始化，会先初始化父类。
+* 子类访问父类的静态变量，只会触发父类的初始化。
+* Class.forName。
+* new 会导致初始化。
+
+不会导致初始化的情况：
+* 访问类的 static final 静态常量（基本类型和字符串），不会触发初始化。
+* 类对象.class。
+* 创建该类的数组不会触发初始化。（new Application[5]）
+* 类加载器的 loadClass 方法。（不会初始化这个类，但是会加载这个类及其父类）
+* Class.forName() 方法的第二个参数为 false 时。（不会初始化这个类，但是会加载这个类及其父类）
 ### 类加载器
+| 类加载器               | 加载哪些类            | 描述                              |
+| ---------------------- | --------------------- | --------------------------------- |
+| BootstrapClassLoader   | JAVA_HOME/jre/lib     | 无法直接访问                      |
+| ExtensionClassLoader   | JAVA_HOME/jre/lib/ext | 上级为 Bootstrap，获取到的是 null |
+| ApplicationClassLoader | classpath             | 上级为 Extension                  |
+| 自定义类加载器         | 自定义                | 上级为 Application                |
+#### 启动类加载器
+#### 扩展类加载器
+#### 双亲委派模式
+#### 线程上下文类加载器
+#### 自定义类加载器
+
 ### 运行期优化
 
 ## Java内存模型
@@ -2319,3 +3437,16 @@ String s1 = new String("abc");
 > https://blog.csdn.net/A598853607/article/details/125026953
 
 ### 讲讲什么是多态，底层原理是啥
+
+### ＜init＞ 和 ＜clinit＞ 区别:
+init 针对的是实例, cinit针对是类, 数量上来来讲init构造器至少存在一个. cinit构造器只存在一个. 因为类对象在jvm内存中只会存在一个(同一个类加载器)
+
+<clinit>方法是在类加载过程中执行的，而<init>是在对象实例化执行的，所以<clinit>一定比<init>先执行。所以整个顺序就是：
+1. 父类静态变量初始化、静态语句块（经验证：按代码先后顺序执行）
+2. 子类静态变量初始化、静态语句块（先后顺序执行）
+3. 父类变量初始化、普通语句块（先后顺序执行）
+4. 父类构造函数
+5. 子类变量初始化、普通语句块（先后顺序执行）
+6. 子类构造函数
+
+### SPI
