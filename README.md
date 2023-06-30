@@ -17,7 +17,7 @@
 | Dubbo | `https://www.bilibili.com/video/BV1ns411c7jV/` | 4h17' |
 | HashMap | `https://www.bilibili.com/video/BV1nJ411J7AA/` | 3h54' |
 | JavaGuide |  |  |
-| JUC | `1：https://www.bilibili.com/video/BV16J411h7Rd/` <br/> `2：https://www.bilibili.com/video/BV1ar4y1x727/` | 24h18' <br/> 32h36' |
+| JUC | `1：https://www.bilibili.com/video/BV16J411h7Rd/` <br/> `2：https://www.bilibili.com/video/BV1ar4y1x727/` | 32h36' <br/>24h18'  |
 | JVM | `https://www.bilibili.com/video/BV1yE411Z7AP/` | 17h35' |
 | Kafka | `https://www.bilibili.com/video/BV1vr4y1677k/` | 12h57' |
 | Linux | `https://www.bilibili.com/video/BV1WY4y1H7d3/` | 20h33' |
