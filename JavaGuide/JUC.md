@@ -473,6 +473,324 @@ LockSupport.unpark(暂停线程对象)
 ### 线程状态转换
 ![](../image/juc_线程状态转换.png)
 ### Lock
+#### 活跃性
+##### 定位死锁
+检测死锁可以使用 jconsole 工具，或者使用 jps 定位进程id，再用 jstack 定位死锁。
+##### 死锁
+两个线程互相持有对方想要的锁。
+##### 活锁
+两个线程改变对方的结束条件。
+##### 饥饿
+#### ReentrantLock
+特点：
+* 可中断。
+* 可以设置超时时间。
+* 可以设置公平锁。
+* 支持多个条件变量。
+
+与 synchronized 一样，都支持可重入。
+
+基本语法：
+```java
+lock.lock();
+try {
+    // 临界区
+} finally {
+    lock.unlock();
+}
+```
+##### 可重入
+可重入是指同一个线程如果首次获得了这把锁，可以有权利再次获取这把锁。如果是不可重入锁，那么第二西获得锁时，还是会被锁挡住。
+```java
+public class App {
+
+    static ReentrantLock lock = new ReentrantLock();
+
+    public static void main(String[] args) {
+        m1();
+    }
+
+    public static void  m1() {
+        lock.lock();
+        try {
+            m2();
+        } finally {
+            lock.unlock();
+        }
+    }
+    public static void m2() {
+        lock.lock();
+        try {
+            m3();
+        } finally {
+            lock.unlock();
+        }
+    }
+    public static void m3() {
+        lock.lock();
+        try {
+            System.out.println("m3");
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+```
+##### 可中断
+Thread.interrupt()，中断处于阻塞等待的线程，防止无限制的阻塞。加锁使用`ReentrantLock.lockInterruptibly()`，别忘了解锁。
+##### 锁超时
+- `tryLock()`：获取不到锁立即返回false。
+- `tryLock(long timeout, TimeUnit unit)`：获取不到锁时，等待指定等待时间，等待时间超时还没获取到锁，则返回false。
+##### 公平锁
+ReentrantLock 默认是不公平锁。
+```java
+/**
+ * Creates an instance of {@code ReentrantLock}.
+ * This is equivalent to using {@code ReentrantLock(false)}.
+ */
+public ReentrantLock() {
+    sync = new NonfairSync();
+}
+
+/**
+ * Creates an instance of {@code ReentrantLock} with the
+ * given fairness policy.
+ *
+ * @param fair {@code true} if this lock should use a fair ordering policy
+ */
+public ReentrantLock(boolean fair) {
+    sync = fair ? new FairSync() : new NonfairSync();
+}
+```
+##### 条件变量
+想必大家都使用过wait()和notify()这两个方法把，这两个方法主要用于多线程间的协同处理，即控制线程之间的等待、通知、切换及唤醒。而ReentrantLock也支持这样条件变量的能力。
+
+条件变量维护的是一个单向链表的队列，调用await()在队列等待和当条件满足时signal()唤醒。
+
+```java
+static ReentrantLock lock = new ReentrantLock();
+static Condition condition1 = lock.newCondition();
+static Condition condition2 = lock.newCondition();
+
+public static void main(String[] args) {
+    new Thread(() -> {
+        lock.lock();
+        try {
+            condition1.await();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            lock.unlock();
+        }
+    }).start();
+
+    new Thread(() -> {
+        lock.lock();
+        try {
+            condition1.signal();
+        } finally {
+            lock.unlock();
+        }
+    }).start();
+}
+```
+可以根据业务场景定义多个 Condition，用于存放不同等待事件的线程。
+
+使用流程：
+- await 前需要获得锁。
+- await 执行后，会释放锁，然后进入 conditionObject 等待。
+- await 的线程被唤醒（中断、超时）后，可以重新竞争锁。
+- 竞争锁成功后，从 await 后执行。
+
+API：
+```java
+// 等价 wait、wait(long n)
+void await() throws InterruptedException;
+
+boolean await(long time, TimeUnit unit) throws InterruptedException;
+
+boolean awaitUntil(Date deadline) throws InterruptedException;
+
+void awaitUninterruptibly();
+
+// 唤醒线程，等价于 notify、notifyAll
+void signal();
+
+void signalAll();
+```
+
+## 共享模型之内存
+JMM Java Memory Model，它定义了主存（线程共享内存）、工作内存（线程私有内存）的抽象概念。
+
+JMM 体现在以下几个方面：
+1. 原子性：保证指令不会受到线程上下文切换的影响。
+2. 可见性：保证指令不会受到 CPU 缓存的影响。
+3. 有序性：保证指令不会受到 CPU 指令并行优化的影响。
+### 原子性
+synchronized、Atomic工具类、Lock...
+### 可见性
+一个线程对主存的数据进行修改，但对于另一个线程是不可见的（获取的是缓存中的值）。可以使用`volatile`关键字解决不可见。每次必须到主内存中读取。
+
+synchronized 也能保证数据的可见性、原子性，但 synchronized 属于重量级操作，性能相对较低。
+
+`volatile`不能保证原子性，仅用在一写多读的情况。只能保证看到最新值，无法解决指令交错。
+### 有序性
+在不改变程序结果的前提下，这些指令的各个阶段可以通过重排序和组合来实现指令级并行。
+
+`volatile`禁止指令重排序。防止之前的指令重排序，利用了内存屏障（写之后，读之前设置内存屏障）。
+```mermaid
+sequenceDiagram
+participant t1 as t1 线程
+participant num as num=0
+participant ready as  volatile ready=false
+participant t2 as t2 线程
+t1 -->> t1 : num=2
+t1 ->> ready : ready=true
+Note over t1,ready: 写屏障
+Note over num,t2: 读屏障
+t2 ->> ready : 读取ready=true
+t2 ->> num : 读取num=2
+```
+synchronized 不保证有序性。
+
+以下方式都可以对共享变量读可见。
+1. synchronized
+2. volatile
+3. start() 前对共享变量的修改
+4. 线程结束
+5. 线程中断
+6. 对成员变量或静态变量的默认值（0、false、null）的写，对其它线程对该变量的读可见。
+## 共享模型之无锁
+### CAS
+```mermaid
+sequenceDiagram
+participant t1 as 线程A
+participant A as AtomicInteger对象
+participant t2 as 线程B
+	t1 ->> A : 获取变量 0
+	t1 ->> t1 :自增1
+	t2 -->> A : 已经修改为 1 了
+	t1 ->> A : cas(0, 1) 交换失败
+	
+	t1 ->> A : 获取变量 1
+	t1 ->> t1 :自增1
+	t2 -->> A : 已经修改为 2 了
+	t1 ->> A : cas(1, 2) 交换失败
+	
+	t1 ->> A : 获取变量 2
+	t1 ->> t1 :自增1
+	t1 ->> A : cas(1, 2) 交换成功
+```
+在对数据操作之前，首先会比较当前值跟传入值是否一样，如果一样就更新，否则不执行更新操作直接返回失败状态。
+
+CAS 底层使用的 lock cpmxchg指令（X86架构），在单核或多核CPU下都能够保证 compareAndSwap 的原子性。
+
+在多核状态下，当某个核执行到带有 lock 的指令时，CPU 会让总线锁住，当这个核讲此指令执行完，再开启总线。这个过程中不会被线程的调度机制中断，保证了多个线程对内存操作的准确性，是原子操作。
+
+```java
+// compareAndSet
+
+/*
+    expect：获取的当前最新值
+    update：要修改的值
+    工作内存 expect 和 主内存 expect 比较，如果相等则将主内存 expect 替换为 update
+*/
+public final boolean compareAndSet(int expect, int update) {
+    return unsafe.compareAndSwapInt(this, valueOffset, expect, update);
+}
+
+public final native boolean compareAndSwapInt(Object var1, long var2, int var4, int var5);
+
+
+// 自增
+public final int incrementAndGet() {
+    return unsafe.getAndAddInt(this, valueOffset, 1) + 1;
+}
+
+public final int getAndAddInt(Object var1, long var2, int var4) {
+    int var5;
+    do {
+        var5 = this.getIntVolatile(var1, var2);
+    } while(!this.compareAndSwapInt(var1, var2, var5, var5 + var4));
+
+    return var5;
+}
+/*
+    var1：是当前 AtomicInteger 对象
+    var2：当前值（value）。（比如现在要实现 2+1）那么 var2 就是2，var4 就是 1
+    var5：获取底层当前的值（value），获取最新值
+    
+    假设此时只有一个线程操作 AtomicInteger 对象，则 this.compareAndSwapInt(var1, var2, var5, var5 + var4) 的参数如下：
+        this.compareAndSwapInt(AtomicInteger, 2, 2, 2+1)
+        如果新值（主内存共享）和旧值（工作内存私有）相等，就将2+1写回主内存。在底层达到数据可见性。
+    不相等则一直循环，直到相等为止。
+ 
+*/
+```
+CAS 操作借助了 volatile 来达到交换并替换的效果。
+
+- CAS 是乐观锁。synchronized 是悲观锁。
+- CAS 体现的是无锁并发、无阻塞并发。但如果线程竞争激烈，必然会频繁重试，效率上也会受影响。
+
+线程数不超过CPU核心数时才能发挥 CAS 的性能。
+
+### 原子整数
+#### API
+以 AtomicInteger 为例：
+```java
+AtomicInteger i = new AtomicInteger(0);
+// i++
+i.getAndIncrement();
+// ++i
+i.incrementAndGet();
+// i--
+i.getAndDecrement();
+// --i
+i.decrementAndGet();
+// 等价于 i++，只不过不是加1，而是加指定步长
+i.getAndAdd(5);
+// 等价于 ++i，只不过不是加1，而是加指定步长
+i.addAndGet(5);
+
+
+// 使用函数式接口返回的结果更新当前值（value），返回更新后的值
+i.updateAndGet(item -> {
+    return 5;
+});
+
+// 使用函数式接口返回的结果更新当前值（value），返回更新前的值
+i.getAndUpdate(item -> {
+    return 5;
+});
+```
+### 原子引用
+- AtomicReference
+- AtomicMarkableReference：简化版 AtomicStampedReference，使用布尔值标识共享变量是否被修改。
+- AtomicStampedReference：能够感知其它线程修改了共享变量对象，如果修改了，则自己的 cas 操作就算失败，然后再重试，不过 AtomicStampedReference cas 操作时会带一个版本号。
+
+```java
+// AtomicStampedReference 基本用法
+String obj = "A";
+AtomicStampedReference<String> reference = new AtomicStampedReference<String>(obj, 0);
+
+String oldReference = reference.getReference();
+String newReference = "C";
+
+int stamp = reference.getStamp();
+
+reference.compareAndSet(oldReference, newReference, stamp, stamp+1);
+
+// -------------------------------------------------------------------
+
+// AtomicMarkableReference 基本用法
+AtomicMarkableReference<String> markableReference = new AtomicMarkableReference<>(obj, true);
+String oldReference = markableReference.getReference();
+String newReference = "C";
+markableReference.compareAndSet(oldReference, newReference, true, false);
+```
+### 原子数组
+### 字段更新器
+### 原子累加器
 
 
 
