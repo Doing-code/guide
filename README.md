@@ -2,7 +2,7 @@
 - [x] [Dubbo](JavaGuide/Dubbo.md)
 - [x] [JavaGuide](JavaGuide/JavaGuide.md)
 - [ ] [JUC](JavaGuide/JUC.md)
-- [ ] [JVM](JavaGuide/JVM.md)
+- [x] [JVM](JavaGuide/JVM.md)
 - [ ] [Kafka](JavaGuide/Kafka.md)
 - [x] [MyBatis](https://github.com/Doing-code/MyBatisFramework)
 - [x] [Spring](https://github.com/Doing-code/SpringFramework)

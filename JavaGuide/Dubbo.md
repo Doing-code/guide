@@ -838,9 +838,9 @@ public <T> Exporter<T> export(final Invoker<T> originInvoker) throws RpcExceptio
 上面代理主要做如下一些操作：
 
 1）、调用 `doLocalExport` 导出服务。
-2）、向注册中心注册服务。
-3）、向注册中心订阅 override，注册override协议。
-4）、创建并返回 DestroyableExporter
+		2）、向注册中心注册服务。
+		3）、向注册中心订阅 override，注册override协议。
+		4）、创建并返回 DestroyableExporter
 
 7. `org.apache.dubbo.registry.integration.RegistryProtocol#doLocalExport`
 ```java
@@ -966,8 +966,8 @@ private ProtocolServer createServer(URL url) {
 `createServer` 包含三个核心的逻辑：
 
 1）、检测是否存在 server 参数对应的 Transporter 扩展，不存在则抛异常。
-2）、创建服务器实例。
-3）、检测是否存在 client 参数对应的 Transporter 扩展，不存在则抛异常。
+		2）、创建服务器实例。
+		3）、检测是否存在 client 参数对应的 Transporter 扩展，不存在则抛异常。
 
 11. 创建 NettyServer
 ```java
@@ -1068,16 +1068,29 @@ protected void doOpen() throws Throwable {
 ```
 - `getTransporter()`获取的 Transporter 是在运行时动态创建的，类名为 TransporterAdaptive，也就是自适应扩展类。TransporterAdaptive 运行时根据传入的 URL 参数决定加载什么类型的 Transporter，默认是 NettyTransporter。
 
-1. 服务提供者初始化Dubbo框架，并加载相关配置。
-2. Dubbo框架创建服务导出器，用于将服务导出。
-3. 服务提供者标记要导出的服务接口和实现类。
-4. Dubbo框架创建服务实例，并与服务接口关联。
-5. Dubbo框架生成服务暴露对象，描述要导出的服务。
-6. Dubbo框架加载指定的协议实现类。
-7. 协议实现类将服务注册到注册中心，并监听指定的IP和端口。
-8. 协议实现类使用网络通信组件监听IP和端口，等待远程调用请求。
-
 至此，Dubbo 的服务导出流程就走完了。
+
+
+
+```txt
+# Dubbo 的服务导出流程 总结
+1. 服务配置解析：
+	Dubbo会解析服务提供者在XML配置文件或注解中定义的服务配置，包括服务接口、服务实现类、协议、端口等信息。
+2. 服务实例化：
+	Dubbo会根据服务实现类的配置信息，实例化服务对象。
+3. 服务包装：
+	Dubbo会对服务对象进行包装，以提供一些额外的功能，如事务管理、远程调用的封装等。这些包装类会按照一定的顺序进行包装，形成一个代理链。
+4. 服务注册：
+	Dubbo将服务的相关信息注册到注册中心，包括服务接口、服务地址、服务版本等。注册中心可以是ZooKeeper、Consul等。
+5. 协议导出：
+	Dubbo会根据配置的协议类型，将服务暴露到指定的协议上，比如Dubbo协议、HTTP协议等。在导出过程中，Dubbo会创建对应的Server对象，并将服务对象和协议绑定起来。
+6. 服务暴露：
+	服务暴露是指将服务发布到网络上（Netty），以供消费者调用。在此阶段，Dubbo会启动监听器，监听指定协议的端口，等待消费者的调用。
+```
+
+
+
+
 ### 服务引用
 
 分为本地引入、直接引入、注册中心引入。

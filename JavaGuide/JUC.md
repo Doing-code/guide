@@ -386,7 +386,7 @@ Java中锁膨胀主要涉及到两种类型的锁：偏向锁和轻量级锁。
 
 轻量级锁在没有竞争时，每次锁重入仍然需要执行 CAS 操作。
 
-Java6 引入了偏向锁来做进一步优化，只有第一次使用 CAS 时才将线程ID设置到对象的 Mark Word 中，之后锁重入发现这个线程ID是自己的，就表示没有竞争，不用再 CAS。以后只要不发生锁竞争，这个锁对象就归该线程所以。
+Java6 引入了偏向锁来做进一步优化，只有第一次使用 CAS 时才将线程ID设置到对象的 Mark Word 中，之后锁重入发现这个线程ID是自己的，就表示没有竞争，不用再 CAS。以后只要不发生锁竞争，这个锁对象就归该线程所有。
 ###### 偏向状态
 ```ruby
 |--------------------------------------------------------------------------------------------------------------|
@@ -429,7 +429,10 @@ Java6 引入了偏向锁来做进一步优化，只有第一次使用 CAS 时才
 
 即类的实例会变成不可偏向。原因是偏向是指类偏性，而不是对象实例偏向；一个类只能有一个偏向。
 ##### 锁消除
-`-XX:-EliminateLocks`关闭锁消除优化。即锁对象没有逃离方法作用域，JVM 会认为可以不用加锁操作。
+即锁对象没有逃离方法作用域，JVM 会认为可以不用加锁操作。
+
+`-XX:-EliminateLocks` 关闭锁消除优化。
+
 ### wait/notify
 
 ![](../image/juc_Monitor结构.png)
@@ -618,7 +621,6 @@ void signal();
 
 void signalAll();
 ```
-
 ## 共享模型之内存
 JMM Java Memory Model，它定义了主存（线程共享内存）、工作内存（线程私有内存）的抽象概念。
 
@@ -629,13 +631,19 @@ JMM 体现在以下几个方面：
 ### 原子性
 synchronized、Atomic工具类、Lock...
 ### 可见性
+修饰成员变量和静态变量。
+
 一个线程对主存的数据进行修改，但对于另一个线程是不可见的（获取的是缓存中的值）。可以使用`volatile`关键字解决不可见。每次必须到主内存中读取。
 
-synchronized 也能保证数据的可见性、原子性，但 synchronized 属于重量级操作，性能相对较低。
+synchronized 也能保证数据的可见性、原子性，但 synchronized 属于重量级操作，性能相对较低。被 synchronized 修饰的代码，在开始执行时会加锁，执行完成后会进行解锁，但在一个变量解锁之前，必须先把此变量同步回主存中。synchronized 会强制当前线程读取主内存中的值。
 
 `volatile`不能保证原子性，仅用在一写多读的情况。只能保证看到最新值，无法解决指令交错。
 ### 有序性
-在不改变程序结果的前提下，这些指令的各个阶段可以通过重排序和组合来实现指令级并行。
+同一个线程内，JVM 在不会改变程序结果的前提下，可以调整语句的执行顺序。这些指令的各个阶段可以通过重排序和组合来实现指令级并行。
+
+比如 double-check-lock 单例模式，JVM 可能会优化为：先将引用地址赋值给 INSTANCE 变量后，再执行构造方法，那么另一个线程进来一看 INSTANCE 不为空了，可能拿到的是一个未初始化完成的单例对象。
+
+在 JDK5 以上的版本 volatile 才会真正生效。
 
 `volatile`禁止指令重排序。防止之前的指令重排序，利用了内存屏障（写之后，读之前设置内存屏障）。
 ```mermaid
@@ -652,14 +660,18 @@ t2 ->> ready : 读取ready=true
 t2 ->> num : 读取num=2
 ```
 synchronized 不保证有序性。
+#### happens-before
+happens-before 规定了哪些写操作对其它线程的读操作可见，是一套可见性与有序性的规则总结。
 
 以下方式都可以对共享变量读可见。
 1. synchronized
 2. volatile
 3. start() 前对共享变量的修改
-4. 线程结束
-5. 线程中断
+4. 线程结束前的写，对其它线程（join()）的读可见。
+5. 线程中断前的写，
 6. 对成员变量或静态变量的默认值（0、false、null）的写，对其它线程对该变量的读可见。
+
+具有传递性，如果 x (happens-before) > y 并且 y (happens-before) > x，那么有 x (happens-before) > z
 ## 共享模型之无锁
 ### CAS
 ```mermaid
@@ -731,8 +743,9 @@ CAS 操作借助了 volatile 来达到交换并替换的效果。
 
 - CAS 是乐观锁。synchronized 是悲观锁。
 - CAS 体现的是无锁并发、无阻塞并发。但如果线程竞争激烈，必然会频繁重试，效率上也会受影响。
+    线程数不超过CPU核心数时才能发挥 CAS 的性能。
 
-线程数不超过CPU核心数时才能发挥 CAS 的性能。
+CAS 底层是依赖于操作系统层的 CAS 指令。
 
 ### 原子整数
 #### API
@@ -789,10 +802,408 @@ String newReference = "C";
 markableReference.compareAndSet(oldReference, newReference, true, false);
 ```
 ### 原子数组
+保护数组的元素变更时不受多线程影响（线程安全）。
+
+原子更新数组的元素 Integer、Long、引用对象。AtomicReferenceArray类也支持比较并交换功能。即多线程下修改数组的元素 Integer、Long、引用对象 也是线程安全的。
+
+- AtomicIntegerArray
+- AtomicLongArray
+- AtomicReferenceArray
 ### 字段更新器
+利用字段更新器，可以针对对象的某个域（Field，字段）进行原子操作。只能配合 volatile 修饰的字段使用，否则抛异常。`java.lang.IllegalArgumentException: Must be volatile type`
+
+- AtomicReferenceFieldUpdater
+- AtomicIntegerFieldUpdater
+- AtomicLongFieldUpdater
 ### 原子累加器
 
+```txt
+原文：https://www.bilibili.com/video/BV16J411h7Rd?p=180
 
+LongAdder 原理跳过了，逻辑感很强，不愧是 Doug Lea 操刀。。。
+    等后续涉及到并发编程时再来复习回顾。
+```
+#### LongAdder 原理
+```java
+/**
+ * Table of cells. When non-null, size is a power of 2.
+ 
+    累加单元数组，懒惰初始化，容量是2次幂
+ */
+transient volatile Cell[] cells;
+
+/**
+ * Base value, used mainly when there is no contention, but also as
+ * a fallback during table initialization races. Updated via CAS.
+ 
+    基础值，如果没有竞争，则用 cas 累加
+ */
+transient volatile long base;
+
+/**
+ * Spinlock (locked via CAS) used when resizing and/or creating Cells.
+ 
+    在 cells 创建或扩容时，置为 1，表示加锁
+ */
+transient volatile int cellsBusy;
+```
+
+`@sun.misc.Contended`防止缓存行伪共享，即一个 Cell 对应一个 缓存行。
+```java
+@sun.misc.Contended static final class Cell {
+    volatile long value;
+    Cell(long x) { value = x; }
+    final boolean cas(long cmp, long val) {
+        return UNSAFE.compareAndSwapLong(this, valueOffset, cmp, val);
+    }
+
+    // Unsafe mechanics
+    private static final sun.misc.Unsafe UNSAFE;
+    private static final long valueOffset;
+    static {
+        try {
+            UNSAFE = sun.misc.Unsafe.getUnsafe();
+            Class<?> ak = Cell.class;
+            valueOffset = UNSAFE.objectFieldOffset
+                (ak.getDeclaredField("value"));
+        } catch (Exception e) {
+            throw new Error(e);
+        }
+    }
+}
+```
+#### LongAdder 源码
+```java
+LongAdder adder = new LongAdder();
+adder.increment();
+
+public void increment() {
+    add(1L);
+}
+
+public void add(long x) {
+    Cell[] as; long b, v; int m; Cell a;
+    if ((as = cells) != null || !casBase(b = base, b + x)) {
+        boolean uncontended = true;
+        if (as == null || (m = as.length - 1) < 0 ||
+            (a = as[getProbe() & m]) == null ||
+            !(uncontended = a.cas(v = a.value, v + x)))
+            longAccumulate(x, null, uncontended);
+    }
+}
+```
+
+```mermaid
+graph LR;
+  A(当前线程)-->B(cells)
+  B --为空--> C(cas base 累加)
+  C --成功--> D(return)
+  C --失败--> E(longAccumulate)
+  B --不为空--> F(当前线程 cell 是否创建)
+  F --已创建--> G(cas cell 累加)
+  G --成功--> D
+  G --失败--> E
+  F --未创建--> E
+```
+##### cells 未创建
+```java
+final void longAccumulate(long x, LongBinaryOperator fn,
+                          boolean wasUncontended) {
+    int h;
+    if ((h = getProbe()) == 0) {
+        ThreadLocalRandom.current(); // force initialization
+        h = getProbe();
+        wasUncontended = true;
+    }
+    boolean collide = false;                // True if last slot nonempty
+    for (;;) {
+        Cell[] as; Cell a; int n; long v;
+        if ((as = cells) != null && (n = as.length) > 0) {
+            if ((a = as[(n - 1) & h]) == null) {
+                if (cellsBusy == 0) {       // Try to attach new Cell
+                    Cell r = new Cell(x);   // Optimistically create
+                    if (cellsBusy == 0 && casCellsBusy()) {
+                        boolean created = false;
+                        try {               // Recheck under lock
+                            Cell[] rs; int m, j;
+                            if ((rs = cells) != null &&
+                                (m = rs.length) > 0 &&
+                                rs[j = (m - 1) & h] == null) {
+                                rs[j] = r;
+                                created = true;
+                            }
+                        } finally {
+                            cellsBusy = 0;
+                        }
+                        if (created)
+                            break;
+                        continue;           // Slot is now non-empty
+                    }
+                }
+                collide = false;
+            }
+            else if (!wasUncontended)       // CAS already known to fail
+                wasUncontended = true;      // Continue after rehash
+            else if (a.cas(v = a.value, ((fn == null) ? v + x :
+                                         fn.applyAsLong(v, x))))
+                break;
+            else if (n >= NCPU || cells != as)
+                collide = false;            // At max size or stale
+            else if (!collide)
+                collide = true;
+            else if (cellsBusy == 0 && casCellsBusy()) {
+                try {
+                    if (cells == as) {      // Expand table unless stale
+                        Cell[] rs = new Cell[n << 1];
+                        for (int i = 0; i < n; ++i)
+                            rs[i] = as[i];
+                        cells = rs;
+                    }
+                } finally {
+                    cellsBusy = 0;
+                }
+                collide = false;
+                continue;                   // Retry with expanded table
+            }
+            h = advanceProbe(h);
+        }
+        else if (cellsBusy == 0 && cells == as && casCellsBusy()) {
+            boolean init = false;
+            try {                           // Initialize table
+                if (cells == as) {
+                    Cell[] rs = new Cell[2];
+                    rs[h & 1] = new Cell(x);
+                    cells = rs;
+                    init = true;
+                }
+            } finally {
+                cellsBusy = 0;
+            }
+            if (init)
+                break;
+        }
+        else if (casBase(v = base, ((fn == null) ? v + x :
+                                    fn.applyAsLong(v, x))))
+            break;                          // Fall back on using base
+    }
+}
+```
+##### cells 已创建
+
+## 共享模型之不可变
+- 属性用 final 修饰保证了该属性是只读的，不能修改。但如果是引用类型，虽然对象不可变，但其内部的属性是可变的。
+- 类用 final 修饰保证了该类中的方法不能被覆盖，该类也无法被继承，防止子类无意间破坏不可变性。
+
+单个方法是线程安全的，但如个其多个方法的组合不一定是线程安全的。
+
+final 也用到了写屏障，final 之前的指令不会跑到 final 之后执行。
+### 享元模式
+场景：当需要复用数量有限的同一类对象时，如字符串常量池、线程池、包装类的缓存等。
+
+## 并发工具
+### 线程池
+
+#### ThreadPoolExecutor
+![](../image/juc_线程池继承关系.png)
+##### 线程池状态
+ThreadPoolExecutor 使用 int 的高3位来表示线程池状态，低29位表示线程数量。这些信息存储在一个原子变量 ctl 中，目的是可以用一次 cas 原子操作进行赋值。
+
+| 状态       | 高3位 | 接收新任务 | 处理阻塞任务 | 描述                                        |
+| ---------- | ----- | ---------- | ------------ | ------------------------------------------- |
+| RUNNING    | 111   | Y          | Y            |                                             |
+| SHUTDOWN   | 000   | N          | Y            | 不会接收新任务，但会处理阻塞队列剩余任务    |
+| STOP       | 001   | N          | N            | 会中断正在执行的任务，并抛弃阻塞队列任务    |
+| TIDYING    | 010   | -          | -            | 任务全部执行完毕，活动线程为0，即将进入终结 |
+| TERMINATED | 011   | -          | -            | 终结                                        |
+
+##### 构造方法
+```java
+public ThreadPoolExecutor(int corePoolSize,
+                          int maximumPoolSize,
+                          long keepAliveTime,
+                          TimeUnit unit,
+                          BlockingQueue<Runnable> workQueue,
+                          ThreadFactory threadFactory,
+                          RejectedExecutionHandler handler) {}
+```
+- `corePoolSize`：核心线程数（最多保留的线程数）
+- `maximumPoolSize`：最大线程数（减去核心线程数之后还能创建多少个临时线程）
+- `keepAliveTime`：存活时间，即超过 corePoolSize 的线程多久被回收
+- `unit`：存活时间单位
+- `workQueue`：阻塞队列
+- `threadFactory`：线程工厂，用来创建线程。
+- `handler`：拒绝策略
+
+阻塞队列满了，新添加的任务才会去创建临时线程。最大线程数满了才会执行拒绝策略。
+
+```txt
+1. 线程池刚开始没有线程，当一个任务提交给线程池后，线程池会创建一个核心线程来执行该任务。
+2. 当线程数达到 corePoolSize 后，这时新添加的任务会被加入到 workQueue 阻塞队列中，等待被线程池执行。
+3. 如果 workQueue 是有界队列，那么当阻塞队列中任务数量超过了队列大小时，会创建 maximumPoolSize - corePoolSize 数目的临时线程来执行新添加的任务。
+4. 如果线程数达到 maximumPoolSize，且还有新任务添加，这时会触发拒绝策略。JDK 提供了四种拒绝策略的实现：
+    AbortPolicy：默认策略。抛 RejectedExecutionException 异常。
+    CallerRunsPolicy：调用者线程执行该任务（即调用execute这个方法的线程）
+    DiscardPolicy：放弃本次任务
+    DiscardOldestPolicy：放弃队列中最早的任务，该任务取而代之。
+5. 当高峰过去后，超过 corePoolSize 的临时线程如果在一段时间没有执行任务，则需要结束线程资源。这个时间由 keepAliveTime和unit 控制。
+```
+##### Executors.newFixedThreadPool
+固定大小线程池。
+```java
+public static ExecutorService newFixedThreadPool(int nThreads) {
+    return new ThreadPoolExecutor(nThreads, nThreads,
+                                  0L, TimeUnit.MILLISECONDS,
+                                  new LinkedBlockingQueue<Runnable>());
+}
+
+public static ExecutorService newFixedThreadPool(int nThreads, ThreadFactory threadFactory) {
+    return new ThreadPoolExecutor(nThreads, nThreads,
+                                  0L, TimeUnit.MILLISECONDS,
+                                  new LinkedBlockingQueue<Runnable>(),
+                                  threadFactory);
+}
+```
+特点：
+- 核心线程数 == 最大线程数，没有临时线程。
+- 阻塞队列是无界的，可以添加任意数量的任务。
+
+适用于任务量已知，相对耗时的任务。
+##### Executors.newCachedThreadPool
+带缓冲线程池。
+```java
+public static ExecutorService newCachedThreadPool() {
+    return new ThreadPoolExecutor(0, Integer.MAX_VALUE,
+                                  60L, TimeUnit.SECONDS,
+                                  new SynchronousQueue<Runnable>());
+}
+
+public static ExecutorService newCachedThreadPool(ThreadFactory threadFactory) {
+    return new ThreadPoolExecutor(0, Integer.MAX_VALUE,
+                                  60L, TimeUnit.SECONDS,
+                                  new SynchronousQueue<Runnable>(),
+                                  threadFactory);
+}
+```
+特点：
+- 核心线程数是 0，最大线程数是 Integer.MAX_VALUE，临时线程的空闲时间是 60s。临时线程可以无限创建，都是临时线程，可被回收。
+- 采用 SynchronousQueue 队列，该队列没有容量。将任务放到该队列中，不能马上返回（阻塞），需要等待另一个线程取出这个任务了，才能返回。最多只能放一个。多用于消息队列。
+
+适用于任务数比较密集，但每个任务执行时间较短的情况。
+##### Executors.newSingleThreadExecutor
+单线程的线程池。
+```java
+public static ExecutorService newSingleThreadExecutor() {
+    return new FinalizableDelegatedExecutorService
+        (new ThreadPoolExecutor(1, 1,
+                                0L, TimeUnit.MILLISECONDS,
+                                new LinkedBlockingQueue<Runnable>()));
+}
+
+public static ExecutorService newSingleThreadExecutor(ThreadFactory threadFactory) {
+    return new FinalizableDelegatedExecutorService
+        (new ThreadPoolExecutor(1, 1,
+                                0L, TimeUnit.MILLISECONDS,
+                                new LinkedBlockingQueue<Runnable>(),
+                                threadFactory));
+}
+```
+使用场景：希望多个任务串行执行。线程数为 1，任务数超过 1时，会放入无界队列等待。
+
+如果执行过程中发生异常，该线程池还会再创建一个线程，保证线程池的正常工作。
+##### 提交任务
+```java
+// 执行任务
+void execute(Runnable command);
+
+// 提交任务 task，可以获取执行的返回值
+<T> Future<T> submit(Callable<T> task);
+
+// 提交 tasks 中的任务
+<T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> tasks)
+        throws InterruptedException;
+        
+// 提交 tasks 中的任务，带超时时间
+<T> List<Future<T>> invokeAll(Collection<? extends Callable<T>> tasks,
+                          long timeout, TimeUnit unit)
+        throws InterruptedException;
+
+// 提交 tasks 中的任务，哪个任务先执行成功，就返回哪个任务的执行结果，其它任务取消
+<T> T invokeAny(Collection<? extends Callable<T>> tasks) throws InterruptedException, ExecutionException;
+
+// 提交 tasks 中的任务，哪个任务先执行成功，就返回哪个任务的执行结果，其它任务取消，带超时时间
+<T> T invokeAny(Collection<? extends Callable<T>> tasks,
+            long timeout, TimeUnit unit)
+        throws InterruptedException, ExecutionException, TimeoutException;
+```
+##### 关闭线程池
+###### shutdown
+- 线程池状态变为 SHUTDOWN。
+- 不会接收新任务。
+- 已提交的任务会继续执行。
+- 不会阻塞调用线程的执行。
+```java
+public void shutdown() {
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        checkShutdownAccess();
+        // 线程池状态变为 SHUTDOWN
+        advanceRunState(SHUTDOWN);
+        // 中断空闲线程
+        interruptIdleWorkers();
+        onShutdown(); // hook for ScheduledThreadPoolExecutor
+    } finally {
+        mainLock.unlock();
+    }
+    // 尝试终结
+    tryTerminate();
+}
+```
+###### shutdownNow
+- 线程池状态变为 STOP。
+- 不会接收新任务。
+- 丢弃阻塞队列中的任务。
+- 中断正在执行的任务。
+```java
+public List<Runnable> shutdownNow() {
+    List<Runnable> tasks;
+    final ReentrantLock mainLock = this.mainLock;
+    mainLock.lock();
+    try {
+        checkShutdownAccess();
+        advanceRunState(STOP);
+        interruptWorkers();
+        tasks = drainQueue();
+    } finally {
+        mainLock.unlock();
+    }
+    tryTerminate();
+    return tasks;
+}
+```
+##### Worker Thread
+创建多少线程合适。
+
+1. CPU 密集型运算。
+
+通常采用 `cpu 核数 + 1` 能够实现最优的 CPU 利用率，+1 是保证当线程由于页缺失故障（操作系统）或其它原因导致暂停时，额外的这个线程就能顶替，保证 CPU 的时钟周期不被浪费。
+
+2. IO 密集型运算
+
+经验公式：`线程数 = 核数 * 期望 CPU 利用率 * 总时间(CPU计算时间+等待时间) / CPU 计算时间`
+
+##### 任务调度线程池
+###### 定时任务
+##### Tomcat 线程池
+###### web 服务器
+
+
+
+#### Fork/Join
+### JUC 工具类
+### disruptor
+### guava
+#### RateLimiter
 
 
 
