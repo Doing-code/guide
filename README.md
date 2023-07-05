@@ -79,6 +79,10 @@ top
 ps
 
 查看文件大小 ls -lh filepath
+
+rm -rf 
+
+tar -xzf
 ```
 
 ## 面试题整理
