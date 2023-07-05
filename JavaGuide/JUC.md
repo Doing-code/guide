@@ -1193,17 +1193,327 @@ public List<Runnable> shutdownNow() {
 经验公式：`线程数 = 核数 * 期望 CPU 利用率 * 总时间(CPU计算时间+等待时间) / CPU 计算时间`
 
 ##### 任务调度线程池
+- `ScheduledThreadPoolExecutor.schedule()`：延时执行
+- `ScheduledThreadPoolExecutor.scheduleAtFixedRate()`：定时执行，
+- `ScheduledThreadPoolExecutor.scheduleWithFixedDelay()`：定时执行，以任务执行完成后开始计时。
+
+线程池不会主动抛异常，需要手动捕获。或者使用 Callable，接收异常（会将异常封装到返回结果中）。
+
+```java
+ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1);
+
+// 延时执行
+executor.schedule(() -> {
+    System.out.println("ok");
+}, 1, TimeUnit.SECONDS);
+
+/*
+	第二个参数：（第一次执行）延时多长时间执行；
+	第三个参数：（非第一次执行）多久执行一次（频率）；
+	第四个参数：时间单位。
+*/
+executor.scheduleAtFixedRate(() -> {
+    log.debug("ok");
+    try {
+        Thread.sleep(2000);
+    } catch (InterruptedException e) {
+        e.printStackTrace();
+    }
+}, 2, 1, TimeUnit.SECONDS);
+
+/*
+	第二个参数：（第一次执行）延时多长时间执行；
+	第三个参数：（非第一次执行）多久执行一次（频率），注意：需等待上一个任务执行完后，才开始计时。
+	第四个参数：时间单位。
+*/
+executor.scheduleWithFixedDelay(() -> {
+    log.debug("ok");
+    try {
+        Thread.sleep(2000);
+    } catch (InterruptedException e) {
+        e.printStackTrace();
+    }
+}, 2, 1, TimeUnit.SECONDS);
+```
+
+
+
 ###### 定时任务
 ##### Tomcat 线程池
-###### web 服务器
+```mermaid
+graph LR
+subgraph Connector `NIO EndPoint`
+	L(LimitLatch) --> A(Acceptor)
+	A --> S1(SocketChannel1)
+	A --> S2(SocketChannel1)
+	S1 --读事件--> P(Poller)
+	S2 --读事件--> P
+	P --socketProcessor--> W1(worker1)
+    P --socketProcessor--> W2(worker2)
+	subgraph Executor
+       W1
+       W2
+	end
+end    
+```
+- LimitLatch 用来限流，可以控制最大连接数，类似 JUC Semaphore。
+- Acceptor 负责接收新的 socket 连接。
+- Poller 负责监听 socket channel 是否有可读的 IO 事件。
+- 一旦有可读事件，封装一个任务对象（socketProcessor），提交给 Executor 线程池处理。
+- Executor 线程池中的工作线程负责处理请求。
 
+Tomcat 的线程数如果达到了 maximumPoolSize，并不会立即抛 RejectedExecutionException。而是会再次尝试将任务放入队列中，如果还是失败，才抛 RejectedExecutionException。
 
+Connector 配置
+
+| 配置项              | 默认值 | 描述                                          |
+| ------------------- | ------ | --------------------------------------------- |
+| acceptorThreadCount | 1      | acceptor 线程数                               |
+| pollerThreadCount   | 1      | poller 线程数                                 |
+| minSpareThreads     | 10     | 核心线程数，corePoolSize                      |
+| maxThreads          | 200    | 最大线程数，maximumPoolSize                   |
+| executor            | -      | Executor 名称，用来自定义线程池，覆盖默认配置 |
+
+Executor 线程配置
+
+| 配置项                  | 默认值            | 描述                               |
+| :---------------------- | ----------------- | ---------------------------------- |
+| threadPriority          | 5                 | 线程优先级                         |
+| daemon                  | true              | 是否守护线程                       |
+| minSpareThreads         | 25                | 核心线程数，corePoolSize           |
+| maxThreads              | 200               | 最大线程数，maximumPoolSize        |
+| maxIdleTime             | 60000             | 线程存活时间，单位毫秒 ，默认1分钟 |
+| maxQueueSize            | Integer.MAX_VALUE | 队列长度                           |
+| prestartminSpareThreads | false             | 核心线程是否再服务器启动时启动     |
+
+Tomcat 当提交的任务数超过核心线程数，但没超过最大线程数，Tomcat 就会创建临时线程来处理任务。当提交的任务数超过最大线程数，才会将新任务放入队列。
 
 #### Fork/Join
+JDK7 加入的新的线程池实现。体现了分治思想。适用于能够进行任务拆分的 CPU 密集型运算。所谓的任务拆分，是将一个大任务拆分为算法上相同的小任务，然后求解。
+
+Fork/Join 可以把每个任务的分解和合并交给不同的线程来完成。提升运算效率。
+
+Fork/Join 默认会创建与 CPU 核心数相同的线程池。
+
+需要返回值就继承`RecursiveTask`，不需要返回值就继承`RecusiveAction`。`fork()`方法用于拆分任务，`join()`方法用于合并结果。
+
+```java
+public class Demo5 {
+    public static void main(String[] args) {
+        ForkJoinPool forkJoinPool=new ForkJoinPool(4);
+        forkJoinPool.invoke(new AddTask(1,10));
+    }
+    static class AddTask extends RecursiveTask<Integer> {
+        int head;
+        int last;
+        AddTask(int head,int last){
+            this.head=head;
+            this.last=last;
+        }
+
+        @Override
+        protected Integer compute() {
+            if(head==last){
+                return head;
+            }
+            if (head==last-1){
+                System.out.println(head+"-"+last+"相加为"+(head+last));
+                return head+last;
+            }
+            int mid=(head+last)/2;
+            AddTask addTask = new AddTask(head, mid);
+            addTask.fork();
+            AddTask addTask1 = new AddTask(mid + 1, last);
+            addTask1.fork();
+            int result=addTask.join()+addTask1.join();
+            System.out.println(head+"-"+last+"相加为"+result);
+            return result;
+        }
+    }
+}
+```
+类似二分查找法。
 ### JUC 工具类
+#### AQS
+AbstractQueuedSynchronizer，是阻塞式锁和相关同步器工具的框架。
+
+特点：
+- 用 state 属性来表示资源的状态（独占模式和共享模式），子类需要定义如何维护这个状态，控制如何获取锁和释放锁。
+    - `getState()` 获取 state 状态。
+    - `setState()` 设置  state 状态。
+    - `compareAndSetState()` cas 机制设置 state 状态。
+    - 独占模式下（锁）只能有一个线程能够访问资源，而共享模式下可以允许多个线程访问资源。
+- 提供基于 FIFO 的等待队列，类似于 Monitor EntryList。
+- 支持条件变量来实现等待、唤醒机制，支持多个条件变量，类似于 Monitor WaitSet。
+
+子类主要实现下面几个方法。（调用父类的会抛异常 `UnsupportedOperationException`）
+1. tryAcquire
+2. tryRelease
+3. tryAcquireShared
+4. tryReleaseShared
+5. isHeldExclusively
+
+```java
+// 如果获取锁失败
+if (!tryAcquire(arg)) {
+    // 可以选择阻塞当前线程。加入阻塞队列，park()
+}
+
+// 如果释放锁成功
+if (tryRelease(arg)) {
+    // 让阻塞线程恢复运行，unpark()
+}
+```
+##### 自定义锁
+```java
+@Slf4j
+public class App {
+
+    public static void main(String[] args) {
+        MyLock lock = new MyLock();
+        new Thread(() -> {
+            lock.lock();
+            try {
+                log.debug("加锁成功");
+            } finally {
+                lock.unlock();
+            }
+        }, "t1").start();
+
+        new Thread(() -> {
+            lock.lock();
+            try {
+                log.debug("加锁成功");
+            } finally {
+                lock.unlock();
+            }
+        }, "t2").start();
+    }
+
+    /**
+     * 自定义锁，不可重入锁
+     */
+    static class MyLock implements Lock {
+        /**
+         * 独占锁，同步器类
+         */
+        @Slf4j
+        static class MySync extends AbstractQueuedSynchronizer {
+            @Override
+            protected boolean tryAcquire(int arg) {
+                boolean flag;
+                if ((flag = compareAndSetState(0, 1))) {
+                    // 加锁成功，并设置 owner  为当前线程
+                    setExclusiveOwnerThread(Thread.currentThread());
+                }
+                log.debug("{}", flag);
+                return flag;
+            }
+
+            @Override
+            protected boolean tryRelease(int arg) {
+                setExclusiveOwnerThread(null);
+                setState(0);
+                return true;
+            }
+
+            /**
+             * 是否持有独占锁
+             *
+             * @return
+             */
+            @Override
+            protected boolean isHeldExclusively() {
+                return getState() == 1;
+            }
+
+            public Condition newCondition() {
+                return new ConditionObject();
+            }
+        }
+
+        private MySync sync = new MySync();
+
+        @Override
+        public void lock() {
+            sync.acquire(1);
+        }
+
+        @Override
+        public void lockInterruptibly() throws InterruptedException {
+            sync.acquireInterruptibly(1);
+        }
+
+        @Override
+        public boolean tryLock() {
+            return sync.tryAcquire(1);
+        }
+
+        @Override
+        public boolean tryLock(long time, TimeUnit unit) throws InterruptedException {
+            return sync.tryAcquireNanos(1, unit.toNanos(time));
+        }
+
+        @Override
+        public void unlock() {
+            sync.release(1);
+        }
+
+        @Override
+        public Condition newCondition() {
+            return sync.newCondition();
+        }
+    }
+}
+```
+
+#### ReentrantLock
+##### 加锁成功
+```java
+private final Sync sync;
+
+// 默认构造
+public ReentrantLock() {
+    sync = new NonfairSync();
+}
+
+public void lock() {
+    // lock() 是抽象方法，由子类 NonfairSync、FairSync 实现 
+    sync.lock();
+}
+
+static final class NonfairSync extends Sync {
+    private static final long serialVersionUID = 7316153563782823691L;
+
+    /**
+     * Performs lock.  Try immediate barge, backing up to normal
+     * acquire on failure.
+     */
+    final void lock() {
+        // 是不是很熟悉，和上面自定义锁使用方式一样
+        if (compareAndSetState(0, 1))
+            setExclusiveOwnerThread(Thread.currentThread());
+        else
+            acquire(1);
+    }
+
+    protected final boolean tryAcquire(int acquires) {
+        return nonfairTryAcquire(acquires);
+    }
+}
+```
+#### 读写锁
+#### Semaphore
+#### CountdownLatch
+#### CyclicBarrier
+#### ConcurrentHashMap
+#### ConcurrentLinkedQueue
+#### BlockingQueue
 ### disruptor
 ### guava
 #### RateLimiter
+
+原理部分先不看了，平时工作没有应用场景，很难理解，后面有并发工作场景后再来补全这部分吧。
 
 
 
