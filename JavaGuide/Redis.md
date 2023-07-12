@@ -514,6 +514,8 @@ synchronized(userId.toString().intern()) {
 | 高性能 | 一般              | 好              | 一般               |
 | 安全性 | 断开连接，自动释放锁      | 利用锁超时时间，到期释放   | 临时节点，断开连接自动释放    |
 
+##### 实现
+
 定义接口
 
 ```java
@@ -572,6 +574,100 @@ public class RedisDistributeLockImpl implements RedisDistributeLock {
 
 但是还是存在线程安全问题，业务还没有执行完锁就过期了，而其它线程尝试获取锁时就会获取到。会导致一开始获取到锁的那个对象，释放错误的锁，释放了其它线程的锁。
 
+而且只存入线程id，多服务部署相同线程id又会冲突。所以需要再额外添加一个标识。
+
+##### 改进1
+
+防止错误释放锁，需再添加一个标识，判断锁是不是当前线程添加的。
+
+![](../image/redis_实战_分布式锁_改进1.png)
+
+```java
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+
+import org.springframework.data.redis.core.StringRedisTemplate;
+
+public class RedisDistributeLockImpl implements RedisDistributeLock {
+
+    private StringRedisTemplate stringRedisTemplate;
+    private sttaic final String KEY_PREFIX = "lock:";
+    private sttaic final String ID_PREFIX = UUID.randomUUID().toString(true) + "-";
+
+    public RedisDistributeLockImpl(StringRedisTemplate stringRedisTemplate) {
+        this.stringRedisTemplate = stringRedisTemplate;
+    }
+
+    @Override
+    public boolean tryLock(String key, long timeout, TimeUnit unit) {
+        String threadId = ID_PREFIX + Thread.currentThread().getId();
+
+        // 加锁
+        return stringRedisTemplate.opsForValue().setIfAbsent(KEY_PREFIX + key, threadId, timeout, unit);
+    }
+
+    @Override
+    public void releaseLock(String key) {
+        String threadId = ID_PREFIX + Thread.currentThread().getId();
+        String id = stringRedisTemplate.opsForValue().get(KEY_PREFIX + key);
+        // 判断标识是否一致
+        if (!threadId.equals(id)) {
+            return;
+        }
+
+        // 释放锁
+        stringRedisTemplate.delete(KEY_PREFIX + key);
+    }
+}
+```
+
+但是还是会出现线程安全问题，错误释放锁（多线程环境下，因为阻塞导致的错误释放锁）。如果在释放锁时，通过了标识判断，由于JVM垃圾回收触发STW导致的阻塞，恰好阻塞时间超过了锁的过期时间，那么锁还是会被错误释放。究其原因，判断锁标识的动作和释放锁动作是两个动作，需要将这两个操作变成原子操作。
+
+![](../image/redis_实战_分布式锁_错误释放锁.png)
+
+##### 改进2
+
+lua脚本保证原子操作。
+
+> Redis使用同一个Lua解释器来执行所有命令，同时，Redis保证以一种原子性的方式来执行脚本：当lua脚本在执行的时候，不会有其他脚本和命令同时执行，这种语义类似于 MULTI/EXEC。从别的客户端的视角来看，一个lua脚本要么不可见，要么已经执行完。
+> 
+> 然而这也意味着，执行一个较慢的lua脚本是不建议的，由于脚本的开销非常低，构造一个快速执行的脚本并非难事。但是你要注意到，当你正在执行一个比较慢的脚本时，所以其他的客户端都无法执行命令。
+
+```lua
+-- 获取锁的线程标识，get key
+local id = redis.call('get', KEYS[1]);
+-- 判断线程标识与锁的标识是否一致
+if (id == ARGV[1]) then
+    -- 释放
+    return redis.call('del', KEYS[1]);
+end
+return 0;
+```
+
+```java
+private static final DefaultRedisScript<Long> UNLOCK_SCRIPT;
+static {
+    UNLOCK_SCRIPT = new DefaultRedisScript<>();
+    DefaultRedisScript.setLocation(new ClassPathResource("unlock.lua"));
+    UNLOCK_SCRIPT.setResultType(Long.class);
+}
+
+public void unlock(String key) {
+    // 调用 lua 脚本
+    stringRedisTemplate.execute(
+        UNLOCK_SCRIPT,
+        Collections.singletonList(KEY_PREFIX + key),
+        ID_PREFIX + Thread.currentThread().getId()
+    );
+}
+```
+
+经过前两次的改进，不会出现错误释放锁的问题了。
+
+但是会出现线程阻塞导致超时自动释放锁而引起的线程安全问题，这个需要衡量业务的耗时来设置TTL，或者给锁续期。
+
+
+
 #### 优化秒杀
 
 #### Redis实现消息队列异步秒杀
@@ -596,3 +692,5 @@ public class RedisDistributeLockImpl implements RedisDistributeLock {
 127.0.0.1:6379> auth 123456
 OK
 ```
+
+### 分布式锁-自旋
