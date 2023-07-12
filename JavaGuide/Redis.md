@@ -370,6 +370,212 @@ Session共享问题：多台Tomcat服务器并不共享Session存储空间，当
 
 ### 优惠券秒杀
 
+#### 全局唯一ID
+
+全局唯一ID生成器，是一种在分布式系统下用来生成全局唯一ID的工具，一般需要满足下列特性：
+
+- 唯一性。
+
+- 高可用。
+
+- 递增性。
+
+- 安全性。
+
+- 高性能。
+
+![](../image/redis_实战_全局ID生成器.png)
+
+```java
+/**
+    简易版全局id生成器
+*/
+public class IdWorker {
+    /**
+     * 左移32位
+     */
+    private static final int BITS = 32;
+
+    /**
+     * 初始时间戳，2023.1.1 0.0.0
+     */
+    private static final long BEGIN_TIMESTAMP = 1672531200L;
+
+    private StringRedisTemplate stringRedisTemplate;
+
+    public IdWorker(StringRedisTemplate stringRedisTemplate) {
+        this.stringRedisTemplate = stringRedisTemplate;
+    }
+
+    /**
+     * nextId
+     * @param prefix key 前缀
+     * @return
+     */
+    public long nextId(String prefix) {
+        // 时间戳
+        LocalDateTime now = LocalDateTime.now();
+        long nowSecond = now.toEpochSecond(ZoneOffset.UTC);
+        long timestamp = nowSecond - BEGIN_TIMESTAMP;
+
+        // 序列号
+        String date = now.format(DateTimeFormatter.ofPattern("yyyy:MM:dd"));
+        long count = stringRedisTemplate.opsForValue().increment(String.format("icr:%s:%s", prefix, date));
+
+        // 拼接并返回
+        return timestamp << BITS | count;
+    }
+}
+```
+
+全局唯一ID生成策略：
+
+- UUID
+
+- Redis自增
+
+- Snowflake 算法
+
+- 数据库自增
+
+> 数据库自增：不是使用AUTO_INCREMENT，而是额外依赖第三张表，专门用于生成id，比如有5张表的id都从这额外的表中获取id。也能够保证全局唯一，但性能上稍逊于Redis自增。
+
+#### 实现优惠券秒杀下单
+
+下单时需要判断两点：
+
+- 秒杀是否开始或结束，如果尚未开始或已结束则无法下单。
+
+- 库存是否充足，不足则无法下单。
+
+![](../image/redis_实战_实现优惠券秒杀下单.png)
+
+#### 超卖问题
+
+![](../image/redis_实战_超卖问题.png)
+
+解决方案：悲观锁、乐观锁。
+
+乐观锁的关键是判断之前查询得到的数据是否被修改了。常见的有两种方式：
+
+- 版本号
+
+![](../image/redis_实战_超卖问题_乐观锁_版本号.png)
+
+- CAS
+
+![](../image/redis_实战_超卖问题_乐观锁_cas.png)
+
+在Java程序中，使用悲观锁（同步锁）的效率较低，线程长时间的争抢阻塞。而使用乐观锁（不加锁，在更新时判断是否有其它线程在修改）效率较高，但成功率较低。
+
+改进：利用数据库的锁（MySQL行锁，悲观锁），`stock > 0`就不会出现超卖现象。但如果并发量很高的话，还是会给数据库造成压力。
+
+#### 一人一单
+
+![](../image/redis_实战_一人一单.png)
+
+实现思路：要保证一人一单，首先要保证数据库记录只有对应的一条。
+
+- 可以在Java程序中加锁（同步锁），锁对象是userId（`userId.toString().intern()`）。如果使用Spring事务，要想事务生效，除了`@Transactional`注解外，如果还封装其为方法时，需要通过事务代理对象来调用其方法（或者手动事务回滚也可以）。锁要包裹事务，事务不能包裹锁。
+
+- 还可以利用数据库保证一人一单，给userId加唯一约束（不止userId一个字段，还要根据其它业务字段加约束），但高并发下，频繁访问数据库，数据库压力巨大。
+
+```java
+synchronized(userId.toString().intern()) {
+    XxxService proxy = AopContext.currentProxy();
+    proxy.method1(...);
+}
+```
+
+上面的解决方案在单机情况下通过加锁可以解决，但是在集群环境下（部署多台服务器）就不行了。
+
+#### 分布式锁
+
+分布式锁：满足分布式系统或集群模式下多进程可见并且互斥的锁。
+
+满足基本特性：
+
+- 多进程可见。
+
+- 互斥。
+
+- 高可用。
+
+- 高性能。
+
+- 安全性。
+
+分布式锁的核心时实现多进程之间的互斥，而满足这一点的方式有很多，常见的有三种：
+
+|     | MySQL           | Redis          | Zookeeper        |
+| --- | --------------- | -------------- | ---------------- |
+| 互斥  | 利用MySQL自身的互斥锁机制 | 利用setnx这样的互斥命令 | 利用节点的唯一性和有序性实现互斥 |
+| 高可用 | 好               | 好              | 好                |
+| 高性能 | 一般              | 好              | 一般               |
+| 安全性 | 断开连接，自动释放锁      | 利用锁超时时间，到期释放   | 临时节点，断开连接自动释放    |
+
+定义接口
+
+```java
+import java.util.concurrent.TimeUnit;
+
+public interface RedisDistributeLock {
+    /**
+     * 
+     * 加锁 
+     * @param key 主键
+     * @param timeout 超时时间
+     * @param unit     超时时间单位
+     * @return boolean  true:加锁成功;false:加锁失败
+     */
+    boolean tryLock(String key, long timeout, TimeUnit unit);
+
+    /**
+     * 
+     * 加锁和释放锁的线程必须保证是同一个。 
+     * @param key     主键
+     */
+    void releaseLock(String key);
+}
+```
+
+定义接口实现
+
+```java
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+
+import org.springframework.data.redis.core.StringRedisTemplate;
+
+public class RedisDistributeLockImpl implements RedisDistributeLock {
+
+    private StringRedisTemplate stringRedisTemplate;
+
+    public RedisDistributeLockImpl(StringRedisTemplate stringRedisTemplate) {
+        this.stringRedisTemplate = stringRedisTemplate;
+    }
+
+    @Override
+    public boolean tryLock(String key, long timeout, TimeUnit unit) {
+        long threadId = Thread.currentThread().getId();
+        return stringRedisTemplate.opsForValue().setIfAbsent(key, threadId + "", timeout, unit);
+    }
+
+    @Override
+    public void releaseLock(String key) {
+        stringRedisTemplate.delete(key);
+    }
+}
+```
+
+定义的key能够锁同一个用户即可。
+
+但是还是存在线程安全问题，业务还没有执行完锁就过期了，而其它线程尝试获取锁时就会获取到。会导致一开始获取到锁的那个对象，释放错误的锁，释放了其它线程的锁。
+
+#### 优化秒杀
+
+#### Redis实现消息队列异步秒杀
+
 ### 达人探店
 
 ### 好友关注
@@ -390,5 +596,3 @@ Session共享问题：多台Tomcat服务器并不共享Session存储空间，当
 127.0.0.1:6379> auth 123456
 OK
 ```
-
-### 分布式锁
