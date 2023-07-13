@@ -666,11 +666,306 @@ public void unlock(String key) {
 
 但是会出现线程阻塞导致超时自动释放锁而引起的线程安全问题，这个需要衡量业务的耗时来设置TTL，或者给锁续期。
 
+##### Redisson可重入锁原理
 
+> 可以参考JDK的ReentrantLock实现，如果锁重入，则锁的重入次数+1，释放锁时-1，当锁重入次数为0时则可以释放锁。
+
+Redisson 也是这样实现的，使用的是Hash数据结构。
+
+![](../image/redis_实战_Redisson可重入锁原理.png)
+
+这么些个操作，要想保证原子性，应该是使用了lua脚本。
+
+![](../image/redis_实战_Redisson释放获取锁lua脚本.png)
+
+为了验证猜想，查阅Redisson源码（获取锁）：
+
+```java
+// 入口
+RLock lock = redissonClient.getLock("");
+lock.tryLock();
+
+// org.redisson.RedissonLock#tryLock()
+public boolean tryLock() {
+    return get(tryLockAsync());
+
+}
+
+public RFuture<Boolean> tryLockAsync() {
+    return tryLockAsync(Thread.currentThread().getId());
+}
+
+public RFuture<Boolean> tryLockAsync(long threadId) {
+    return tryAcquireOnceAsync(-1, -1, null, threadId);
+}
+
+/*
+waitTime：重试获取锁等待的间隔时间
+leaseTime：锁的过期时间
+unit：时间单位
+threadId：锁的标识
+*/
+private RFuture<Boolean> tryAcquireOnceAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId) {
+    if (leaseTime != -1) {
+        return tryLockInnerAsync(waitTime, leaseTime, unit, threadId, RedisCommands.EVAL_NULL_BOOLEAN);
+    }
+    RFuture<Boolean> ttlRemainingFuture = tryLockInnerAsync(waitTime,
+                                                commandExecutor.getConnectionManager().getCfg().getLockWatchdogTimeout(),
+                                                TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_NULL_BOOLEAN);
+    ttlRemainingFuture.onComplete((ttlRemaining, e) -> {
+        if (e != null) {
+            return;
+        }
+
+        // lock acquired
+        if (ttlRemaining) {
+            scheduleExpirationRenewal(threadId);
+        }
+    });
+    return ttlRemainingFuture;
+}
+
+<T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
+    internalLockLeaseTime = unit.toMillis(leaseTime);
+
+    return evalWriteAsync(getName(), LongCodec.INSTANCE, command,
+            "if (redis.call('exists', KEYS[1]) == 0) then " +
+                    "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                    "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                    "return nil; " +
+                    "end; " +
+                    "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
+                    "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                    "redis.call('pexpire', KEYS[1], ARGV[1]); " +
+                    "return nil; " +
+                    "end; " +
+                    "return redis.call('pttl', KEYS[1]);",
+            Collections.singletonList(getName()), internalLockLeaseTime, getLockName(threadId));
+}
+```
+
+释放锁源码：
+
+```java
+// org.redisson.RedissonLock#unlock
+public void unlock() {
+    try {
+        get(unlockAsync(Thread.currentThread().getId()));
+    } catch (RedisException e) {
+        if (e.getCause() instanceof IllegalMonitorStateException) {
+            throw (IllegalMonitorStateException) e.getCause();
+        } else {
+            throw e;
+        }
+    }
+}
+
+public RFuture<Void> unlockAsync(long threadId) {
+    RPromise<Void> result = new RedissonPromise<Void>();
+    RFuture<Boolean> future = unlockInnerAsync(threadId);
+
+    future.onComplete((opStatus, e) -> {
+        cancelExpirationRenewal(threadId);
+
+        if (e != null) {
+            result.tryFailure(e);
+            return;
+        }
+
+        if (opStatus == null) {
+            IllegalMonitorStateException cause = new IllegalMonitorStateException("attempt to unlock lock, not locked by current thread by node id: "
+                    + id + " thread-id: " + threadId);
+            result.tryFailure(cause);
+            return;
+        }
+
+        result.trySuccess(null);
+    });
+
+    return result;
+}
+
+protected RFuture<Boolean> unlockInnerAsync(long threadId) {
+    return evalWriteAsync(getName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+            "if (redis.call('hexists', KEYS[1], ARGV[3]) == 0) then " +
+                    "return nil;" +
+                    "end; " +
+                    "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
+                    "if (counter > 0) then " +
+                    "redis.call('pexpire', KEYS[1], ARGV[2]); " +
+                    "return 0; " +
+                    "else " +
+                    "redis.call('del', KEYS[1]); " +
+                    "redis.call('publish', KEYS[2], ARGV[1]); " +
+                    "return 1; " +
+                    "end; " +
+                    "return nil;",
+            Arrays.asList(getName(), getChannelName()), LockPubSub.UNLOCK_MESSAGE, internalLockLeaseTime, getLockName(threadId));
+}
+```
+
+##### Redissson锁重试&WatchDog
+
+Redisson的锁重试的实现是通过Redis的消息订阅和信号量完成的。收到锁释放的消息后再进行重试，不会无休止的重试，导致浪费CPU资源。
+
+> Redisson锁重试源码：org.redisson.RedissonLock#tryLock(long, long, java.util.concurrent.TimeUnit)
+
+Redisson锁的续期是通过WatchDog（看门狗）机制实现的。第一次获取锁就会创建一个定时任务，默认是10秒更新一次锁的有效期。
+
+```java
+// org.redisson.RedissonLock#renewExpiration
+private void renewExpiration() {
+    ExpirationEntry ee = EXPIRATION_RENEWAL_MAP.get(getEntryName());
+    if (ee == null) {
+        return;
+    }
+
+    Timeout task = commandExecutor.getConnectionManager().newTimeout(new TimerTask() {
+        @Override
+        public void run(Timeout timeout) throws Exception {
+            ExpirationEntry ent = EXPIRATION_RENEWAL_MAP.get(getEntryName());
+            if (ent == null) {
+                return;
+            }
+            Long threadId = ent.getFirstThreadId();
+            if (threadId == null) {
+                return;
+            }
+
+            RFuture<Boolean> future = renewExpirationAsync(threadId);
+            future.onComplete((res, e) -> {
+                if (e != null) {
+                    log.error("Can't update lock " + getName() + " expiration", e);
+                    return;
+                }
+
+                if (res) {
+                    // reschedule itself
+                    // 递归调用，可无限续期
+                    renewExpiration();
+                }
+            });
+        }
+    }, internalLockLeaseTime / 3, TimeUnit.MILLISECONDS);
+
+    ee.setTimeout(task);
+}
+```
+
+`internalLockLeaseTime`默认是30秒。
+
+锁释放时，移除定时任务。
+
+```java
+void cancelExpirationRenewal(Long threadId) {
+    ExpirationEntry task = EXPIRATION_RENEWAL_MAP.get(getEntryName());
+    if (task == null) {
+        return;
+    }
+
+    if (threadId != null) {
+        task.removeThreadId(threadId);
+    }
+
+    if (threadId == null || task.hasNoThreads()) {
+        Timeout timeout = task.getTimeout();
+        if (timeout != null) {
+            timeout.cancel();
+        }
+        EXPIRATION_RENEWAL_MAP.remove(getEntryName());
+    }
+}
+```
+
+##### Redisson分布式锁原理流程
+
+![img.png](../image/redis_实战_Redisson分布式锁原理流程.png)
+
+##### 总结
+
+Redisson分布式锁原理：
+
+- 可重入：利用hash结构记录线程id（锁标识）和重入次数。
+
+- 可重试：利用信号量和PubSub（发布订阅）功能实现等待、唤醒，获取锁失败的重试机制。在设置的锁过期时间内尝试重试。
+
+- 超时续约：利用WatchDog机制，每隔一段时间（`internalLockLeaseTime / 3`），重置超时时间。
 
 #### 优化秒杀
 
+##### Redis 优化秒杀
+
+![](../image/redis_实战_优化秒杀.png)
+
+##### 秒杀业务的优化思路是什么？
+
+1. 先利用Redis完成库存余量、一人一单判断，完成抢单业务并响应给用户。
+
+2. 再将下单业务放入阻塞队列（JDK自带的阻塞队列），利用独立线程异步下单。
+
 #### Redis实现消息队列异步秒杀
+
+##### PubSub
+
+PubSub（发布订阅）是Redis2.0引入的消息传递模型。消费者可以订阅若干个channel，生产者向对应的channel发送消息后，所以订阅者都能收到相关消息。
+
+- `subscribe channel [channel]`：订阅一个或多个频道 。
+
+- `publish channel msg`：向一个频道发送消息。
+
+- `psubscribe pattern [pattern]`：订阅与pattern（通配符）格式匹配的频道。
+
+PubSub方式不支持数据持久化，会导致消息丢失。消息堆积有上限，超出上限会数据丢失。
+
+##### Stream
+
+Stream是Redis5.0引入的新的数据类型，可以实现消息队列。
+
+- 创建消息的方式：`xadd`
+
+![](../image/redis_实战_Stream_用法.png)
+
+- 读取消息的方式：`xread`
+
+![](../image/redis_实战_Stream_xread.png)
+
+xread 会出现消息漏读的情况。
+
+- 创建消费者组的方式：`xgroup`
+
+![](../image/redis_实战_Stream_xgroup.png)
+
+- 从消费者组读数据：`xreadgroup`
+
+![](../image/redis_实战_Stream_xreadgroup.png)
+
+`xreadgroup`特点：
+
+- 消息可回溯。
+
+- 同一个消费者组的消费者争抢消息（同一消费者组只会有一个消费者消费），加快消费速度。
+
+- 可以阻塞读取。
+
+- 没有消息漏读的风险。
+
+- 有消息确认机制，保证 消息至少被消费一次。
+
+![](../image/redis_实战_消息队列比较.png)
+
+#### 总结
+
+Redis在秒杀场景下的应用：
+
+- 缓存。
+
+- 分布式锁。
+
+- 超卖问题。
+
+- lua脚本保证原子性。
+
+- Redis消息队列（可选的）。
 
 ### 达人探店
 
@@ -692,5 +987,3 @@ public void unlock(String key) {
 127.0.0.1:6379> auth 123456
 OK
 ```
-
-### 分布式锁-自旋
