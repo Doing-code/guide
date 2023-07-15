@@ -1265,7 +1265,422 @@ group: hyperloglog
 
 ### Redis持久化
 
+#### RDB持久化
+
+RDB（Redis Database Backup file）Redis数据备份文件。也被叫做Redis数据快照。简单来说就是把内存中的所有数据都记录到磁盘中。当Redis实例故障重启后，从磁盘读取快照文件，恢复数据。
+
+快照文件被称为RDB文件，默认是保存在当前运行目录。
+
+```shell
+[root@server7 src]# ./redis-cli -h 127.0.0.1 -p 6379
+127.0.0.1:6379> auth 123456
+OK
+127.0.0.1:6379> save   # 由Redis主进程来执行RDB，会阻塞所有命令
+OK
+127.0.0.1:6379> bgsave # 开启子进程执行RDB，避免主进程收到影响
+Background saving started
+```
+
+Redis停机时会执行一次RDB，但是Redis宕机就没办法触发RDB。其实在Redis内部由触发RDB的机制，可以在redis.conf文件中进行配置：
+
+```conf
+save 5 1
+# 900秒内，如果至少有1个key被修改，则执行bgsave，如果是save "" 则表示禁用RDB
+# save 900 1
+# save 300 10
+# save 60 10000
+```
+
+RDB的其它配置：
+
+```conf
+# 是否压缩，建议不开启，压缩也会消耗CPU
+rdbcompression no
+
+# RDB文件名称
+dbfilename dump.rbd
+
+# 文件保存的路径目录, 默认 ./ 运行的当前
+dir /mydata/redis-6.2.12/rdb_dump
+```
+
+设置RDB多久触发一次合适呢？一般默认即可，30秒、60秒。
+
+##### RDB的fork原理
+
+bgsave开始时会fork主进程得到子进程（fork过程主进程是阻塞的），子进程共享主进程的内存数据。完成fork后，读取内存数并写入RDB文件（异步执行）。
+
+![](../image/redis_持久化_RDB的fork原理.png)
+
+fork采用的是copy-on-write技术：
+
+- 当主进程执行读操作时，访问共享内存；
+
+- 当主进程执行写操作时，则会拷贝一份数据，执行写操作，之后对该数据的读，也会映射到拷贝的这个副本上。
+
+极端情况：当子进程执行RDB较慢时，主进程不断接收写请求，那么都会对共享内存中的数据进行拷贝，会导致占用双倍的内存，最终内存溢出。
+
+页表是虚拟内存。
+
+RDB方式bgsave的基本流程？
+
+- fork主进程得到一个子进程（主进程阻塞），共享内存空间。
+
+- 子进程读取内存数据并写入新的RDB文件（异步执行）。
+
+- 用新的RDB文件替换旧的RDB文件。
+
+RDB会在什么时候执行？
+
+- 默认是服务停止时触发。
+
+- 可以设置为n秒内至少执行n次修改则触发RDB。
+
+RDB的缺点？
+
+- RDB执行间隔时间长，两次RDB之间写入数据有丢失的风险。
+
+- for子进程、压缩、写出RDB文件都比较耗时。
+
+#### AOF持久化
+
+AOF：Append Only File（追加文件）。Redis处理的每一个写命令都会记录在AOF文件中，可以看作是命令日志文件。（类似于MySQL的redolog）
+
+AOF默认是关闭的，需要修改redis.conf配置文件来开启AOF：
+
+```conf
+# 是否开启AOF功能，默认no
+appendonly yes
+
+# AOF文件名称
+appendfilename "appendonly.aof"
+
+# 文件保存的路径目录, 默认 ./ 运行的当前
+dir /mydata/redis-6.2.12/rdb_dump
+```
+
+AOF命令记录的频率也可以通过redis.conf来配置：
+
+```conf
+# 每执行一次写命令，立即记录到AOF文件
+appendsync always
+
+# 默认的，写命令执行完先放入AOF缓冲区，然后每隔1秒将缓冲区数据写到AOF文件
+appendsync everysec
+
+# 写命令执行完先放入AOF缓冲区，由操作系统决定何时将缓冲区内存写回磁盘
+appendsync no
+```
+
+因为是记录命令，AOF文件会比RDB文件大得多。而且AOF会记录对同一个key的多次写操作，但只有最后一次写操作才有意义。可以通过执行`bgrewitreaof`命令，可以让AOF文件执行重写功能，用最少的命令达到相同效果。
+
+```shell
+127.0.0.1:6379> BGREWRITEAOF # BGREWRITEAOF 命令是后台执行的
+Background append only file rewriting started
+
+# BGREWRITEAOF 执行后，aof文件就是经过压缩和编码后的文件
+root@server7 redis-6.2.12]# vi rdb_dump/appendonly.aof
+REDIS0009ú      redis-ver^F6.2.12ú
+redis-bitsÀ@ú^EctimeÂ£ü±dú^Hused-memÂp¨^M^@ú^Laof-preambleÀ^Aþ^@û^A^@^@^CnumÀ{ÿN¢<92>B Ü"ô
+```
+
+Redis会在触发阈值时自动去重写AOF文件。阈值也可以在redis.conf中配置：
+
+```conf
+# 默认的，AOF文件比上次文件增长超过多少百分比则触发重写，默认100%，增长一倍
+auto-aof-rewrite-percentage 100
+
+# 默认的，AOF体积占用达到阈值才触发重写
+auto-aof-rewrite-min-size 64mb
+```
+
+#### RDB&AOF对比
+
+RDB和AOF各有优缺点，如果对数据安全性要求较高，在实际开发中往往会结合两者来使用。
+
+![](../image/redis_持久化_rdb_aof.png)
+
 ### Redis主从
+
+#### 搭建主从架构
+
+单节点Redis的并发能力是有上限的，要想进一步提高Redis的并发能力，就需要搭建主从集群，实现读写分离。
+
+![](../image/redis_主从.png)
+
+##### 准备实例和配置
+
+设备有限，所以在一台虚拟机开启3个实例模拟主从集群。
+
+要想在一台虚拟机开启3个实例，必须只能被三份不同的配置文件和目录，配置文件所在的目录即工作目录。
+
+1. 创建目录
+
+```shell
+cd /tmp
+mkdir 7001 7002 7003
+
+[root@server7 tmp]# ll
+总用量 0
+drwxr-xr-x. 2 root root  6 7月  15 10:29 7001
+drwxr-xr-x. 2 root root  6 7月  15 10:29 7002
+drwxr-xr-x. 2 root root  6 7月  15 10:29 7003
+```
+
+2. 拷贝配置文件到每个实例目录
+
+```shell
+# 方式1：逐个拷贝
+cp redis.conf 7001
+cp redis.conf 7002
+cp redis.conf 7003
+# 方式2：管道组合命令，一键拷贝
+echo 7001 7002 7003 | xargs -t -n 1 cp redis.conf
+```
+
+3. 修改每个实例的端口、工作目录（不是必须的，如果是多台服务器则不需要设置）
+
+```shell
+# s 表示替换 /g 表示全局替换
+sed -i -e 's/6379/7001/g' -e 's/dir .\//dir \/tmp\/7001\//g' 7001/redis.conf
+sed -i -e 's/6379/7002/g' -e 's/dir .\//dir \/tmp\/7002\//g' 7002/redis.conf
+sed -i -e 's/6379/7003/g' -e 's/dir .\//dir \/tmp\/7003\//g' 7003/redis.conf
+```
+
+4. 修改每个实例的声明IP（不是必须的，如果是多台服务器则不需要设置）
+
+```shell
+# 逐一执行
+sed -i 'la replica-announce-ip 192.168.44.149' 7001/redis.conf
+sed -i 'la replica-announce-ip 192.168.44.149' 7002/redis.conf
+sed -i 'la replica-announce-ip 192.168.44.149' 7003/redis.conf
+
+# 批量执行
+printf '%s\n' 7001 7002 7003 | xargs -I{} -t sed -i 'la replica-announce-ip 192.168.44.149' {}/redis.conf
+```
+
+##### 启动
+
+```shell
+redis-server 7001/redis.conf
+redis-server 7002/redis.conf
+redis-server 7003/redis.conf
+```
+
+##### 开启主从关系
+
+要配置主从可以使用`replicaof`或者`slaveof`（5.0以前）命令。
+
+有临时和永久两种模式：
+
+- 修改配置文件（永久生效）
+  
+  - 在从节点redis.conf中添加一行配置`slaveof <masterip> <masterport>`
+
+- 使用redis.cli客户端连接到redis服务后，从节点执行`slaveof`命令，重启后失效：
+  
+  ```shell
+  # 当前节点要成为 masterip:masterport 的 slave
+  slaveof <masterip> <masterport>
+  ```
+
+```shell
+# 将 7002 7003 设置为 7001 的 从节点，7001 是主节点
+[root@server7 src]# redis-cli -p 7002
+127.0.0.1:7002> SLAVEOF 192.168.44.149 7001
+OK
+127.0.0.1:7003>
+[root@server7 src]# redis-cli -p 7003
+127.0.0.1:7003> SLAVEOF 192.168.44.149 7001
+OK
+
+# 副本信息，7001 挂载两个从节点 7002 7003 状态是在线的
+[root@server7 src]# redis-cli -p 7001
+127.0.0.1:7001> INFO replication
+# Replication
+role:master
+connected_slaves:2
+slave0:ip=192.168.44.149,port=7002,state=online,offset=364,lag=1
+slave1:ip=192.168.44.149,port=7003,state=online,offset=364,lag=1
+master_failover_state:no-failover
+master_replid:5d3bd5761e059a8da4fab71d297c0bde303f1740
+master_replid2:0000000000000000000000000000000000000000
+master_repl_offset:364
+second_repl_offset:-1
+repl_backlog_active:1
+repl_backlog_size:1048576
+repl_backlog_first_byte_offset:1
+repl_backlog_histlen:364
+```
+
+测试：
+
+```shell
+# 主节点写
+127.0.0.1:7001> set k1 v1
+OK
+127.0.0.1:7001> 
+
+# 从节点从主节点同步数据，也能获取到 k1
+[root@server7 src]# redis-cli -p 7002
+127.0.0.1:7002> get k1
+"v1"
+127.0.0.1:7002> 
+[root@server7 src]# redis-cli -p 7003
+127.0.0.1:7003> get k1
+"v1"
+
+# 从节点不能执行写操作，从节点是只读的副本
+127.0.0.1:7003> set k2 v2
+(error) READONLY You can't write against a read only replica.
+```
+
+#### 主从数据同步原理
+
+##### 全量同步
+
+主从第一次同步是全量同步
+
+![](../image/redis_主从_数据同步原理.png)
+
+> repl_baklog缓冲区，本质是一个数组
+
+master如何判断salve是不是第一次同步数据？
+
+- Replication Id：简称replid，是数据集的标记，id一致说明是同一数据集。每一个master都有唯一的 replid，slave会继承master节点replid。
+
+- offset：偏移量，offset会随着记录在repl_baklog中的数据增多而逐渐增大。slave完成同步时也会记录当前同步的offset。如果slave的offset小于master的offset，说明slave数据落后于master，需要更新。
+
+master通过slave记录的replid判断是否一致从而同步数据。replid一致则只需增量更新，replid不一致则需要全量更新。
+
+因此slave做数据同步时，必须向master声明自己的replication id 和 offset，master才可以判断需要同步哪些数据。
+
+第一次配置主从同步的日志文件：
+
+`7002 从节点`
+
+```shell
+20253:M 15 Jul 2023 11:09:42.109 # WARNING: The TCP backlog setting of 511 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 128.
+20253:M 15 Jul 2023 11:09:42.109 # Server initialized
+20253:M 15 Jul 2023 11:09:42.109 # WARNING Memory overcommit must be enabled! Without it, a background save or replication may fail under low memory condition. Being disabled, it can can also cause failures without low memory condition, see https://github.com/jemalloc/jemalloc/issues/1328. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.
+20253:M 15 Jul 2023 11:09:42.110 * Ready to accept connections
+20253:S 15 Jul 2023 11:09:56.212 * Before turning into a replica, using my own master parameters to synthesize a cached master: I may be able to synchronize with the new master with just a partial transfer.
+
+# 1.0、执行slaveof/replicationof 命令，建立连接
+20253:S 15 Jul 2023 11:09:56.212 * Connecting to MASTER 192.168.44.149:7001
+20253:S 15 Jul 2023 11:09:56.212 * MASTER <-> REPLICA sync started
+20253:S 15 Jul 2023 11:09:56.212 * REPLICAOF 192.168.44.149:7001 enabled (user request from 'id=3 addr=127.0.0.1:55054 laddr=127.0.0.1:7002 fd=7 name= age=5 idle=0 flags=N db=0 sub=0 psub=0 multi=-1 qbuf=48 qbuf-free=40906 argv-mem=25 obl=0 oll=0 omem=0 tot-mem=61489 events=r cmd=slaveof user=default redir=-1')
+20253:S 15 Jul 2023 11:09:56.212 * Non blocking connect for SYNC fired the event.
+20253:S 15 Jul 2023 11:09:56.213 * Master replied to PING, replication can continue...
+
+# 1.1、psync replid offset，尝试做一次局部同步 
+20253:S 15 Jul 2023 11:09:56.213 * Trying a partial resynchronization (request e235eaae1b73bfda55612799917518acde8580c7:1).
+
+# 1.4、保存主节点的版本信息（replid和offset）
+20253:S 15 Jul 2023 11:09:56.215 * Full resync from master: 5d3bd5761e059a8da4fab71d297c0bde303f1740:0
+20253:S 15 Jul 2023 11:09:56.215 * Discarding previously cached master state.
+
+# 接收数据
+20253:S 15 Jul 2023 11:09:56.223 * MASTER <-> REPLICA sync: receiving 176 bytes from master to disk
+
+# 2.3、清空本地数据，加载RDB文件
+20253:S 15 Jul 2023 11:09:56.224 * MASTER <-> REPLICA sync: Flushing old data
+20253:S 15 Jul 2023 11:09:56.224 * MASTER <-> REPLICA sync: Loading DB in memory
+20253:S 15 Jul 2023 11:09:56.225 * Loading RDB produced by version 6.2.12
+20253:S 15 Jul 2023 11:09:56.225 * RDB age 0 seconds
+20253:S 15 Jul 2023 11:09:56.225 * RDB memory usage when created 1.83 Mb
+20253:S 15 Jul 2023 11:09:56.225 # Done loading RDB, keys loaded: 0, keys expired: 0.
+20253:S 15 Jul 2023 11:09:56.225 * MASTER <-> REPLICA sync: Finished with success
+```
+
+`7001 主节点`
+
+```shell
+20248:M 15 Jul 2023 11:09:29.227 # WARNING: The TCP backlog setting of 511 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 128.
+20248:M 15 Jul 2023 11:09:29.227 # Server initialized
+20248:M 15 Jul 2023 11:09:29.228 # WARNING Memory overcommit must be enabled! Without it, a background save or replication may fail under low memory condition. Being disabled, it can can also cause failures without low memory condition, see https://github.com/jemalloc/jemalloc/issues/1328. To fix this issue add 'vm.overcommit_memory = 1' to /etc/sysctl.conf and then reboot or run the command 'sysctl vm.overcommit_memory=1' for this to take effect.
+20248:M 15 Jul 2023 11:09:29.228 * Ready to accept connections
+
+# 1.1、接收到同步请求
+20248:M 15 Jul 2023 11:09:56.213 * Replica 192.168.44.149:7002 asks for synchronization
+
+# 1.2 不接受局部同步，replid 不一致，执行全量同步
+20248:M 15 Jul 2023 11:09:56.213 * Partial resynchronization not accepted: Replication ID mismatch (Replica asked for 'e235eaae1b73bfda55612799917518acde8580c7', my replication IDs are 'fa0826cebf59df7cad31bc236d5e5835f9c09a9c' and '0000000000000000000000000000000000000000')
+
+# 1.3、第一次同步，返回主节点的 replid和offset
+20248:M 15 Jul 2023 11:09:56.213 * Replication backlog created, my new replication IDs are '5d3bd5761e059a8da4fab71d297c0bde303f1740' and '0000000000000000000000000000000000000000'
+
+# 2.1、执行 BGSAVE，生成 RDB
+20248:M 15 Jul 2023 11:09:56.213 * Starting BGSAVE for SYNC with target: disk
+20248:M 15 Jul 2023 11:09:56.214 * Background saving started by pid 20264
+20264:C 15 Jul 2023 11:09:56.218 * DB saved on disk
+
+# 2.2、发送RDB文件
+20264:C 15 Jul 2023 11:09:56.219 * RDB: 6 MB of memory used by copy-on-write
+20248:M 15 Jul 2023 11:09:56.223 * Background saving terminated with success
+20248:M 15 Jul 2023 11:09:56.223 * Synchronization with replica 192.168.44.149:7002 succeeded
+```
+
+##### 增量同步
+
+主从第一次同步是全量同步，但如个slave重启后同步，则执行增量同步。
+
+![](../image/redis_主从_增量同步.png)
+
+但是repl_baklog大小也是有上限的（本质是一个数组），写满后会覆盖最早的数据。如果slave断开世间过久，导致之前尚未备份的数据被覆盖，则无法基于repl_baklog做增量同步，只能再次全量同步。
+
+这种清空没有办法去解决的，只能是尽可能的减小发生的概率。
+
+Redis主从集群的优化（优化全量同步的性能，减少全量同步的次数）：
+
+- 在master中配置`repl-diskless-sync yes`启动无磁盘复制，避免全量同步时先写入磁盘，减少一次磁盘复制。适用于IO较慢，网络带宽很快的Redis服务器配置。（避免全量同步时的磁盘IO）
+
+- 在master中配置`maxmemory <bytes>`内存大小，单位字节。Redis单节点上的内存占用不要太大。（减少RDB（Redis Database backup file Redis数据备份文件，也叫快照）导致的过多磁盘IO）。如果不设置内存大小或者设置内存大小为0，在64位操作系统下不限制内存大小，在32位操作系统下最多使用3GB内存。Redis一般推荐设置内存为最大物理内存的四分之三。
+
+- 在master中配置`repl-backlog-size <size>`修改默认大小，默认大小是1M。适当提高repl_baklog的大小，发现slave宕机时应该尽快实现故障恢复，尽可能避免全量同步。
+
+```txt
+repl_backlog_buffer(repl-backlog-size) = second * write_size_per_second
+second：从服务器断开重连主服务器所需的平均时间；
+write_size_per_second：master 平均每秒产生的命令数据量大小（写命令和数据大小总和）；
+例如，如果主服务器平均每秒产生 1 MB 的写数据，而从服务器断线之后平均要 5 秒才能重新连接上主服务器，那么复制积压缓冲区的大小就不能低于 5 MB。
+```
+
+- 限制一个master上的slave节点数量，如果实在是太多slave，则可以采用主-从-从链式结构，减少master压力。
+
+![](../image/redis_主从_主-从-从链式结构.png)
+
+#### 总结
+
+##### 简述全量同步的流程？
+
+- slave节点尝试请求增量同步。
+
+- master节点判断replid，发现不一致，拒绝增量同步。
+
+- master将完整内存数据生成RDB，发送RDB到slave。
+
+- slave清空本地数据，加载master的RDB。
+
+- master将RDB期间的命令记录在repl_baklog，并持续将log中的命令发送给slave。
+
+- slave执行接收到的命令，保持与master之间的同步。
+
+##### 简述全量同步和增量同步的区别？
+
+- 全量同步：master将完整内存数据生成RDB，发送RDB到slave。后续命令则记录在repl_baklog，批量发送给slave。
+
+- 增量同步：slave提交自己的offset到master，master获取repl_baklog中从offset之后的命令给slave。
+
+##### 何时执行全量同步？
+
+- slave节点第一次连接master节点时。
+
+- slave节点断开时间过久，导致repl_baklog中的offset已经被覆盖时。
+
+##### 何时执行增量同步？
+
+- slave节点断开又恢复，并且在repl_baklog中能够找到offset时。
 
 ### Redis哨兵
 
