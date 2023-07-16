@@ -1684,7 +1684,908 @@ write_size_per_second：master 平均每秒产生的命令数据量大小（写�
 
 ### Redis哨兵
 
+#### 哨兵的作用和原理
+
+##### 哨兵的作用
+
+Redis提供了哨兵（Sentinel）机制来实现主从集群的自动故障恢复。哨兵的结构和作用如下：
+
+- `监控`：Sentinel会不断检查master和slave是否按预期工作。
+
+- `自动故障恢复`：如果master故障，Sentinel会将一个slave提升为master。当故障实例恢复后也以新的master为主。
+
+- `通知`：Sentinel充当Redis客户端的服务发现来源 ，当集群发生故障转移时，会将最新信息推送给Redis的客户端。基于PubSub机制实现的。
+
+![](../image/redis_哨兵的作用.png)
+
+##### 服务状态监控
+
+Sentinel基于心跳机制检测服务状态，每隔1秒向集群的每个实例发送ping命令：
+
+- 主观下线：如果某Sentinel节点发现某实例未在规定时间内响应，则认为该实例主观下线。
+
+- 客观下线：若超过指定数量（quorum）的Sentinel都认为该实例主观下线，则该实例客观下线。quorum值建议超过Sentinel实例数量的一半。
+
+通过投票机制来确定Redis实例是否下线。
+
+![](../image/redis_哨兵的作用_服务状态监控.png)
+
+##### 选举新的master
+
+一旦发现master故障，Sentinel需要在slave中选择一个作为新的master，选择依据如下：
+
+- 首先会判断slave节点与master节点断开时间长短，如果超过指定值（`down-after-milliseconds * 10`）则会排除该slave节点。
+
+- 然后判断slave节点的`slave-priority`（默认1）值，越小优先级越高，如果是0则不参与选举。
+
+- 如果`slave-priority`一样，则判断slave节点offset值，越大说明数据越新，优先级越高。
+
+- 如果offset值一样，最后判断slave节点的运行id大小，越小优先级越高。
+
+##### 如何实现故障转移
+
+当选中了其中过一个slave为新的master后（假设选中了 7002），故障转移的步骤如下：
+
+- Sentinel给备选的slave节点发送`slaveof no one`命令，让该节点成为master。
+
+- Sentinel给所有其它slave发送`slaveof 192.168.44.149 7002`命令，让其它slave成为新master的从节点，开始从新的master上同步数据。
+
+- 最后，Sentinel将故障节点标记为slave（修改故障节点配置），当故障节点恢复后会自动成为新master的slave节点。
+
+![](../image/redis_哨兵的作用_故障转移.png)
+
+#### 搭建哨兵集群
+
+由于设备有限，只能在一台虚拟机上模拟集群。要在同一台虚拟机开启3个实例，必须准备三份不同的配置文件和目录，配置文件所在目录即工作目录。
+
+创建三个文件夹，分别是s1、s2、s3
+
+```shell
+cd /tmp/
+mkdir s1 s2 s3
+
+[root@server7 tmp]# ll
+drwxr-xr-x. 2 root root     6 7月  16 07:10 s1
+drwxr-xr-x. 2 root root     6 7月  16 07:10 s2
+drwxr-xr-x. 2 root root     6 7月  16 07:10 s3
+```
+
+在s1中创建sentinel.conf文件
+
+```vim
+# 当前sentinel实例的端口
+port 27001
+sentinel announce-ip 192.168.44.149
+# 指定主节点
+#   monitor：监控
+#   mymaster：主节点名称，自定义的，随意填写
+#   192.168.44.149 7001：主节点的ip和端口
+#   2：选举master时的quorum值
+sentinel monitor mymaster 192.168.44.149 7001 2
+# slave与master断开的超时时间
+sentinel down-after-milliseconds mymaster 5000
+# 故障恢复超时时间
+sentinel failover-timeout mymaster 60000
+dir "/tmp/s1"
+```
+
+然后将s1/sentinel.conf文件拷贝自s2、s3目录中
+
+```shell
+# 方式一：逐个拷贝
+cp s1/sentinel.conf s2
+cp s1/sentinel.conf s3
+
+# 方式二：管道组合命令，一键拷贝
+echo s2 s3 | xargs -t -n 1 cp s1/sentinel.conf
+```
+
+修改s2、s3配置文件，将端口分别修改为27002、27003
+
+```shell
+sed -i -e 's/27001/27002/g' -e 's/s1/s2/g' s2/sentinel.conf
+sed -i -e 's/27001/27003/g' -e 's/s1/s3/g' s3/sentinel.conf
+```
+
+分别启动三台sentinel实例（前提是主从已经配置）
+
+```shell
+redis-sentinel s1/sentinel.conf
+redis-sentinel s2/sentinel.conf
+redis-sentinel s3/sentinel.conf
+```
+
+手动停掉7001Redis服务。
+
+查看日志（Sentinel）
+
+s1
+
+```shell
+# s1
+23534:X 16 Jul 2023 07:55:13.355 # WARNING: The TCP backlog setting of 511 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 128.
+23534:X 16 Jul 2023 07:55:13.356 # Sentinel ID is cf069226c7b70854e9ca2bf56c41700b434e5730
+
+# 此时，整个集群都被Sentinel监控了 slave：7002、7003；master：7001
+23534:X 16 Jul 2023 07:55:13.356 # +monitor master mymaster 192.168.44.149 7001 quorum 2
+23534:X 16 Jul 2023 07:55:13.360 * +slave slave 192.168.44.149:7002 192.168.44.149 7002 @ mymaster 192.168.44.149 7001
+23534:X 16 Jul 2023 07:55:13.362 * +slave slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7001
+23534:X 16 Jul 2023 07:55:18.436 # +sdown sentinel 47355c27f2b993d6e5c0dc55d5e9025699265cc9 192.168.44.149 27002 @ mymaster 192.168.44.149 7001
+23534:X 16 Jul 2023 07:55:18.437 # +sdown sentinel 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 192.168.44.149 27003 @ mymaster 192.168.44.149 7001
+23534:X 16 Jul 2023 07:55:19.750 # -sdown sentinel 47355c27f2b993d6e5c0dc55d5e9025699265cc9 192.168.44.149 27002 @ mymaster 192.168.44.149 7001
+23534:X 16 Jul 2023 07:55:21.387 # +new-epoch 156
+23534:X 16 Jul 2023 07:55:22.893 # -sdown sentinel 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 192.168.44.149 27003 @ mymaster 192.168.44.149 7001
+23534:X 16 Jul 2023 07:55:24.510 # +new-epoch 159
+
+# 7001 发生故障后，主观认为7001下线
+23534:X 16 Jul 2023 07:55:47.253 # +sdown master mymaster 192.168.44.149 7001
+23534:X 16 Jul 2023 07:55:47.344 # +new-epoch 160
+
+# sentinel 内部选举一个leader（sentinel实例），选中sentinel实例去执行故障切换，让sentinel端口为27003的去执行
+23534:X 16 Jul 2023 07:55:47.446 # +vote-for-leader 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 160
+
+# quorum超过半数，7001 客观下线
+23534:X 16 Jul 2023 07:55:48.341 # +odown master mymaster 192.168.44.149 7001 #quorum 3/2
+23534:X 16 Jul 2023 07:55:48.341 # Next failover delay: I will not start a failover before Sun Jul 16 07:57:48 2023
+23534:X 16 Jul 2023 07:55:48.519 # +config-update-from sentinel 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 192.168.44.149 27003 @ mymaster 192.168.44.149 7001
+23534:X 16 Jul 2023 07:55:48.519 # +switch-master mymaster 192.168.44.149 7001 192.168.44.149 7002
+23534:X 16 Jul 2023 07:55:48.519 * +slave slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7002
+23534:X 16 Jul 2023 07:55:48.519 * +slave slave 192.168.44.149:7001 192.168.44.149 7001 @ mymaster 192.168.44.149 7002
+23534:X 16 Jul 2023 07:55:53.547 # +sdown slave 192.168.44.149:7001 192.168.44.149 7001 @ mymaster 192.168.44.149 7002
+```
+
+s2
+
+```shell
+# s2 
+23539:X 16 Jul 2023 07:55:19.246 # WARNING: The TCP backlog setting of 511 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 128.
+23539:X 16 Jul 2023 07:55:19.247 # Sentinel ID is 47355c27f2b993d6e5c0dc55d5e9025699265cc9
+23539:X 16 Jul 2023 07:55:19.247 # +monitor master mymaster 192.168.44.149 7001 quorum 2
+23539:X 16 Jul 2023 07:55:19.251 * +slave slave 192.168.44.149:7002 192.168.44.149 7002 @ mymaster 192.168.44.149 7001
+23539:X 16 Jul 2023 07:55:19.254 * +slave slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7001
+23539:X 16 Jul 2023 07:55:24.476 # +new-epoch 159
+
+# 7001 发生故障后
+23539:X 16 Jul 2023 07:55:47.277 # +sdown master mymaster 192.168.44.149 7001
+23539:X 16 Jul 2023 07:55:47.444 # +new-epoch 160
+23539:X 16 Jul 2023 07:55:47.448 # +vote-for-leader 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 160
+23539:X 16 Jul 2023 07:55:47.449 # +odown master mymaster 192.168.44.149 7001 #quorum 3/2
+23539:X 16 Jul 2023 07:55:47.449 # Next failover delay: I will not start a failover before Sun Jul 16 07:57:47 2023
+23539:X 16 Jul 2023 07:55:48.519 # +config-update-from sentinel 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 192.168.44.149 27003 @ mymaster 192.168.44.149 7001
+23539:X 16 Jul 2023 07:55:48.519 # +switch-master mymaster 192.168.44.149 7001 192.168.44.149 7002
+23539:X 16 Jul 2023 07:55:48.519 * +slave slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7002
+23539:X 16 Jul 2023 07:55:48.519 * +slave slave 192.168.44.149:7001 192.168.44.149 7001 @ mymaster 192.168.44.149 7002
+23539:X 16 Jul 2023 07:55:53.527 # +sdown slave 192.168.44.149:7001 192.168.44.149 7001 @ mymaster 192.168.44.149 7002
+```
+
+s3
+
+```shell
+# s3
+23544:X 16 Jul 2023 07:55:22.470 # WARNING: The TCP backlog setting of 511 cannot be enforced because /proc/sys/net/core/somaxconn is set to the lower value of 128.
+23544:X 16 Jul 2023 07:55:22.470 # Sentinel ID is 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293
+23544:X 16 Jul 2023 07:55:22.470 # +monitor master mymaster 192.168.44.149 7001 quorum 2
+23544:X 16 Jul 2023 07:55:22.474 * +slave slave 192.168.44.149:7002 192.168.44.149 7002 @ mymaster 192.168.44.149 7001
+23544:X 16 Jul 2023 07:55:22.476 * +slave slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7001
+
+# 7001 发生故障后，7001主观下线
+23544:X 16 Jul 2023 07:55:47.277 # +sdown master mymaster 192.168.44.149 7001
+
+# 7001客观下线，quorum超过半数
+23544:X 16 Jul 2023 07:55:47.338 # +odown master mymaster 192.168.44.149 7001 #quorum 2/2
+23544:X 16 Jul 2023 07:55:47.338 # +new-epoch 160
+
+# 处理失败恢复
+23544:X 16 Jul 2023 07:55:47.338 # +try-failover master mymaster 192.168.44.149 7001
+
+# 选举27003端口的sentinel实例为leader，执行故障转移。（选举机制：谁先发现宕机谁做leader）
+23544:X 16 Jul 2023 07:55:47.341 # +vote-for-leader 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 160
+23544:X 16 Jul 2023 07:55:47.446 # cf069226c7b70854e9ca2bf56c41700b434e5730 voted for 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 160
+23544:X 16 Jul 2023 07:55:47.449 # 47355c27f2b993d6e5c0dc55d5e9025699265cc9 voted for 03fd8e91042d4a5402bbd478fbfbdd9ec43ed293 160
+23544:X 16 Jul 2023 07:55:47.521 # +elected-leader master mymaster 192.168.44.149 7001
+
+# 准备选举一个slave作为新master
+23544:X 16 Jul 2023 07:55:47.521 # +failover-state-select-slave master mymaster 192.168.44.149 7001
+
+# 从slave中选master，选中了7002这个实例作为master
+23544:X 16 Jul 2023 07:55:47.595 # +selected-slave slave 192.168.44.149:7002 192.168.44.149 7002 @ mymaster 192.168.44.149 7001
+
+# 让7002执行 slaveof noone 命令，成为新的master
+23544:X 16 Jul 2023 07:55:47.596 * +failover-state-send-slaveof-noone slave 192.168.44.149:7002 192.168.44.149 7002 @ mymaster 192.168.44.149 7001
+
+# 7002等待提升，其实就是让其它slave执行 slaveof 192.168.44.149 7002
+23544:X 16 Jul 2023 07:55:47.669 * +failover-state-wait-promotion slave 192.168.44.149:7002 192.168.44.149 7002 @ mymaster 192.168.44.149 7001
+
+# 7002 正式提升为master
+23544:X 16 Jul 2023 07:55:48.444 # +promoted-slave slave 192.168.44.149:7002 192.168.44.149 7002 @ mymaster 192.168.44.149 7001
+
+# 修改下线的7001实例的配置，让它标记为7002的slave
+23544:X 16 Jul 2023 07:55:48.444 # +failover-state-reconf-slaves master mymaster 192.168.44.149 7001
+
+# 修改7003实例的配置，标记为7002的slave节点
+23544:X 16 Jul 2023 07:55:48.518 * +slave-reconf-sent slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7001
+23544:X 16 Jul 2023 07:55:49.474 * +slave-reconf-inprog slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7001
+23544:X 16 Jul 2023 07:55:49.474 * +slave-reconf-done slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7001
+23544:X 16 Jul 2023 07:55:49.548 # +failover-end master mymaster 192.168.44.149 7001
+23544:X 16 Jul 2023 07:55:49.548 # +switch-master mymaster 192.168.44.149 7001 192.168.44.149 7002
+23544:X 16 Jul 2023 07:55:49.548 * +slave slave 192.168.44.149:7003 192.168.44.149 7003 @ mymaster 192.168.44.149 7002
+23544:X 16 Jul 2023 07:55:49.548 * +slave slave 192.168.44.149:7001 192.168.44.149 7001 @ mymaster 192.168.44.149 7002
+23544:X 16 Jul 2023 07:55:54.563 # +sdown slave 192.168.44.149:7001 192.168.44.149 7001 @ mymaster 192.168.44.149 7002
+```
+
+查看日志（主从）
+
+7002
+
+```shell
+# 故障转移
+23501:M 16 Jul 2023 07:55:47.670 # Setting secondary replication ID to f986cfdcf3e16354fd70fd6950db1c396328c5a6, valid up to offset: 5035. New replication ID is de7d7f2eab6950a2e2b0cf2369397f2a9edcf91e
+
+# 执行了 slaveof noone
+23501:M 16 Jul 2023 07:55:47.670 * MASTER MODE enabled (user request from 'id=10 addr=192.168.44.149:38142 laddr=192.168.44.149:7002 fd=12 name=sentinel-03fd8e91-cmd age=25 idle=0 flags=x db=0 sub=0 psub=0 multi=4 qbuf=188 qbuf-free=40766 argv-mem=4 obl=45 oll=0 omem=0 tot-mem=61468 events=r cmd=exec user=default redir=-1')
+23501:M 16 Jul 2023 07:55:47.673 # CONFIG REWRITE executed with success.
+
+23501:M 16 Jul 2023 07:55:48.527 * Replica 192.168.44.149:7003 asks for synchronization
+23501:M 16 Jul 2023 07:55:48.527 * Partial resynchronization request from 192.168.44.149:7003 accepted. Sending 460 bytes of backlog starting from offset 5035.
+
+# 7001故障恢复后，7001 尝试主从同步
+23501:M 16 Jul 2023 08:05:58.675 * Replica 192.168.44.149:7001 asks for synchronization
+23501:M 16 Jul 2023 08:05:58.675 * Partial resynchronization not accepted: Replication ID mismatch (Replica asked for '62e2eaec67127051b63678e73a208e0c95c02337', my replication IDs are 'de7d7f2eab6950a2e2b0cf2369397f2a9edcf91e' and 'f986cfdcf3e16354fd70fd6950db1c396328c5a6')
+23501:M 16 Jul 2023 08:05:58.675 * Starting BGSAVE for SYNC with target: disk
+23698:C 16 Jul 2023 08:05:58.747 * DB saved on disk
+23698:C 16 Jul 2023 08:05:58.748 * RDB: 4 MB of memory used by copy-on-write
+23501:M 16 Jul 2023 08:05:58.773 * Background saving started by pid 23698
+23501:M 16 Jul 2023 08:05:58.773 * Background saving terminated with success
+23501:M 16 Jul 2023 08:05:58.773 * Synchronization with replica 192.168.44.149:7001 succeeded
+```
+
+7003
+
+```shell
+# 故障转移
+23514:S 16 Jul 2023 07:55:48.519 * MASTER <-> REPLICA sync started
+
+# replicaof 192.168.44.149 7002，成为7002的slave，并执行全量同步
+23514:S 16 Jul 2023 07:55:48.519 * REPLICAOF 192.168.44.149:7002 enabled (user request from 'id=10 addr=192.168.44.149:39814 laddr=192.168.44.149:7003 fd=12 name=sentinel-03fd8e91-cmd age=26 idle=0 flags=x db=0 sub=0 psub=0 multi=4 qbuf=349 qbuf-free=40605 argv-mem=4 obl=45 oll=0 omem=0 tot-mem=61468 events=r cmd=exec user=default redir=-1')
+23514:S 16 Jul 2023 07:55:48.524 # CONFIG REWRITE executed with success.
+23514:S 16 Jul 2023 07:55:48.525 * Non blocking connect for SYNC fired the event.
+23514:S 16 Jul 2023 07:55:48.525 * Master replied to PING, replication can continue...
+23514:S 16 Jul 2023 07:55:48.525 * Trying a partial resynchronization (request f986cfdcf3e16354fd70fd6950db1c396328c5a6:5035).
+23514:S 16 Jul 2023 07:55:48.528 * Successful partial resynchronization with master.
+23514:S 16 Jul 2023 07:55:48.528 # Master replication ID changed to de7d7f2eab6950a2e2b0cf2369397f2a9edcf91e
+23514:S 16 Jul 2023 07:55:48.528 * MASTER <-> REPLICA sync: Master accepted a Partial Resynchronization.
+```
+
+7001
+
+7001启动了会尝试做一个主从同步。
+
+```shell
+# 重启7001
+23693:S 16 Jul 2023 08:05:58.668 * Connecting to MASTER 192.168.44.149:7002
+23693:S 16 Jul 2023 08:05:58.668 * MASTER <-> REPLICA sync started
+
+# replicaof 192.168.44.149 7002
+23693:S 16 Jul 2023 08:05:58.668 * REPLICAOF 192.168.44.149:7002 enabled (user request from 'id=3 addr=192.168.44.149:43482 laddr=192.168.44.149:7001 fd=7 name=sentinel-cf069226-cmd age=10 idle=0 flags=x db=0 sub=0 psub=0 multi=4 qbuf=202 qbuf-free=40752 argv-mem=4 obl=45 oll=0 omem=0 tot-mem=61468 events=r cmd=exec user=default redir=-1')
+23693:S 16 Jul 2023 08:05:58.673 # CONFIG REWRITE executed with success.
+23693:S 16 Jul 2023 08:05:58.674 * Non blocking connect for SYNC fired the event.
+23693:S 16 Jul 2023 08:05:58.674 * Master replied to PING, replication can continue...
+23693:S 16 Jul 2023 08:05:58.674 * Trying a partial resynchronization (request 62e2eaec67127051b63678e73a208e0c95c02337:1).
+23693:S 16 Jul 2023 08:05:58.773 * Full resync from master: de7d7f2eab6950a2e2b0cf2369397f2a9edcf91e:138032
+23693:S 16 Jul 2023 08:05:58.773 * Discarding previously cached master state.
+23693:S 16 Jul 2023 08:05:58.773 * MASTER <-> REPLICA sync: receiving 191 bytes from master to disk
+23693:S 16 Jul 2023 08:05:58.773 * MASTER <-> REPLICA sync: Flushing old data
+23693:S 16 Jul 2023 08:05:58.773 * MASTER <-> REPLICA sync: Loading DB in memory
+23693:S 16 Jul 2023 08:05:58.774 * Loading RDB produced by version 6.2.12
+23693:S 16 Jul 2023 08:05:58.774 * RDB age 0 seconds
+23693:S 16 Jul 2023 08:05:58.774 * RDB memory usage when created 1.99 Mb
+23693:S 16 Jul 2023 08:05:58.774 # Done loading RDB, keys loaded: 1, keys expired: 0.
+23693:S 16 Jul 2023 08:05:58.774 * MASTER <-> REPLICA sync: Finished with success
+```
+
+分布式缓存一般使用Lettuce。Redis的其中一种客户端。
+
 ### Redis分片集群
+
+主从和哨兵可以解决高可用、高并发读的问题。但依然有两个问题没有解决：
+
+- 海量数据 存储问题
+
+- 高并发写的问题。
+
+使用分片集群可以解决上述问题，分片集群特征：
+
+- 集群中有多个master，每个master保存不同的数据。
+
+- 每个master都可以有多个slave节点。
+
+- master之间通过ping检测彼此的健康状态。
+
+- 客户端请求可以访问集群中任意节点，最终都会被路由转发到正确节点。
+
+![](../image/redis_分片集群_分片集群特征.png)
+
+#### 搭建分片集群
+
+##### 实例配置
+
+由于设备有限，只能在一台虚拟机中模拟分片集群。
+
+| ip             | 端口   | 角色     |
+| -------------- | ---- | ------ |
+| 192.168.44.149 | 7001 | master |
+| 192.168.44.149 | 7002 | master |
+| 192.168.44.149 | 7003 | master |
+| 192.168.44.149 | 8001 | slave  |
+| 192.168.44.149 | 8002 | slave  |
+| 192.168.44.149 | 8003 | slave  |
+
+创建 7001、7002、7003、8001、8002、8003 目录：
+
+```shell
+cd /tmp/
+mkdir 7001 7002 7003 8001 8002 8003
+```
+
+创建配置文件
+
+```vim
+port 7001
+# 开启集群功能
+cluster-enabled yes
+# 集群的配置文件名称，由redis维护
+cluster-config-file /tmp/redis_cluster/7001/nodes.conf
+# 节点心跳失败的超时时间
+cluster-node-timeout 5000
+# 持久化文件存放目录
+dir /tmp/redis_cluster/7001/
+# 绑定地址
+bind 0.0.0.0
+# redis后台运行
+daemonize yes
+# 注册的实例ip
+replica-announce-ip 192.168.44.149
+# 保护模式
+protected-mode no
+# 数据库数量
+databases 1
+# 日志
+logfile /tmp/redis_cluster/7001/run.log
+```
+
+拷贝到每个目录下
+
+```shell
+echo 7001 7002 7003 8001 8002 8003 | xargs -t -n 1 cp redis.conf
+```
+
+修改每个目录的端口
+
+```shell
+[root@server7 redis_cluster]# printf '%s\n' 7001 7002 7003 8001 8002 8003 | xargs -I{} -t sed -i 's/7001/{}/g' {}/redis.conf
+sed -i s/7001/7001/g 7001/redis.conf 
+sed -i s/7001/7002/g 7002/redis.conf 
+sed -i s/7001/7003/g 7003/redis.conf 
+sed -i s/7001/8001/g 8001/redis.conf 
+sed -i s/7001/8002/g 8002/redis.conf 
+sed -i s/7001/8003/g 8003/redis.conf
+```
+
+##### 启动redis-server
+
+```shell
+printf '%s\n' 7001 7002 7003 8001 8002 8003 | xargs -I{} -t redis-server {}/redis.conf
+```
+
+##### 通过ps命令查看状态
+
+```shell
+[root@server7 redis_cluster]# ps -ef | grep redis
+root      24983      1  0 09:38 ?        00:00:00 redis-server 0.0.0.0:7001 [cluster]
+root      24985      1  0 09:38 ?        00:00:00 redis-server 0.0.0.0:7002 [cluster]
+root      24995      1  0 09:38 ?        00:00:00 redis-server 0.0.0.0:7003 [cluster]
+root      24997      1  0 09:38 ?        00:00:00 redis-server 0.0.0.0:8001 [cluster]
+root      25007      1  0 09:38 ?        00:00:00 redis-server 0.0.0.0:8002 [cluster]
+root      25013      1  0 09:38 ?        00:00:00 redis-server 0.0.0.0:8003 [cluster]
+```
+
+##### 关闭所有进程
+
+```shell
+printf '%s\n' 7001 7002 7003 8001 8002 8003 | xargs -I{} -t redis-cli -p {} shutdown
+```
+
+##### 创建集群
+
+1. Redis5.0以前的命令
+
+5.0以前的集群命令依赖src/redis-trib.rb实现。redis-trib.rb使用ruby编写的，所以需要按照ruby环境 ，这里不作解释。
+
+1. Redis5.0以后的命令
+
+```shell
+redis-cli --cluster create --cluster-replicas 1 192.168.44.149:7001 192.168.44.149:7002 192.168.44.149:7003 192.168.44.149:8001 192.168.44.149:8002 192.168.44.149:8003
+```
+
+- `redis-cli --cluster`或者`./redis-trib.rb`：代表集群操作命令。
+
+- create：表示创建集群。
+
+- `--cluster-replicas 1`或者`--replicas 1`：表示指定集群中每个master的副本个数为1，即一个master对应一个slave。此时`节点总数 ÷ (replicas+1)`得到的就是master的数量。因此节点列表中的前n个就是master，其它节点都是slave节点，随机分配到不同master。
+
+运行命令后的结果：
+
+```shell
+[root@server7 redis_cluster]# redis-cli --cluster create --cluster-replicas 1 192.168.44.149:7001 192.168.44.149:7002 192.168.44.149:7003 192.168.44.149:8001 192.168.44.149:8002 192.168.44.149:8003
+>>> Performing hash slots allocation on 6 nodes...
+Master[0] -> Slots 0 - 5460
+Master[1] -> Slots 5461 - 10922
+Master[2] -> Slots 10923 - 16383
+Adding replica 192.168.44.149:8002 to 192.168.44.149:7001
+Adding replica 192.168.44.149:8003 to 192.168.44.149:7002
+Adding replica 192.168.44.149:8001 to 192.168.44.149:7003
+>>> Trying to optimize slaves allocation for anti-affinity
+[WARNING] Some slaves are in the same host as their master
+M: 604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001
+   slots:[0-5460] (5461 slots) master
+M: 22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002
+   slots:[5461-10922] (5462 slots) master
+M: e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003
+   slots:[10923-16383] (5461 slots) master
+S: fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001
+   replicates 22d17de63787aab987f8accf1f9aff327b4a4bfe
+S: daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002
+   replicates e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+S: 452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003
+   replicates 604cd8786073415c1ea040ff8cf2120923f3d9cf
+
+# redis自动配置的主从节点搭配你觉得可以吗？
+Can I set the above configuration? (type 'yes' to accept): yes
+>>> Nodes configuration updated
+>>> Assign a different config epoch to each node
+>>> Sending CLUSTER MEET messages to join the cluster
+Waiting for the cluster to join
+..
+>>> Performing Cluster Check (using node 192.168.44.149:7001)
+M: 604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001
+   slots:[0-5460] (5461 slots) master
+   1 additional replica(s)
+S: fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001
+   slots: (0 slots) slave
+   replicates 22d17de63787aab987f8accf1f9aff327b4a4bfe
+S: 452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003
+   slots: (0 slots) slave
+   replicates 604cd8786073415c1ea040ff8cf2120923f3d9cf
+M: e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003
+   slots:[10923-16383] (5461 slots) master
+   1 additional replica(s)
+M: 22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002
+   slots:[5461-10922] (5462 slots) master
+   1 additional replica(s)
+S: daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002
+   slots: (0 slots) slave
+   replicates e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+[OK] All nodes agree about slots configuration.
+>>> Check for open slots...
+>>> Check slots coverage...
+[OK] All 16384 slots covered.
+```
+
+##### 查看集群状态
+
+```shell
+[root@server7 redis_cluster]# redis-cli -p 7001 cluster nodes
+604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001@17001 myself,master - 0 1689472352000 1 connected 0-5460
+fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001@18001 slave 22d17de63787aab987f8accf1f9aff327b4a4bfe 0 1689472353000 2 connected
+452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003@18003 slave 604cd8786073415c1ea040ff8cf2120923f3d9cf 0 1689472353000 1 connected
+e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003@17003 master - 0 1689472353118 3 connected 10923-16383
+22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002@17002 master - 0 1689472354141 2 connected 5461-10922
+daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd2bf01aadc382a5e1b44b1a763be23642a 0 1689472353631 3 connected
+```
+
+#### 散列插槽
+
+Redis会把每一个 master节点映射到0~16383共16384个插槽（hash slot）上，查看集群信息时就能看到：
+
+```shell
+# 0-5460
+604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001@17001 myself,master - 0 1689472352000 1 connected 0-5460
+# 10923-16383
+e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003@17003 master - 0 1689472353118 3 connected 10923-16383
+# 5461-10922
+22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002@17002 master - 0 1689472354141 2 connected 5461-10922
+```
+
+数据key不是与节点绑定的，而是与插槽绑定。redis会根据key的有效部分计算插槽值，分两种情况：
+
+- key中包含`{}`，且`{}`中至少包含1个字符，`{}`中的部分是有效部分。
+
+- key中不包含`{}`，则整个key都是有效部分。
+
+eg：key是 name，那么就根据name计算，如果是{age}name，则根据age计算。计算方式是利用CRC16算法得到一个hash值，然后对16384取余，得到的结果就是slot值。
+
+测试验证：
+
+根据插槽切换了路由Redis节点。
+
+```shell
+# -c 集群环境
+[root@server7 redis_cluster]# redis-cli -c -p 7001
+127.0.0.1:7001> set num 123
+OK
+127.0.0.1:7001> set a 1
+-> Redirected to slot [15495] located at 192.168.44.149:7003
+OK
+192.168.44.149:7003> get a
+"1"
+192.168.44.149:7003> get num
+-> Redirected to slot [2765] located at 192.168.44.149:7001
+"123"
+192.168.44.149:7001>
+```
+
+##### 总结
+
+Redis如何判断某个key应该存放在哪个实例？
+
+- 将16384个插槽分配到不同的实例（master）。
+
+- 根据key的有效部分计算hash值，对16384取余。
+
+- 余数作为插槽，根据插槽找到实例即可。
+
+如何将同一类数据对那个的保存在同一个Redis实例？
+
+- key可以以`{typeid}`作为前缀。typeid作为有效部分。参与计算hash
+
+```shell
+192.168.44.149:7001> set {a}num 111
+-> Redirected to slot [15495] located at 192.168.44.149:7003
+OK
+192.168.44.149:7003>
+```
+
+#### 集群伸缩
+
+redis-cli --cluster提供了很多操作集群的命令，可以通过下面方式查看：
+
+```shell
+[root@server7 redis_cluster]# redis-cli --cluster help
+Cluster Manager Commands:
+  create         host1:port1 ... hostN:portN
+                 --cluster-replicas <arg>
+  check          host:port
+                 --cluster-search-multiple-owners
+  info           host:port
+  fix            host:port
+                 --cluster-search-multiple-owners
+                 --cluster-fix-with-unreachable-masters
+  reshard        host:port
+                 --cluster-from <arg>
+                 --cluster-to <arg>
+                 --cluster-slots <arg>
+                 --cluster-yes
+                 --cluster-timeout <arg>
+                 --cluster-pipeline <arg>
+                 --cluster-replace
+  rebalance      host:port
+                 --cluster-weight <node1=w1...nodeN=wN>
+                 --cluster-use-empty-masters
+                 --cluster-timeout <arg>
+                 --cluster-simulate
+                 --cluster-pipeline <arg>
+                 --cluster-threshold <arg>
+                 --cluster-replace
+  # 添加节点，默认是master节点；existing_host:existing_port 表示集群中已存在的节点，连接集群
+  add-node       new_host:new_port existing_host:existing_port
+                 --cluster-slave
+                 --cluster-master-id <arg>
+  del-node       host:port node_id
+...
+```
+
+##### 扩容
+
+测试：现在要增加一台集群节点（9001）
+
+```shell
+[root@server7 redis_cluster]# mkdir 9001
+[root@server7 redis_cluster]# cp redis.conf 9001
+
+[root@server7 redis_cluster]# sed -i s/7001/9001/g 9001/redis.conf
+
+[root@server7 redis_cluster]# redis-server 9001/redis.conf
+
+[root@server7 redis_cluster]# ps -ef | grep redis
+root      24983      1  0 09:38 ?        00:00:13 redis-server 0.0.0.0:7001 [cluster]
+root      24985      1  0 09:38 ?        00:00:13 redis-server 0.0.0.0:7002 [cluster]
+root      24995      1  0 09:38 ?        00:00:13 redis-server 0.0.0.0:7003 [cluster]
+root      24997      1  0 09:38 ?        00:00:11 redis-server 0.0.0.0:8001 [cluster]
+root      25007      1  0 09:38 ?        00:00:12 redis-server 0.0.0.0:8002 [cluster]
+root      25013      1  0 09:38 ?        00:00:11 redis-server 0.0.0.0:8003 [cluster]
+root      25801      1  0 10:39 ?        00:00:00 redis-server 0.0.0.0:9001 [cluster]
+
+# 向集群中添加一个节点
+[root@server7 redis_cluster]# redis-cli --cluster add-node 192.168.44.149:9001 192.168.44.149:7001
+>>> Adding node 192.168.44.149:9001 to cluster 192.168.44.149:7001
+>>> Performing Cluster Check (using node 192.168.44.149:7001)
+M: 604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001
+   slots:[0-5460] (5461 slots) master
+   1 additional replica(s)
+S: fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001
+   slots: (0 slots) slave
+   replicates 22d17de63787aab987f8accf1f9aff327b4a4bfe
+S: 452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003
+   slots: (0 slots) slave
+   replicates 604cd8786073415c1ea040ff8cf2120923f3d9cf
+M: e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003
+   slots:[10923-16383] (5461 slots) master
+   1 additional replica(s)
+M: 22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002
+   slots:[5461-10922] (5462 slots) master
+   1 additional replica(s)
+S: daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002
+   slots: (0 slots) slave
+   replicates e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+[OK] All nodes agree about slots configuration.
+>>> Check for open slots...
+>>> Check slots coverage...
+[OK] All 16384 slots covered.
+>>> Send CLUSTER MEET to node 192.168.44.149:9001 to make it join the cluster.
+[OK] New node added correctly.
+
+# 查看集群状态，发现 9001 节点没有分配 插槽，那么相当于添加一个空节点，没起作用
+[root@server7 redis_cluster]# redis-cli -p 7001 cluster nodes
+3d708a31634d67aea85460ca4fe16bdb4756abc2 192.168.44.149:9001@19001 master - 0 1689475479000 0 connected
+604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001@17001 myself,master - 0 1689475479000 1 connected 0-5460
+fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001@18001 slave 22d17de63787aab987f8accf1f9aff327b4a4bfe 0 1689475480574 2 connected
+452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003@18003 slave 604cd8786073415c1ea040ff8cf2120923f3d9cf 0 1689475480000 1 connected
+e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003@17003 master - 0 1689475479000 3 connected 10923-16383
+22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002@17002 master - 0 1689475479000 2 connected 5461-10922
+daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd2bf01aadc382a5e1b44b1a763be23642a 0 1689475480271 3 connected
+
+# 从 7003 节点中分配一些插槽
+[root@server7 redis_cluster]# redis-cli --cluster reshard 192.168.44.149:7003
+>>> Performing Cluster Check (using node 192.168.44.149:7003)
+M: e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003
+   slots:[10923-16383] (5461 slots) master
+   1 additional replica(s)
+M: 3d708a31634d67aea85460ca4fe16bdb4756abc2 192.168.44.149:9001
+   slots: (0 slots) master
+S: 452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003
+   slots: (0 slots) slave
+   replicates 604cd8786073415c1ea040ff8cf2120923f3d9cf
+M: 604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001
+   slots:[0-5460] (5461 slots) master
+   1 additional replica(s)
+S: fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001
+   slots: (0 slots) slave
+   replicates 22d17de63787aab987f8accf1f9aff327b4a4bfe
+S: daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002
+   slots: (0 slots) slave
+   replicates e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+M: 22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002
+   slots:[5461-10922] (5462 slots) master
+   1 additional replica(s)
+[OK] All nodes agree about slots configuration.
+>>> Check for open slots...
+>>> Check slots coverage...
+[OK] All 16384 slots covered.
+
+# 需要设置多少插槽，设置 3000 插槽
+How many slots do you want to move (from 1 to 16384)? 3000
+
+# 哪个节点来接收这些插槽，指定 9001
+What is the receiving node ID? 3d708a31634d67aea85460ca4fe16bdb4756abc2
+
+# 从哪个节点（source）中分配插槽，指定 7003
+Please enter all the source node IDs.
+  Type 'all' to use all the nodes as source nodes for the hash slots.
+  Type 'done' once you entered all the source nodes IDs.
+Source node #1: e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+# 退出
+Source node #2: done
+  Moving slot 10923 from e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+  ... ...
+  Moving slot 13922 from e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+
+# 你同意这个分配计划吗
+Do you want to proceed with the proposed reshard plan (yes/no)? yes
+  ... ...
+
+# 查看集群状态信息，9001已经从7003中得到分配的插槽了
+[root@server7 redis_cluster]# redis-cli -p 7001 cluster nodes
+3d708a31634d67aea85460ca4fe16bdb4756abc2 192.168.44.149:9001@19001 master - 0 1689476306657 7 connected 10923-13922
+604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001@17001 myself,master - 0 1689476305000 1 connected 0-5460
+fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001@18001 slave 22d17de63787aab987f8accf1f9aff327b4a4bfe 0 1689476306000 2 connected
+452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003@18003 slave 604cd8786073415c1ea040ff8cf2120923f3d9cf 0 1689476305000 1 connected
+e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003@17003 master - 0 1689476305229 3 connected 13923-16383
+22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002@17002 master - 0 1689476306761 2 connected 5461-10922
+daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd2bf01aadc382a5e1b44b1a763be23642a 0 1689476306556 3 connected
+```
+
+测试9001节点
+
+```shell
+[root@server7 redis_cluster]# redis-cli -c -p 7001
+127.0.0.1:7001> get abcdefghijk
+-> Redirected to slot [12868] located at 192.168.44.149:9001
+(nil)
+192.168.44.149:9001> get num
+-> Redirected to slot [2765] located at 192.168.44.149:7001
+"123"
+192.168.44.149:7001> set abcdefghijk 888
+-> Redirected to slot [12868] located at 192.168.44.149:9001
+OK
+192.168.44.149:9001> get abcdefghijk
+"888"
+```
+
+##### 缩容
+
+```shell
+[root@server7 redis_cluster]# redis-cli --cluster reshard 192.168.44.149:9001
+>>> Performing Cluster Check (using node 192.168.44.149:9001)
+M: 3d708a31634d67aea85460ca4fe16bdb4756abc2 192.168.44.149:9001
+   slots:[10923-13922] (3000 slots) master
+M: e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003
+   slots:[13923-16383] (2461 slots) master
+   1 additional replica(s)
+S: 452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003
+   slots: (0 slots) slave
+   replicates 604cd8786073415c1ea040ff8cf2120923f3d9cf
+M: 604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001
+   slots:[0-5460] (5461 slots) master
+   1 additional replica(s)
+S: daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002
+   slots: (0 slots) slave
+   replicates e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+M: 22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002
+   slots:[5461-10922] (5462 slots) master
+   1 additional replica(s)
+S: fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001
+   slots: (0 slots) slave
+   replicates 22d17de63787aab987f8accf1f9aff327b4a4bfe
+[OK] All nodes agree about slots configuration.
+>>> Check for open slots...
+>>> Check slots coverage...
+[OK] All 16384 slots covered.
+
+# 分配多少插槽
+How many slots do you want to move (from 1 to 16384)? 3000
+
+# 哪个节点来接收插槽，指定 7003
+What is the receiving node ID? e3e33bd2bf01aadc382a5e1b44b1a763be23642a
+
+# 从哪个节点上分配，指定 9001
+Please enter all the source node IDs.
+  Type 'all' to use all the nodes as source nodes for the hash slots.
+  Type 'done' once you entered all the source nodes IDs.
+Source node #1: 3d708a31634d67aea85460ca4fe16bdb4756abc2
+Source node #2: done 
+... ...
+Do you want to proceed with the proposed reshard plan (yes/no)? yes
+... ...
+```
+
+删除9001节点
+
+```shell
+[root@server7 redis_cluster]# redis-cli --cluster del-node 192.168.44.149:9001 3d708a31634d67aea85460ca4fe16bdb4756abc2
+>>> Removing node 3d708a31634d67aea85460ca4fe16bdb4756abc2 from cluster 192.168.44.149:9001
+>>> Sending CLUSTER FORGET messages to the cluster...
+>>> Sending CLUSTER RESET SOFT to the deleted node.
+
+[root@server7 redis_cluster]# redis-cli -p 7001 cluster nodes
+604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001@17001 myself,master - 0 1689478430000 1 connected 0-5460
+fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001@18001 slave 22d17de63787aab987f8accf1f9aff327b4a4bfe 0 1689478431568 2 connected
+452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003@18003 slave 604cd8786073415c1ea040ff8cf2120923f3d9cf 0 1689478431000 1 connected
+e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003@17003 master - 0 1689478431568 8 connected 10923-16383
+22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002@17002 master - 0 1689478431568 2 connected 5461-10922
+daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd2bf01aadc382a5e1b44b1a763be23642a 0 1689478430550 8 connected
+```
+
+#### 故障转移
+
+##### 自动故障转移
+
+使用watch命令监听集群节点信息
+
+```shell
+# 节点宕机前没什么变化
+[root@server7 redis_cluster]# watch redis-cli -p 7001 cluster nodes
+604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001@17001 myself,master - 0 1689478430000 1 connected 0-5460
+fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001@18001 slave 22d17de63787aab987f8accf1f9aff327b4a4bfe 0 1689478431568 2 connected
+452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003@18003 slave 604cd8786073415c1ea040ff8cf2120923f3d9cf 0 1689478431000 1 connected
+e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003@17003 master - 0 1689478431568 8 connected 10923-16383
+22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002@17002 master - 0 1689478431568 2 connected 5461-10922
+daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd2bf01aadc382a5e1b44b1a763be23642a 0 1689478430550 8 connected
+
+# 当执行 redis-cli -p 7002 shutdown 命令后，7002 fail，8001 被选举为master节点
+604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001@17001 myself,master - 0 1689478884000 1 connected 0-5460
+fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001@18001 master - 0 1689478884584 9 connected 5461-10922
+452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003@18003 slave 604cd8786073415c1ea040ff8cf2120923f3d9cf 0 1689478885600 1 connected
+e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003@17003 master - 0 1689478883558 8 connected 10923-16383
+
+# 当7002故障恢复上线后，变为slave节点
+22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002@17002 slave fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 0 1689478885000 9 connected
+daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd2bf01aadc382a5e1b44b1a763be23642a 0 1689478884073 8 connected
+```
+
+```shell
+[root@server7 tmp]# redis-cli -p 7002 shutdown
+
+[root@server7 tmp]# redis-server ./redis_cluster/7002/redis.conf
+```
+
+Redis集群自动具备主从故障切换，不需要哨兵。
+
+当集群中有一个master宕机后会发生什么？
+
+1. 首先是该实例与其它实例失去连接。
+
+2. 然后是疑似宕机，原master宕机标记为 `fail?`。
+
+3. 最后是确定下线，自动提升一个slave为新的master。
+
+##### 手动故障转移/数据迁移
+
+利用cluster failover命令可以手动让集群中的某个master宕机，切换到执行执行cluster failover命令的这个slave节点，实现无感知的数据迁移。其流程如下：
+
+![](../image/redis_分片集群_数据迁移.png)
+
+等待故障转移完成后，slave变为master，master变为slave。以后的集群交互就与新的master进行通信。
+
+手动的Failover支持三种模式：
+
+- 缺省：默认的流程，如上图1~6步。
+
+- force：省略了对offset的一致性校验，省略2-3步骤。
+
+- tackover：直接执行第5步，忽略数据一致性、忽略master状态以及其它master的意见。
+
+演示，让7002当选当选master：
+
+```shell
+[root@server7 tmp]# redis-cli -p 7002
+127.0.0.1:7002> CLUSTER FAILOVER
+OK
+```
+
+监控集群节点信息
+
+```shell
+[root@server7 tmp]# watch redis-cli -p 7001 cluster nodes
+
+604cd8786073415c1ea040ff8cf2120923f3d9cf 192.168.44.149:7001@17001 myself,master - 0 1689480067000 1 connected 0-5460
+
+# 8001 被手动替换为 slave
+fb1cb83a65e8cf15b6dca2fd1bd8efc99efabe79 192.168.44.149:8001@18001 slave 22d17de63787aab987f8accf1f9aff327b4a4bfe 0 1689480069000 10 connected
+452e4a58832d83c18939275a6c5d8deab1f74e16 192.168.44.149:8003@18003 slave 604cd8786073415c1ea040ff8cf2120923f3d9cf 0 1689480069025 1 connected
+e3e33bd2bf01aadc382a5e1b44b1a763be23642a 192.168.44.149:7003@17003 master - 0 1689480069535 8 connected 10923-16383
+
+# 7002 被手动替换为 master
+22d17de63787aab987f8accf1f9aff327b4a4bfe 192.168.44.149:7002@17002 master - 0 1689480069000 10 connected 5461-10922
+daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd2bf01aadc382a5e1b44b1a763be23642a 0 1689480067502 8 connected
+```
+
+## 多级缓存
+
+用于缓存的Nginx是业务Nginx，需要部署为集群，再由专门的Nginx代理来做反向代理。
+
+![](../image/redis_多级缓存方案.png)
+
+### JVM进程缓存
+
+### Lua语法
+
+### 多级缓存
+
+### 缓存同步策略
+
+## Redis最佳实践
+
+## 原理篇
 
 ## 附录
 
