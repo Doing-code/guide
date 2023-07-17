@@ -2577,11 +2577,159 @@ daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd
 
 ### JVM进程缓存
 
-### Lua语法
+缓存在日常开发者起到至关重要的作用，由于是存储在内存中，数据的读取速度是非常快的。能大量减少对数据库的访问，减少数据库压力。可以把缓存分为两类：
+
+- 分布式缓存：如Redis
+  
+  - 优点：存储容量更大，可靠性更好，可以在集群间共享。
+  
+  - 缺点：访问缓存有网络开销。
+  
+  - 场景：缓存数据量较大、可靠性要求较高、需要在集群间共享。
+
+- 进程本地缓存：如HashMap、GuavaCache
+  
+  - 优点：读取本地内存，没有网络开销，速度更快。
+  
+  - 缺点：存储容量有限、可靠性较低、无法共享。
+  
+  - 场景：性能要求较高，缓存数据量较小。
+
+#### Caffeine
+
+> Github：https://github.com/ben-manes/caffeine/wiki/Population-zh-CN
+
+Caffeine是一个基于Java8开发的提供了近乎最佳命中率的高性能的缓存库。
+
+缓存和ConcurrentMap有点相似，但还是有所区别。最根本的区别是ConcurrentMap将会持有所有加入到缓存当中的元素，直到它们被从缓存当中手动移除。但是，Caffeine的缓存Cache 通常会被配置成自动驱逐缓存中元素，以限制其内存占用。
+
+Caffeine提供三种缓存的驱逐策略：
+
+- 基于容量：设置缓存的数量上限。
+
+- 基于时间：设置缓存的有效时间。
+
+- 基于引用：设置缓存为软引用或弱引用，利用GC来回收缓存数据。性能较差，不推荐使用。
+
+默认情况下，当一个缓存元素过期的时候，Caffeine不会立即将其清理和驱逐。而是在一次读或写操作后，或者在空闲时间完成对失效数据的驱逐。
+
+```pom
+<dependency>
+    <groupId>com.github.ben-manes.caffeine</groupId>
+    <artifactId>caffeine</artifactId>
+    <version>3.1.1</version>
+</dependency>
+```
+
+简单使用：
+
+```java
+// 创建缓存对象
+Cache<String, Person> cache = Caffeine.newBuilder()
+    // key的过期时间，10分钟，从最后依次写入开始计时
+    .expireAfterWrite(10, TimeUnit.MINUTES)  
+    // key的size，最大10000，超过10000，则默认使用LRU，最近最少使用
+    .maximumSize(10_000)    
+    .build();
+
+// 查找一个缓存元素， 没有查找到的时候返回null
+Person person = cache.getIfPresent(key);
+// 查找缓存，如果缓存不存在则生成缓存元素,  如果无法生成则返回null
+person = cache.get(key, k -> createExpensivePerson(key));
+// 添加或者更新一个缓存元素
+cache.put(key, person);
+// 移除一个缓存元素
+cache.invalidate(key);
+```
 
 ### 多级缓存
 
-### 缓存同步策略
+#### OpenResty
+
+> 官网：https://openresty.org/cn/
+
+OpenResty是一个基于Nginx的高性能Web频台，用于方便的搭建能够处理超高并发、扩展性极高的动态Web应用、Web服务和动态网关。具备下列特点：
+
+- 具备Nginx的完整功能。
+
+- 基于Lua语言进行扩展，集成大量Lua库、第三方模块。
+
+- 允许使用Lua自定义业务逻辑、自定义库。
+
+可以将其理解为是业务Nginx，可以处理一定的业务能力。而反向代理则由专门的反向代理Nginx来负责。
+
+OpenResty也提供本地缓存。OpenResty为Nginx提供了shard dict的功能，可以在Nginx的多个worker之间共享数据，实现缓存功能。
+
+- 开启共享字典，在nginx.conf的http下添加配置
+
+```conf
+# 共享词典（本地缓存），缓存名称: item_cache，缓存大小150m
+lua_shared_dict item_cache 150m;
+```
+
+- 操作共享字典
+
+```lua
+# 基于 lua 
+# 获取本地缓存对象
+local item_cache = ngx.shared.item_cache
+# 存储缓存，指定 key、vlaue、过期时间，单位秒，设置0表示用不过期
+item_cache:set('key', 'value', 1000)
+# 获取缓存
+local val = item_cache:get('key')
+```
+
+#### Redis 缓存预热
+
+![](../image/redis_多级缓存方案_2.png)
+
+冷启动：服务刚启动时，Redis中并没有缓存，如果所有缓存数据都在第一次查询时添加缓存，可能会给数据库带来较大压力。
+
+缓存预热：在实际开发中，我们可以利用大数据统计用户访问的热点数据，在项目启动时将这些热点数据提前查询并保存到Redis中。
+
+### 缓存同步
+
+#### 缓存同步策略
+
+缓存数据同步的常见方式有三种：
+
+- 设置有效期：给缓存设置有效期，到期后自动删除。再次查询时更新。
+
+    - 优势：简单、方便。
+      
+    - 缺点：时效性差，缓存过期之前可能数据不一致。
+      
+    - 场景：更新频率较低，时效性要求低的业务。
+
+- 同步双写：在修改数据库的同时，直接修改缓存。
+
+    - 优势：时效性强，缓存与数据库强一致。
+
+    - 缺点：有代码侵入 ，耦合度高。
+
+    - 场景：对一致性、时效性要求较高的缓存数据。
+
+- 异步通知：修改数据库时发送事件通知，相关服务监听到通知后修改缓存数据。
+
+    - 优势：低耦合，可以同时通知多个缓存服务。
+
+    - 缺点：时效性一般，可能存在中间不一致状态。
+
+    - 场景：时效性要求一般，有多个服务需要同步。
+    
+#### Canal
+
+![](../image/redis_基于canal的缓存同步策略.png)
+
+Canal是基于MySQL的binlog日志文件实现的（即基于MySQL的主从同步来实现的）。binlog包括所有指令，DDL、DML等命令。
+
+Canal就是把自己伪装成MySQL的一个slave节点，从而监听master的binary log变化。再把得到的变化信息通知给Canal的客户端，进而完成对其它数据库的同步。
+
+要想使用Canal，需要先开启MySQL的主从同步功能。Canal推送给canal-client的时被修改的这一行的数据（row）。
+
+### 多级缓存总结
+
+![](../image/redis_多级缓存总结.png)
 
 ## Redis最佳实践
 
@@ -2877,12 +3025,12 @@ Redis提供了一些命令，用于查看Redis当前的内存分配状态：
 设置输出缓冲区命令：`client-output-buffer-limit <class> <hard limit> <soft limit> <soft seconds>`
 
 - class：客户端类型
-
-    - normal：普通客户端
-    
-    - replica：主从复制客户端
-    
-    - pubsub：PubSub客户端
+  
+  - normal：普通客户端
+  
+  - replica：主从复制客户端
+  
+  - pubsub：PubSub客户端
 
 - hard limit：缓冲区上限在超过limit后断开客户端连接。
 
@@ -2907,7 +3055,6 @@ client-output-buffer-limit pubsub 32mb 8mb 60
 在Redis的默认配置中，如果发现任意一个插槽不可用，则整个集群都会停止对外服务。
 
 ```conf
-
 # By default Redis Cluster nodes stop accepting queries if they detect there
 # is at least a hash slot uncovered (no available node is serving it).
 # This way if the cluster is partially down (for example a range of hash slots
@@ -2961,6 +3108,14 @@ client-output-buffer-limit pubsub 32mb 8mb 60
 单体Redis（主从Redis）已经能达到万级别的QPS，优化的好一点也能达到好几万，并且也具备很强的高可用特性。如果主从能满足业务需求的情况下，尽量不搭建Redis集群。
 
 ## 原理篇
+
+### 数据结构
+
+### 网络模型
+
+### 通信协议
+
+### 内存策略
 
 ## 附录
 
