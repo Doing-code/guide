@@ -1543,13 +1543,13 @@ OK
 
 ![](../image/redis_主从_数据同步原理.png)
 
-> repl_baklog缓冲区，本质是一个数组
+> repl_backlog缓冲区，本质是一个数组
 
 master如何判断salve是不是第一次同步数据？
 
 - Replication Id：简称replid，是数据集的标记，id一致说明是同一数据集。每一个master都有唯一的 replid，slave会继承master节点replid。
 
-- offset：偏移量，offset会随着记录在repl_baklog中的数据增多而逐渐增大。slave完成同步时也会记录当前同步的offset。如果slave的offset小于master的offset，说明slave数据落后于master，需要更新。
+- offset：偏移量，offset会随着记录在repl_backlog中的数据增多而逐渐增大。slave完成同步时也会记录当前同步的offset。如果slave的offset小于master的offset，说明slave数据落后于master，需要更新。
 
 master通过slave记录的replid判断是否一致从而同步数据。replid一致则只需增量更新，replid不一致则需要全量更新。
 
@@ -1627,7 +1627,7 @@ master通过slave记录的replid判断是否一致从而同步数据。replid一
 
 ![](../image/redis_主从_增量同步.png)
 
-但是repl_baklog大小也是有上限的（本质是一个数组），写满后会覆盖最早的数据。如果slave断开世间过久，导致之前尚未备份的数据被覆盖，则无法基于repl_baklog做增量同步，只能再次全量同步。
+但是repl_backlog大小也是有上限的（本质是一个数组），写满后会覆盖最早的数据。如果slave断开世间过久，导致之前尚未备份的数据被覆盖，则无法基于repl_backlog做增量同步，只能再次全量同步。
 
 这种清空没有办法去解决的，只能是尽可能的减小发生的概率。
 
@@ -1637,7 +1637,7 @@ Redis主从集群的优化（优化全量同步的性能，减少全量同步的
 
 - 在master中配置`maxmemory <bytes>`内存大小，单位字节。Redis单节点上的内存占用不要太大。（减少RDB（Redis Database backup file Redis数据备份文件，也叫快照）导致的过多磁盘IO）。如果不设置内存大小或者设置内存大小为0，在64位操作系统下不限制内存大小，在32位操作系统下最多使用3GB内存。Redis一般推荐设置内存为最大物理内存的四分之三。
 
-- 在master中配置`repl-backlog-size <size>`修改默认大小，默认大小是1M。适当提高repl_baklog的大小，发现slave宕机时应该尽快实现故障恢复，尽可能避免全量同步。
+- 在master中配置`repl-backlog-size <size>`修改默认大小，默认大小是1M。适当提高repl_backlog的大小，发现slave宕机时应该尽快实现故障恢复，尽可能避免全量同步。
 
 ```txt
 repl_backlog_buffer(repl-backlog-size) = second * write_size_per_second
@@ -1662,25 +1662,25 @@ write_size_per_second：master 平均每秒产生的命令数据量大小（写�
 
 - slave清空本地数据，加载master的RDB。
 
-- master将RDB期间的命令记录在repl_baklog，并持续将log中的命令发送给slave。
+- master将RDB期间的命令记录在repl_backlog，并持续将log中的命令发送给slave。
 
 - slave执行接收到的命令，保持与master之间的同步。
 
 ##### 简述全量同步和增量同步的区别？
 
-- 全量同步：master将完整内存数据生成RDB，发送RDB到slave。后续命令则记录在repl_baklog，批量发送给slave。
+- 全量同步：master将完整内存数据生成RDB，发送RDB到slave。后续命令则记录在repl_backlog，批量发送给slave。
 
-- 增量同步：slave提交自己的offset到master，master获取repl_baklog中从offset之后的命令给slave。
+- 增量同步：slave提交自己的offset到master，master获取repl_backlog中从offset之后的命令给slave。
 
 ##### 何时执行全量同步？
 
 - slave节点第一次连接master节点时。
 
-- slave节点断开时间过久，导致repl_baklog中的offset已经被覆盖时。
+- slave节点断开时间过久，导致repl_backlog中的offset已经被覆盖时。
 
 ##### 何时执行增量同步？
 
-- slave节点断开又恢复，并且在repl_baklog中能够找到offset时。
+- slave节点断开又恢复，并且在repl_backlog中能够找到offset时。
 
 ### Redis哨兵
 
@@ -2584,6 +2584,381 @@ daeaef4ac7d0a6590dea43dd91a4a24f59098704 192.168.44.149:8002@18002 slave e3e33bd
 ### 缓存同步策略
 
 ## Redis最佳实践
+
+### Redis键值设计
+
+#### 优雅的key结构
+
+Redis的key虽然可以自定义，但建议遵守下面的几个最佳实践约定：
+
+- 遵循基本格式：`[业务名称]:[数据名]:id`
+
+- 长度不超过44个字节
+
+- 不包含特殊字符
+
+`eg：login:user:10`
+
+1. 可读性强。
+
+2. 避免key冲突
+
+3. 方便管理
+
+4. 更节省空间：key是string类型，底层编码包含int、embstr和raw三种。embstr在小于44字节时，采用连续内存空间，内存占用更小，raw使用的是指针。指向另一块内存空间。
+
+```shell
+127.0.0.1:6379> set num 123
+OK
+127.0.0.1:6379> type num
+string
+127.0.0.1:6379> OBJECT encoding num
+"int"
+127.0.0.1:6379> set name aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+OK
+127.0.0.1:6379> type name
+string
+127.0.0.1:6379> OBJECT encoding name
+"embstr"
+127.0.0.1:6379> set name aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+OK
+127.0.0.1:6379> type name
+string
+127.0.0.1:6379> OBJECT encoding name
+"raw"
+127.0.0.1:6379>
+```
+
+#### 拒绝BigKey
+
+##### 概述
+
+BigKey：value占用内存过大的 key。BigKey通常以key的大小和key中成员的数量来综合判定，比如：
+
+- key本身的数据量过大：一个string类型的key，其value占用5MB。
+
+- key中的成员数过多：一个zset类型的key，其value的成员数量有10,000个。
+
+- key中成员的数据量过大：一个hash类型的key，其value的成员数量有1000个，但其每个成员占用100MB。
+
+推荐值：
+
+- 单个key的value小于10KB。
+
+- 对于集合类型的key，建议元素数量小于1000。
+
+```shell
+127.0.0.1:6379> set num 123
+OK
+127.0.0.1:6379> MEMORY USAGE num
+(integer) 48
+127.0.0.1:6379> STRLEN num
+(integer) 3
+127.0.0.1:6379> LPUSH l2 v1 v2 v3
+(integer) 3
+127.0.0.1:6379> LLEN l2
+(integer) 3
+127.0.0.1:6379> MEMORY USAGE l2
+(integer) 143
+```
+
+`MEMORY USAGE`单位字节，但不建议使用，对CPU消耗较大。一般判断其长度即可，例如`STRLEN、LLEN ...`。
+
+##### BigKey的缺点
+
+- 网络阻塞
+
+对BigKey执行读请求时，少量的QPS就可能带宽使用率被占满，导致Redis实例乃至所在物理机被拖垮。
+
+- 数据倾斜
+
+BigKey所在的Redis实例内存使用率远超于其它实例，无法使数据分片内存资源达到均衡。
+
+- Redis阻塞
+
+对元素较多的hash、list、zset等做运算会耗时较久，使得主线程被阻塞。
+
+- CPU压力
+
+对BigKey的数据序列化和反序列化会导致CPU的使用率飙升，影响Redis实例和本机其它应用。
+
+##### 如何发现BigKey
+
+- redis-cli --bigkeys
+
+利用`redis-cli`提供的`--bigkeys`参数，可以遍历分析所以key，并返回key的整体统计信息与每个数据的Top1的big key。
+
+- scan扫描
+
+自定义工具，利用scan扫描Redis中的所有key，利用strlen、hlen等命令判断key的长度。（不建议使用 memory usage）
+
+- 第三方工具
+
+利用第三方工具，如Redis-Rdb-Tools分析RDB快照文件，全面分析内存使用情况。
+
+- 网络监控
+
+自定义工具，监控进出的Redis的网络数据，超出预警值时主动告警。
+
+##### 如何删除BigKey
+
+BigKey内存占用较多，即便删除这样的key也需要耗费较长时间，导致Redis主线程阻塞，引发一系列问题。
+
+- Redis3.0及以前
+
+如果时集合类型，则需要遍历BigKey的元素，先逐个删除子元素，最后删除BigKey。
+
+通过scan扫描，例如`hscan、scan、sscan、zscan`。
+
+- Redis4.0以后
+
+Redis在4.0后提供了异步删除的命令：`unlink`
+
+#### 恰当的数据类型
+
+比如：一个key存储了100万个hash类型的元素，可以拆分为 100万（总元素）/500（拆分后每个key存储多少元素） = 2000 个（key）。
+
+原来一个key存放100万个元素，现在拆分后2000个key，各存放500元素。使用命令`info memory`查看占用，拆分后较拆分前的key占用至少减少了1/2的内存。
+
+可以通过`CONFIG set/get hash-max-ziplist-entries`设置entry的上限或者查看默认值。
+
+### 批处理优化
+
+#### Pipeline
+
+如果是单一类型，可以使用如`mset、hset、sadd ...`这样的批量添加的命令。但如果有对复杂数据类型（不同数据类型）的批处理需求，建议使用Pipeline功能。
+
+诸如mset这样的命令，是Redis内置的命令，在执行命令的时候会保证传递的所有命令的原子性。而Pipeline则会有先后顺序，不具备原子性。将传递的命令放入队列中，Redis的线程会依次执行这些命令。可能会存在多个客户端同时使用Pipeline的情况，会有插队现象。导致耗时较久。但与原生mset相差无几。
+
+#### cluster批处理
+
+如mset或Pipeline这样的批处理命令需要在依次请求中携带多条命令，而此时如果Redis是一个集群，那么批处理命令的多个key必须落在一个插槽中，否则就会导致执行失败。
+
+![](../image/redis_最佳实践_cluster批处理.png)
+
+`hash_tag`即`{}`。给批处理的每个key都设置同一个`{xxx}`。但是通常情况下会选择并行slot。
+
+### 服务端优化
+
+#### 持久化配置
+
+Redis的持久化虽然可以保证数安全，但也会带来额外的开销，因此建议持久化遵循下列建议：
+
+1. 用来做缓存的Redis实例尽量不用开启持久化功能（RDB、AOF）。
+
+2. 建议关闭RDB持久化功能，使用AOF持久化。
+
+3. 如果开启了RDB，建议利用脚本定期在slave节点做RDB数据备份。
+
+4. 设置合理的rewrite（`auto-aof-rewrite-percentage 100`、`auto-aof-rewrite-min-size 64mb`）阈值，避免频繁的bgrewrite。
+
+5. 配置`no-appendfsync-on-rewrite yes`（默认 no），禁止在rewrite期间做aof，避免因AOF引起的阻塞。
+
+建议5现象的原因：如果在RDB、bgrewrite期间做AOF，恰好AOF操作IO较耗时，超过了阈值2秒，则会使得主线程阻塞。
+
+![](../image/redis_持久化配置5.png)
+
+部署建议：
+
+1. Redis实例的物理机要预留足够内存，应多fork、rewrite。
+
+2. 单个Redis实例内存上限不太大，4G或8G即可。可以加快fork的速度、减少主动同步、数据迁移压力。
+
+3. 不要与CPU密集型应用部署在一起。
+
+4. 不要与高硬盘负荷应用部署在一起。如：数据库、消息队列。
+
+#### 慢查询
+
+慢查询：在Redis执行时耗时超过指定阈值的命令，称为慢查询，可以是查、写。
+
+![](../image/redis_命令执行流程.png)
+
+慢查询的阈值可以通过配置指定：
+
+- `slowlog-log-slower-than`：慢查询阈值，单位是微秒。默认是10000（10毫秒），建议是1000，通常一个命令执行耗时在几十微秒左右。
+
+而慢查询会被记录在慢查询日志中，日志的长度是有上限的，也可以通过配置指定。默认128，建议1000：
+
+- `slowlog-max-len`：慢查询日志（本质是一个队列）
+
+通过`CONFIG GET`命令查看默认值。
+
+```shell
+127.0.0.1:6379> CONFIG GET slowlog-max-len
+1) "slowlog-max-len"
+2) "128"
+127.0.0.1:6379> CONFIG GET slowlog-log-slower-than
+1) "slowlog-log-slower-than"
+2) "10000"
+```
+
+通过`CONFIG SET`命令修改值。重启Redis服务会刷新配置。要想永久生效则需要去配置到`redis.conf`中。
+
+```shell
+127.0.0.1:6379> CONFIG SET slowlog-log-slower-than 1000
+OK
+127.0.0.1:6379> CONFIG GET slowlog-log-slower-than
+1) "slowlog-log-slower-than"
+2) "1000"
+```
+
+查看慢查询日志列表：
+
+- `SLOWLOG len`：查询慢日志记录数。
+
+- `SLOWLOG get[0]`：查看n条慢查询日志。
+
+- `SLOWLOG reset`：清空慢查询日志。
+
+![](../image/redis_慢查询.png)
+
+#### 命令及安全配置
+
+漏洞重现：https:/cloud.tencent.com/developer/article/1039000
+
+漏洞出现的核心原因有以下几点：
+
+- Redis未设置密码或设置简单密码。
+
+- 利用Redis的`config set`命令动态修改Redis配置。
+
+- 使用了Root账号权限启动Redis
+
+为了避免这样的漏洞，几点建议：
+
+1. Redis一定要设置密码且复杂。
+
+2. 禁止线上使用：`key、flushall、flushdb、config set`等命令。可以利用`rename-command`禁用 。
+
+```conf
+# redis.conf
+
+# 方式一
+# 表示用 sf6saf6sdfsd2sdfsd6fwfsddf23s321sdf55fs5 替换 CONFIG 命令使用。
+# 以后使用 CONFIG 就不能直接使用 CONFIG，需要用后面的一长串代替 CONFIG 。
+rename-command CONFIG sf6saf6sdfsd2sdfsd6fwfsddf23s321sdf55fs5
+
+# 方式二
+# 设置为 "" 表示命令不能再用了
+rename-command CONFIG ""
+```
+
+3. bind: 现在网卡，禁止外网网卡访问。避免`bind: 0.0.0.0`。
+
+4. 开启防火墙。
+
+5. 不要使用Root账户启动Redis。
+
+6. 尽量不使用默认端口6379。
+
+#### 内存配置
+
+当Redis内存不足时，可能导致key频繁被删除、响应时间变成、QPS不稳定等问题。当内存使用率达到90%以上时就需要警惕了，需要快速定位到内存占用的原因。
+
+![](../image/redis_内存配置.png)
+
+Redis提供了一些命令，用于查看Redis当前的内存分配状态：
+
+- `info memory`
+
+- `memory [usage key | stats]`
+
+重启Redis会清空内存碎片，那么缓冲区内存如何配置？
+
+内存缓冲区常见的有三种：
+
+- 复制缓冲区：主从复制的repl_backlog_buf，如果设置太小可能导致频繁的全量复制，影响性能。通过`repl_backlog_size`来设置，默认1MB。
+
+- AOF缓冲区：AOF刷盘之前的缓存区域，AOF执行rewrite的缓冲区。无法设置容量上限。
+
+- 客户端缓冲区：分为输入缓冲区和输出缓冲区。输入缓冲区最大1G且无法设置。输出缓冲区可以设置。
+
+设置输出缓冲区命令：`client-output-buffer-limit <class> <hard limit> <soft limit> <soft seconds>`
+
+- class：客户端类型
+
+    - normal：普通客户端
+    
+    - replica：主从复制客户端
+    
+    - pubsub：PubSub客户端
+
+- hard limit：缓冲区上限在超过limit后断开客户端连接。
+
+- soft limit&soft seconds缓冲区在超过soft limit并且持续了soft seconds秒后断开客户端连接。
+
+默认配置如下：
+
+```conf
+# Both the hard or the soft limit can be disabled by setting them to zero.
+# 普通客户端默认没有上限
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit replica 256mb 64mb 60
+client-output-buffer-limit pubsub 32mb 8mb 60
+```
+
+客户端使用命令`info clientss、client list`可以查看客户端的连接情况，缓冲区等信息。最好是可以写一个脚本定时监控redis缓冲区情况并告警。
+
+### 集群最佳实践
+
+#### 集群完整性问题
+
+在Redis的默认配置中，如果发现任意一个插槽不可用，则整个集群都会停止对外服务。
+
+```conf
+
+# By default Redis Cluster nodes stop accepting queries if they detect there
+# is at least a hash slot uncovered (no available node is serving it).
+# This way if the cluster is partially down (for example a range of hash slots
+# are no longer covered) all the cluster becomes, eventually, unavailable.
+# It automatically returns available as soon as all the slots are covered again.
+#
+# However sometimes you want the subset of the cluster which is working,
+# to continue to accept queries for the part of the key space that is still
+# covered. In order to do so, just set the cluster-require-full-coverage
+# option to no.
+#
+# cluster-require-full-coverage yes
+```
+
+为了保证高可用特性，建议将`cluster-require-full-coverage`配置为 no。即使部分插槽不可用，但还是有可用插槽部分的。不影响可用插槽部分。
+
+#### 集群带宽问题
+
+集群节点之间会不断的互相Ping来确定集群中其它节点的状态。每次Ping携带的信息至少包括：
+
+- 插槽信息
+
+- 集群状态信息
+
+集群中节点越多，集群状态信息数据量也越大，10个节点的相关信息可能达到1KB。此时每次集群互通需要的带宽会很高。
+
+解决途径：
+
+1. 避免大集群，集群节点数不要太多，最好少于1000。如果业务庞大，则建立多个集群，
+
+2. 避免在单个物理机中运行太多的Redis实例。一般单机部署10个即可。
+
+3. 配置合适的`cluster-node-timeout`值。（节点心跳失败的超时时间）
+
+#### 集群还是主从
+
+集群虽然具备高可用特性，能实现自动故障恢复，但是如果使用不当，也会存在一些问题：
+
+1. 集群完整性问题
+
+2. 集群带宽问题
+
+3. 数据倾斜问题
+
+4. 客户端性能问题
+
+5. 命令的集群兼容性问题
+
+6. lua和事务问题
+
+单体Redis（主从Redis）已经能达到万级别的QPS，优化的好一点也能达到好几万，并且也具备很强的高可用特性。如果主从能满足业务需求的情况下，尽量不搭建Redis集群。
 
 ## 原理篇
 
