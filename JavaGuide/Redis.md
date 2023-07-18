@@ -2694,29 +2694,29 @@ local val = item_cache:get('key')
 缓存数据同步的常见方式有三种：
 
 - 设置有效期：给缓存设置有效期，到期后自动删除。再次查询时更新。
-
-    - 优势：简单、方便。
-      
-    - 缺点：时效性差，缓存过期之前可能数据不一致。
-      
-    - 场景：更新频率较低，时效性要求低的业务。
+  
+  - 优势：简单、方便。
+  
+  - 缺点：时效性差，缓存过期之前可能数据不一致。
+  
+  - 场景：更新频率较低，时效性要求低的业务。
 
 - 同步双写：在修改数据库的同时，直接修改缓存。
-
-    - 优势：时效性强，缓存与数据库强一致。
-
-    - 缺点：有代码侵入 ，耦合度高。
-
-    - 场景：对一致性、时效性要求较高的缓存数据。
+  
+  - 优势：时效性强，缓存与数据库强一致。
+  
+  - 缺点：有代码侵入 ，耦合度高。
+  
+  - 场景：对一致性、时效性要求较高的缓存数据。
 
 - 异步通知：修改数据库时发送事件通知，相关服务监听到通知后修改缓存数据。
+  
+  - 优势：低耦合，可以同时通知多个缓存服务。
+  
+  - 缺点：时效性一般，可能存在中间不一致状态。
+  
+  - 场景：时效性要求一般，有多个服务需要同步。
 
-    - 优势：低耦合，可以同时通知多个缓存服务。
-
-    - 缺点：时效性一般，可能存在中间不一致状态。
-
-    - 场景：时效性要求一般，有多个服务需要同步。
-    
 #### Canal
 
 ![](../image/redis_基于canal的缓存同步策略.png)
@@ -3110,6 +3110,516 @@ client-output-buffer-limit pubsub 32mb 8mb 60
 ## 原理篇
 
 ### 数据结构
+
+#### 动态字符串SDS
+
+Redis中保存的key是字符串，而value往往是字符串或者字符串的集合。可见字符串是Redis中最常用的一种数据结构。
+
+不过Redis没有直接使用C语言中的字符串，因为C语言中字符串存在很多问题：
+
+- 获取字符串的长度需要通过运算（遍历）
+
+- 非二进制安全（使用`\0`作为结束标识符，如果一定要使用`\0`则没办法使用字符串了）
+
+- 不可修改
+
+Redis构建了一种新的字符串结构，称为简单动态字符串（Simple Dynamic String）SDS。
+
+比如执行命令`set name jack`。
+
+那么Redis在底层会创建两个SDS，其中一个是包含`name`的SDS，另一个是包含`jack`的SDS。
+
+Redis是基于C语言实现的，其SDS是一个结构体，源码如下：
+
+```c
+// source：安装包 redis-7.0.12\src
+
+/* Note: sdshdr5 is never used, we just access the flags byte directly.
+ * However is here to document the layout of type 5 SDS strings. */
+struct __attribute__ ((__packed__)) sdshdr5 {
+    unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr8 {
+    // buf 已保存的字符串字节数，不包含结束标识符
+    uint8_t len; /* used */
+
+    // buf 申请的总的字节数，不包含结束标识符
+    uint8_t alloc; /* excluding the header and null terminator */
+
+    // SDS的头类型，用来控制SDS的头大小
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+
+    // 存放字符串的字符数组
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr16 {
+    uint16_t len; /* used */
+    uint16_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr32 {
+    uint32_t len; /* used */
+    uint32_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+struct __attribute__ ((__packed__)) sdshdr64 {
+    uint64_t len; /* used */
+    uint64_t alloc; /* excluding the header and null terminator */
+    unsigned char flags; /* 3 lsb of type, 5 unused bits */
+    char buf[];
+};
+```
+
+flags对应的类型说明：
+
+```c
+#define SDS_TYPE_5  0
+#define SDS_TYPE_8  1
+#define SDS_TYPE_16 2
+#define SDS_TYPE_32 3
+#define SDS_TYPE_64 4
+```
+
+例如，一个包含字符串`name`的sds结构如下：
+
+![](../image/redis_源码_sds_结构.png)
+
+SDS之所以叫做动态字符串，是因为它具备动态扩容的能力，例如一个内存为`hi`的SDS：
+
+![](../image/redis_源码_sds_扩容前.png)
+
+假如此时要给SDS追加一段字符串`,Amy`，这里首先会申请新的内存空间：
+
+- 如果新字符串小于1M，则新空间为扩展后字符串长度的两倍+1。（+1是给结束标识符预留的）
+
+- 如果新字符串大于1M，则新空间为扩展后字符串长度+1M+1。称为内存预分配。
+
+![](../image/redis_源码_sds_扩容后.png)
+
+len和alloc在初始化时会相等，后续扩容则可能不相等，两者表示的长度都不包含结束标识符。
+
+#### IntSet
+
+数据量不大的情况下可以使用IntSet，数据量大了查找效率还是较慢。
+
+##### 概述
+
+IntSet是Redis中set集合的一种实现方式，基于整数组数来实现，并且具备可变长度、有序等特征。结构如下：
+
+```c
+typedef struct intset {
+
+    // 编码方式：支持存放16位、32位、64位整数
+    uint32_t encoding;
+
+    // 元素个数
+    uint32_t length;
+
+    // 整数数组，保存集合数据
+    int8_t contents[];
+} intset;
+```
+
+其中的encoding包含三种模式，表示存储的整数大小不同：
+
+```c
+/* Note that these encodings are ordered, so:
+ * INTSET_ENC_INT16 < INTSET_ENC_INT32 < INTSET_ENC_INT64. */
+
+// 2字节整数，范围类似Java的short
+#define INTSET_ENC_INT16 (sizeof(int16_t))
+
+// 4字节整数，范围类似Java的int
+#define INTSET_ENC_INT32 (sizeof(int32_t))
+
+// 8字节整数，范围类似Java的long
+#define INTSET_ENC_INT64 (sizeof(int64_t))
+```
+
+为了方便查找，Redis会将insert中所有的整数按照升序（默认）依次保存在contents数组中，结构图下：
+
+![](../image/redis_源码_intset_结构.png)
+
+现在数组中的每个元素都在`int16_t`的范围内，因此采用的编码方式是`INTSET_ECN_INT16`，则每部分占用的字节大小为：
+
+- encoding：4字节。（固定）
+
+- length：4字节。（固定）
+
+- contents：2字节 * 3 = 6字节。
+
+> 数组寻址公式：startPtr（数组元素的起始地址） + (sizeof(int16)（占用字节数） * index（角标/索引）)
+
+现在，假设有一个intset，元素为`{5,10,20}`，采用的编码是`INTSET_ECN_INT16`，则每个整数占2个字节。
+
+![](../image/redis_源码_intset_案例_01.png)
+
+此时向该set中添加一个数字：50000，这个数字超出了`int16_t`的范围，intset会自动升级编码方式到合适的大小。
+
+以当前案例来说，流程如下：
+
+1. 升级编码为`INTSET_ENC_INT32`（50000在4个字节范围内），每个整数占4个字节，并按照新的编码方式及元素个数扩容数组。
+
+2. 倒叙依次将数组中的元素拷贝到扩容后的正确位置。
+
+![](../image/redis_源码_intset_案例_扩容.png)
+
+3. 将待添加的元素放入数组末尾。
+
+![](../image/redis_源码_intset_案例_添加.png)
+
+4. 最后，将intset的encoding属性改为`INTSET_ENC_INT32`，将length属性改为4。
+
+![](../image/redis_源码_intset_案例_修改属性.png)
+
+##### 底层实现
+
+```c
+// intset.h
+
+#ifndef __INTSET_H
+#define __INTSET_H
+#include <stdint.h>
+
+typedef struct intset {
+    uint32_t encoding;
+    uint32_t length;
+    int8_t contents[];
+} intset;
+
+intset *intsetNew(void);
+intset *intsetAdd(intset *is, int64_t value, uint8_t *success);
+intset *intsetRemove(intset *is, int64_t value, int *success);
+uint8_t intsetFind(intset *is, int64_t value);
+int64_t intsetRandom(intset *is);
+uint8_t intsetGet(intset *is, uint32_t pos, int64_t *value);
+uint32_t intsetLen(const intset *is);
+size_t intsetBlobLen(intset *is);
+int intsetValidateIntegrity(const unsigned char *is, size_t size, int deep);
+
+#ifdef REDIS_TEST
+int intsetTest(int argc, char *argv[], int flags);
+#endif
+
+#endif // __INTSET_H
+```
+
+编码升级是发生在add中的。`源码：intset.c`
+
+```c
+/* Insert an integer in the intset */
+
+/**
+    is：要新增到哪一个intset集合
+    value：要新增的元素
+    success：接收结果，成功或失败
+*/
+intset *intsetAdd(intset *is, int64_t value, uint8_t *success) {
+
+    //  获取当前value值的编码
+    uint8_t valenc = _intsetValueEncoding(value);
+    // 要新增的位置
+    uint32_t pos;
+    if (success) *success = 1;
+
+    // 判断要新增的元素的编码是不是超过了当前intset的编码
+    if (valenc > intrev32ifbe(is->encoding)) {
+        // 超出编码，需要升级编码
+        return intsetUpgradeAndAdd(is,value);
+    } else {
+        // 在当前intset中查找值与value相同元素的角标pos
+        if (intsetSearch(is,value,&pos)) {
+
+            // 如果找到了，则无需插入，直接结束并返回失败（说明set集合的元素是不重复的）
+            if (success) *success = 0;
+            return is;
+        }
+
+        // 数组扩容
+        is = intsetResize(is,intrev32ifbe(is->length)+1);
+
+        // 移动数组中pos之后的元素到pos+1，给新元素预留出空间
+        if (pos < intrev32ifbe(is->length)) intsetMoveTail(is,pos,pos+1);
+    }
+
+    // 插入新元素
+    _intsetSet(is,pos,value);
+    is->length = intrev32ifbe(intrev32ifbe(is->length)+1);
+    return is;
+}
+```
+
+编码升级：
+
+```c
+/* Upgrades the intset to a larger encoding and inserts the given integer. */
+static intset *intsetUpgradeAndAdd(intset *is, int64_t value) {
+
+    // 获取当前intset编码
+    uint8_t curenc = intrev32ifbe(is->encoding);
+
+    // 获取新编码（新编码肯定是比curenc大的）
+    uint8_t newenc = _intsetValueEncoding(value);
+
+    // 获取元素个数
+    int length = intrev32ifbe(is->length);
+
+    // 判断新元素大于0还是小于0，小于0插入队首，大于0插入队尾
+    int prepend = value < 0 ? 1 : 0;
+
+    // 重新对intset编码为新编码
+    is->encoding = intrev32ifbe(newenc);
+    // 重置数组大小
+    is = intsetResize(is,intrev32ifbe(is->length)+1);
+
+    // 倒叙遍历，逐个移动元素到新的位置，_intsetGetEncoded()用于按照旧编码方式查找旧元素
+    while(length--)
+
+        // _intsetSet()用于按照新编码方式插入新元素
+        _intsetSet(is,length+prepend,_intsetGetEncoded(is,length,curenc));
+
+    // 插入新元素，prepend决定是队首还是队尾
+    if (prepend)
+        _intsetSet(is,0,value);
+    else
+        _intsetSet(is,intrev32ifbe(is->length),value);
+
+    // 修改数组长度
+    is->length = intrev32ifbe(intrev32ifbe(is->length)+1);
+    return is;
+}
+```
+
+intsetSearch() 二分查找确定新元素插入到哪个位置（pos）。
+
+```c
+/* Search for the position of "value". Return 1 when the value was found and
+ * sets "pos" to the position of the value within the intset. Return 0 when
+ * the value is not present in the intset and sets "pos" to the position
+ * where "value" can be inserted. */
+static uint8_t intsetSearch(intset *is, int64_t value, uint32_t *pos) {
+
+    // 初始化二分查找需要用到的变量 min、max、mid
+    int min = 0, max = intrev32ifbe(is->length)-1, mid = -1;
+    int64_t cur = -1;
+
+    // 如果数组为空则不用找了
+    if (intrev32ifbe(is->length) == 0) {
+        if (pos) *pos = 0;
+        return 0;
+    } else {
+        // 数组不为空 
+        // 判断value是否大于最大值或者小于最小值
+        if (value > _intsetGet(is,max)) {
+            // 大于最大值，不用找了，插入队尾
+            if (pos) *pos = intrev32ifbe(is->length);
+            return 0;
+        } else if (value < _intsetGet(is,0)) {
+            // 小于最小值，不用找了，插入队首
+            if (pos) *pos = 0;
+            return 0;
+        }
+    }
+
+    // 二分查找
+    while(max >= min) {
+        mid = ((unsigned int)min + (unsigned int)max) >> 1;
+        cur = _intsetGet(is,mid);
+        if (value > cur) {
+            min = mid+1;
+        } else if (value < cur) {
+            max = mid-1;
+        } else {
+            break;
+        }
+    }
+
+    if (value == cur) {
+        if (pos) *pos = mid;
+        return 1;
+    } else {
+        if (pos) *pos = min;
+        return 0;
+    }
+}
+```
+
+#### Dict
+
+Redis是一个键值型（Key-Value Pair）的数据库，可以根据键实现快速的增删改查。而键与值的映射关系是通过 Dict实现的。
+
+Dict由三部分组成：哈希表（DictHashTable）、哈希节点（DictEntry）、字典（Dict）
+
+![](../image/redis_源码_dict_结构.png)
+
+向Dict添加键值对时，Redis首先根据key计算出hash值（h），然后利用`h&sizemask`计算出元素应该存储到数组中的哪个索引位置。假设存储k1=v1，假设k1的哈希值h=1，则1&3，因此k1=v1要存储到数组索引为1位置。
+
+dicEntry数组初始容量是4，所以sizemask为size-1是3。Dict发生hash碰撞使用头插法。（数组+链表）
+
+![](../image/redis_源码_dict_案例01.png)
+
+Dict在每次新增键值对时都会检查负载因子（LoadFactor = used/size），满足以下两种情况时会触发哈希表扩容：
+
+- 哈希表的 LoadFactor >= 1，并且服务器没有执行`BGSAVE`或者`BGREWRITEAOF`等后台进程；
+
+- 哈希表的 LoadFactor > 5；
+
+```c
+/* Expand the hash table if needed */
+static int _dictExpandIfNeeded(dict *d) {
+    // 如果正在rehash，则返回ok
+    if (dictIsRehashing(d)) return DICT_OK;
+
+    // 如果哈希表为空，则初始化哈希表默认大小为4
+    if (DICTHT_SIZE(d->ht_size_exp[0]) == 0) return dictExpand(d, DICT_HT_INITIAL_SIZE);
+
+    /* If we reached the 1:1 ratio, and we are allowed to resize the hash
+     * table (global setting) or we should avoid it but the ratio between
+     * elements/buckets is over the "safe" threshold, we resize doubling
+     * the number of buckets. */
+    if (!dictTypeExpandAllowed(d))
+        return DICT_OK;
+
+    /*
+        当负载因子(used/size) > 1，并且服务器没有执行`BGSAVE`或者`BGREWRITEAOF`等后台进程；
+        或者负载因子 > 5，则进行扩容
+    */
+    if ((dict_can_resize == DICT_RESIZE_ENABLE &&
+         d->ht_used[0] >= DICTHT_SIZE(d->ht_size_exp[0])) ||
+        (dict_can_resize != DICT_RESIZE_FORBID &&
+         d->ht_used[0] / DICTHT_SIZE(d->ht_size_exp[0]) > dict_force_resize_ratio)) {
+
+        /*
+         扩容大小为used+1，
+         磁层会对扩容大小做判断，实际找到是第一个大于等于 used+1 的 2^n
+        */
+        return dictExpand(d, d->ht_used[0] + 1);
+    }
+    return DICT_OK;
+}
+```
+
+Dict除了扩容以外，每次删除元素时，也会对负载因子做判断，当LoadFactor < 0.1 时，会做哈希表缩容：
+
+![img.png](../image/redis_源码_dict_缩容.png)
+
+查看`dictExpand()`做了哪些事：
+
+```c
+/* return DICT_ERR if expand was not performed */
+
+/**
+    *d：dict
+    size：扩容目标大小
+*/
+int dictExpand(dict *d, unsigned long size) {
+    return _dictExpand(d, size, NULL);
+}
+
+/* Expand or create the hash table,
+ * when malloc_failed is non-NULL, it'll avoid panic if malloc fails (in which case it'll be set to 1).
+ * Returns DICT_OK if expand was performed, and DICT_ERR if skipped. */
+int _dictExpand(dict *d, unsigned long size, int* malloc_failed) {
+    if (malloc_failed) *malloc_failed = 0;
+
+    // 如果当前entry数量超过了要申请的size大小，或者正在rehash，则报错
+    if (dictIsRehashing(d) || d->ht_used[0] > size)
+        return DICT_ERR;
+
+    /* the new hash table */
+    dictEntry **new_ht_table;
+    unsigned long new_ht_used;
+    signed char new_ht_size_exp = _dictNextExp(size);
+
+    // 实际大小，大于等于size的最小的2^n次方
+    size_t newsize = 1ul<<new_ht_size_exp;
+
+    // 超出LONG_MAX，说明内存溢出，报错
+    if (newsize < size || newsize * sizeof(dictEntry*) < newsize)
+        return DICT_ERR;
+
+    /* Rehashing to the same table size is not useful. */
+    // 新的size与旧的一样，报错
+    if (new_ht_size_exp == d->ht_size_exp[0]) return DICT_ERR;
+
+    /* Allocate the new hash table and initialize all pointers to NULL */
+    if (malloc_failed) {
+        new_ht_table = ztrycalloc(newsize*sizeof(dictEntry*));
+        *malloc_failed = new_ht_table == NULL;
+        if (*malloc_failed)
+            return DICT_ERR;
+    } else
+        // 分配内存：size * entrySize
+        new_ht_table = zcalloc(newsize*sizeof(dictEntry*));
+
+    // used初始化为0
+    new_ht_used = 0;
+
+    /* Is this the first initialization? If so it's not really a rehashing
+     * we just set the first hash table so that it can accept keys. 
+     d->ht_table[0] == NULL 如果成立说明是初始化
+        直接将创建好的new_ht_table赋值给ht_table[0]即可
+     */
+    if (d->ht_table[0] == NULL) {
+        d->ht_size_exp[0] = new_ht_size_exp;
+        d->ht_used[0] = new_ht_used;
+        d->ht_table[0] = new_ht_table;
+        return DICT_OK;
+    }
+
+    /* Prepare a second hash table for incremental rehashing */
+    // 需要rehash，此处需要将rehashidx置为0即可。
+    //  在每次增删改查时都会触发rehash
+    d->ht_size_exp[1] = new_ht_size_exp;
+    d->ht_used[1] = new_ht_used;
+    d->ht_table[1] = new_ht_table;
+    d->rehashidx = 0;
+    return DICT_OK;
+}
+```
+
+不管是扩容还是缩容，必定会创建新的哈希表，导致哈希表的size和sizemask变更，而key的查询与sizemask有关。因此必须对哈希表中的每一个key重新计算索引，插入到新的哈希表的新的索引处。这个过程称为rehash。其rehash过程如下：
+
+1. 计算新哈希表的newsize，值取决于当前要做扩容还是缩容：
+   
+   1. 如果是扩容：则newsize为第一个大于等于used+1的2^n
+   
+   2. 如果是收缩：则newsize为第一个大于等于user的2^n（不能小于4，如果缩容后的size小于4，则默认设置最小4）
+
+2. 按照新的newsize申请内存空间，创建new_ht_table，并赋值给ht_table[1]
+
+3. 设置d->rehashidx = 0，标识开始rehash
+
+4. 每次执行新增、查询、修改、删除操作时，都检查以下dict.rehashindx是否大于-1，如果是则将ht_table[0].table[rehashindx]（rehashindx可以理解为数组索引，一次只rehash一个数组元素，但是entry可能为链表（hash碰撞））的entry链表rehash到ht_table[1]，并且将rehashidx++。直到ht_table[0]的所有数据都rehash到ht_table[1]。
+
+5. 将ht_table[1]赋值给ht_table[0]，将ht_table[1]初始化为空哈希表，释放原来的ht_table[0]的内存
+
+6. 将rehashindx赋值为-1，代表rehash结束。
+
+7. 在rehash过程中，如果是新增操作则直接写入ht_table[1]。查询、修改和阐述则会在ht_table[0]和ht_table[1]中一次查找并执行rehash（ht_table[0]和ht_table[1]不会同时存在相同元素）。这样可以确保ht_table[0]的数据只减不增，随着rehash最终为空哈希表。
+
+可以将Redis的Dict扩容理解为Java的HashMap，而rehash可以理解是线程安全的map操作。Dict采用渐进式rehash，每次访问Dict时只执行一次rehash。原因是如果一次将rehash全部执行（如果数据量太大），主线程会阻塞。
+
+开始rehash：
+
+![](../image/redis_源码_dict_rehash_start.png)
+
+结束rehash：
+
+![](../image/redis_源码_dict_rehash_end.png)
+
+#### ZipList
+
+#### QuickList
+
+#### SkipList
+
+#### RedisObject
+
+#### 五种数据结构
 
 ### 网络模型
 
