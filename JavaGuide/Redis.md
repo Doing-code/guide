@@ -3449,6 +3449,8 @@ static uint8_t intsetSearch(intset *is, int64_t value, uint32_t *pos) {
 
 #### Dict
 
+##### 概述
+
 Redis是一个键值型（Key-Value Pair）的数据库，可以根据键实现快速的增删改查。而键与值的映射关系是通过 Dict实现的。
 
 Dict由三部分组成：哈希表（DictHashTable）、哈希节点（DictEntry）、字典（Dict）
@@ -3460,6 +3462,8 @@ Dict由三部分组成：哈希表（DictHashTable）、哈希节点（DictEntry
 dicEntry数组初始容量是4，所以sizemask为size-1是3。Dict发生hash碰撞使用头插法。（数组+链表）
 
 ![](../image/redis_源码_dict_案例01.png)
+
+##### 扩容
 
 Dict在每次新增键值对时都会检查负载因子（LoadFactor = used/size），满足以下两种情况时会触发哈希表扩容：
 
@@ -3581,6 +3585,8 @@ int _dictExpand(dict *d, unsigned long size, int* malloc_failed) {
 }
 ```
 
+##### rehash
+
 不管是扩容还是缩容，必定会创建新的哈希表，导致哈希表的size和sizemask变更，而key的查询与sizemask有关。因此必须对哈希表中的每一个key重新计算索引，插入到新的哈希表的新的索引处。这个过程称为rehash。其rehash过程如下：
 
 1. 计算新哈希表的newsize，值取决于当前要做扩容还是缩容：
@@ -3593,13 +3599,13 @@ int _dictExpand(dict *d, unsigned long size, int* malloc_failed) {
 
 3. 设置d->rehashidx = 0，标识开始rehash
 
-4. 每次执行新增、查询、修改、删除操作时，都检查以下dict.rehashindx是否大于-1，如果是则将ht_table[0].table[rehashindx]（rehashindx可以理解为数组索引，一次只rehash一个数组元素，但是entry可能为链表（hash碰撞））的entry链表rehash到ht_table[1]，并且将rehashidx++。直到ht_table[0]的所有数据都rehash到ht_table[1]。
+4. 每次执行新增、查询、修改、删除操作时，都检查一下`dict.rehashindx`是否大于-1，如果是则将`ht_table[0].table[rehashindx]`（rehashindx可以理解为数组索引，一次只rehash一个数组元素，但是entry可能为链表（hash碰撞））的entry链表rehash到`ht_table[1]`，并且将rehashidx++。直到ht_table[0]的所有数据都rehash到`ht_table[1]`。
 
-5. 将ht_table[1]赋值给ht_table[0]，将ht_table[1]初始化为空哈希表，释放原来的ht_table[0]的内存
+5. 将`ht_table[1`]赋值给`ht_table[0]`，将ht_table[1]初始化为空哈希表，释放原来的`ht_table[0]`的内存
 
 6. 将rehashindx赋值为-1，代表rehash结束。
 
-7. 在rehash过程中，如果是新增操作则直接写入ht_table[1]。查询、修改和阐述则会在ht_table[0]和ht_table[1]中一次查找并执行rehash（ht_table[0]和ht_table[1]不会同时存在相同元素）。这样可以确保ht_table[0]的数据只减不增，随着rehash最终为空哈希表。
+7. 在rehash过程中，如果是新增操作则直接写入`ht_table[1]`。查询、修改和阐述则会在`ht_table[0]`和`ht_table[1]`中一次查找并执行rehash（ht_table[0]和ht_table[1]不会同时存在相同元素）。这样可以确保`ht_table[0]`的数据只减不增，随着rehash最终为空哈希表。
 
 可以将Redis的Dict扩容理解为Java的HashMap，而rehash可以理解是线程安全的map操作。Dict采用渐进式rehash，每次访问Dict时只执行一次rehash。原因是如果一次将rehash全部执行（如果数据量太大），主线程会阻塞。
 
@@ -3611,11 +3617,231 @@ int _dictExpand(dict *d, unsigned long size, int* malloc_failed) {
 
 ![](../image/redis_源码_dict_rehash_end.png)
 
+##### 总结
+
+Dict的结构：
+
+- 结构类似Java中的HashMap，底层是数组加链表来解决哈希冲突。
+
+- Dict包含两个哈希表，多数情况下用ht[0]，ht[1]用来rehash。
+
+Dict的伸缩：
+
+- 当LoadFactor大于5或者LoadFactor小于1并且没有子进程任务时，Dict扩容。
+
+- 当LoadFactor小于0.1时，Dict缩容。
+
+- 扩容大小为第一个大于等于 used + 1 的 2^n。
+
+- 缩容大小为第一个大于等于 used 的 2^n。(最小为4)
+
+- Dict采用渐进式rehash，即每次访问Dict时执行一次rehash。
+
+- rehash时ht[0]只减不增，新增操作只在ht[1]执行，其它操作在两个哈希表都有可能执行。（但同一个元素不会同时存在两个哈希表）
+
 #### ZipList
+
+##### 概述
+
+ZipList是一种特殊的`"双端链表"`，由特定的特殊编码的连续内存块组成，可以在任意一端进行压入/弹出操作，并且该操作的时间复杂度为O(1)。（并不是真正意义上的链表，只是具备链表的特性。）
+
+其结构如下：
+
+![](../image/redis_源码_ziplist_结构.png)
+
+其每块区域占用内存如下：
+
+![](../image/redis_源码_ziplist_占用内存.png)
+
+##### ZipListEntry
+
+ZipList中的Entry并不像一般链表那样记录前后节点的指针，因为记录两个指针要占用16个字节，浪费内存。而是采用下面的结构：
+
+![](../image/redis_源码_ziplist_entry_结构.png)
+
+- `previous_entry_length`：占1个或5个字节。表示前一个节点的长度。
+  
+  - 如果前一节点的长度小于254字节，则采用1个字节来保存这个长度值。
+  
+  - 如果前一节点的长度大于等于254字节，则采用5个字节来保持这个长度值。第一个字节为0xfe，后4个字节才是真实长度数据。
+
+- `encoding`：编码属性，记录content的数据类型（字符串还是整数）及长度，占用1字节、2字节或5个字节。
+
+- `contents`：负责保存节点的数据，可以是字符串或者整数。
+
+此时就可以推断出entry的占用内存，previous_entry_length占用字节 + encoding占用字节 + contents的长度（encoding记录了contents的字节数）
+
+值得注意的是，ZipList中所有存储长度的数值均采用小端字节序：即低位字节在前，高位字节在后。eg：数值0x1234，采用用小端字节序后实际存储值为：0x3412。
+
+##### encoding编码
+
+ZipListEntry中的encoding编码分为字符串和整数两种：
+
+- 字符串：如果encoding是以`00`、`01`或者`10`开头，则表示content是字符串
+
+![](../image/redis_源码_ziplist_encoding编码.png)
+
+例如，要保存字符串：`ab`和`cd`。
+
+![](../image/redis_源码_ziplist_encoding编码_案例.png)
+
+最终在Redis中体现即：
+
+![](../image/redis_源码_ziplist_encoding编码_完整结构.png)
+
+- 整数：如果encoding是以`11`开头，则证明content存储的是整数，且encoding固定只占用一个字节。
+
+![](../image/redis_源码_ziplist_encoding编码_整数.png)
+
+例如，一个ZipList中包含两个整数值：`2`和`5`
+
+![](../image/redis_源码_ziplist_encoding编码_整数_案例.png)
+
+##### ZipList的连锁更新问题
+
+ZipList中的每个Entry都包含`previous_entry_length`来记录上一个节点的大小，长度是1个或5个字节：
+
+- 如果前一节点的长度小于254字节，则采用1个字节来保存这个长度值。
+
+- 如果前一节点的长度大于等于254字节，则采用5个字节来保持这个长度值。第一个字节为0xfe，后4个字节才是真实长度数据。
+
+假设现在有N个连续的、且长度为250~253字节之间的entry（没超过254字节），因此entry的`previous_entry_length`属性用1个字节即可表示。如图所示：
+
+![](../image/redis_源码_ziplist_连锁更新问题产生1.png)
+
+恰好此时需要在队首新增一个元素，并且该元素的大小超过了254字节。而因为第一个元素大小超过了254字节，则后面n个连续的、且长度为250~253字节之间的entry都要修改`previous_entry_length`，牵一发而动全身。如图所示：
+
+![](../image/redis_源码_ziplist_连锁更新问题产生2.png)
+
+ZipList这种特殊情况下产生的连续多次扩建扩展操作称之为连锁更新（Cascade update）。新增、删除都有可能导致连锁更新的发生。
+
+但是发生的概率极低，N个连续的、且长度为250~253字节之间的entry，（2、3、4...连续，影响的范围不一样）
+
+##### 总结
+
+ZipList特性：
+
+1. 压缩列表可以看作一种连续内存空间的`"双向链表"`。
+
+2. 列表节点之间不是通过指针连接，而是记录上一节点和本节点长度来寻址，内存占用较低。
+
+3. 如果列表数据过多，导致链表过程，可能影响查询性能。
+
+4. 增或删较大数据时有可能发生连续更新问题。
 
 #### QuickList
 
+##### 概述
+
+Redis在3.2版本中引入了新的数据结构QuickList，它是一个双端链表，只不过链表中的每个节点存储的是ZipList。结构如下：
+
+![](../image/redis_源码_quicklist_结构.png)
+
+为了避免QuickList中的每个ZipList中entry过多，Redis提供了一个配置项：`list-max-ziplist-size`来限制。
+
+- 如果值为正，则表示ZipList允许的entry个数的最大值。
+
+- 如果值为负，则表示ZipList最大内存大小，分5种情况：
+  
+  1. `-1`：每个ZipList的内存占用不能超过4KB
+  
+  2. `-2`：每个ZipList的内存占用不能超过8KB
+  
+  3. `-3`：每个ZipList的内存占用不能超过16KB
+  
+  4. `-4`：每个ZipList的内存占用不能超过32KB
+  
+  5. `-5`：每个ZipList的内存占用不能超过64KB
+
+其默认值为 `-2`：
+
+```shell
+127.0.0.1:6379> config get list-max-ziplist-size
+1) "list-max-ziplist-size"
+2) "-2"
+```
+
+除了控制ZipList的大小，QuickList还可以对节点的ZipList做压缩。通过配置项`list-compress-depth`来控制。因为链表一般从首尾访问较多，所以首尾是不压缩的。这个参数是控制首尾不压缩的节点个数。
+
+- 0：特殊值，表示不压缩。
+
+- 1：表示QuickList的首尾各1各节点不压缩，中间节点压缩。
+
+- 2：表示QuickList的首尾各2个节点不压缩，中间节点压缩。
+
+- 3：表示QuickList的首尾各3个节点不压缩，中间节点压缩。
+
+- ...以此类推。
+
+其默认是0：
+
+```shell
+127.0.0.1:6379> config get list-compress-depth
+1) "list-compress-depth"
+2) "0"
+```
+
+以下是QuickList和QuickNode的结构源码：
+
+![](../image/redis_源码_quicklist_源码.png)
+
+QuickList在Redis中直观体现：
+
+![](../image/redis_源码_quicklist_数据结构体现.png)
+
+##### 总结
+
+QuickList的特点：
+
+- QuickList是一个双端链表，其节点存储为ZipList。
+
+- 每个节点都是一个ZipList，解决了传统链表的内存占用问题。
+
+- 能够控制ZipList大小，解决连续内存空间申请效率问题。
+
+- 中间节点可以压缩，进一步节省内存。
+
 #### SkipList
+
+##### 概述
+
+SkipList（跳表）事实上还是一个链表，但与传统的链表相比有几点差异：
+
+- 元素按照升序排列存储。
+
+- 一个节点可能包含多个指针，指针跨度不同。（最多允许32级指针）
+
+![](../image/redis_源码_skiplist_结构模型图.png)
+
+SkipList性能基本与红黑树（二分查找）是差不多的。
+
+结构有点像MySQL索引，叶子节点下挂载数据。叶子节点用于排序、查找。 
+
+![](../image/redis_源码_skiplist_数据结构源码.png)
+
+实际的数据结构挂载数据如下：
+
+![](../image/redis_源码_skiplist_结构落地体现.png)
+
+虽然图中是level指向level，这是为了体现多级指针，实际上底层指向的是SkipListNode。
+
+比如，第一个SkipListNode指向3个不同的SkipListNode，这是三级指针。往往在数据量较大的情况会提升效率，类似二分查找。
+
+如果按照传统链表，获取第5个元素需要遍历5次，而现在指针有多个（指向不同的SkipListNode），可以直接从第一次元素找到第5个元素，只需遍历一次。
+
+##### 总结
+
+SkipList的特点：
+
+- 跳表是一个双向链表，每个节点都包含score和ele值（element 类型是SDS（字符串），具体数据）。
+
+- 节点按照score值排序，score值一样则按照ele字典排序。
+
+- 每个节点都可以包含多层指针，层数是1到32，具体多少层由Redis内部的函数控制，通过函数推测具体多少层合适。
+
+- 不同层级的指针到下一个节点的跨度不同，层级越高，跨度越大。
+
+- 增删改查效率与红黑树基本一致，但实现却更简单。
 
 #### RedisObject
 
