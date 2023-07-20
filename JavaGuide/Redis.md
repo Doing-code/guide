@@ -3845,7 +3845,182 @@ SkipList的特点：
 
 #### RedisObject
 
-#### 五种数据结构
+Redis中的任意数据类型的键和值都会被封装为一个RedisObject对象，也可以叫Redis对象，其源码如下：
+
+![](../image/redis_源码_RedisObject_结构源码.png)
+
+一个RedisObject对象占用16字节，不包含指针指向的实际数据内存。
+
+Redis中会根据存储的数据类型不同，而选择不同的编码方式，共包含11种不同类型：
+
+![](../image/redis_源码_RedisObject_编码方式.png)
+
+五种数据结构对应的编码方式如下：
+
+![](../image/redis_源码_RedisObject_数据结构对应编码方式.png)
+
+#### 五种数据类型
+
+##### String
+
+String是Redis种最常见的数据存储类型：
+
+- 其基本编码方式是`RAW`，基于简单动态字符串（SDS）实现，存储上限为512MB。
+
+![](../image/redis_源码_String_RAW.png)
+
+- 如果存储的SDS长度小于44字节，则会采用`EMBSTR`编码。此时RedisObject head与SDS是一段连续空间，申请内存时只需要调用一次内存分配函数，效率更高。
+
+![](../image/redis_源码_String_EMBSTR.png)
+
+假设此时SDS长度小于等于44字节，那么RedisObject head和SDS的内存空间是连续的，Redis底层分配内存算法是按照2^n次方分片的，正好64字节是一个分片，不会产生内存碎片。
+
+- 如果存储的字符串是整数，并且大小在LONG_MAX范围 内，则会采用`INT`编码。直接将数据保存在RedisObject的ptr指针位置（指针占用8字节），不再需要SDS，更节省内存 。
+
+![](../image/redis_源码_String_INT.png)
+
+可以使用命令`object encoding key`查看key的编码方式。
+
+##### List
+
+Redis的List结构类似 一个双端链表，可以从首、尾操作列表中的元素：
+
+- 在3.2版本之前，Redis采用ZipList和LinkedList来实现List，当元素个数小于512并且元素占用小于64字节时采用ZipList编码，超过则采用LinkedList编码。
+
+- 在3.2版本之后，Redis统一采用QuickList来实现List。
+
+```c
+// t_list.c
+
+/* LPUSH <key> <element> [<element> ...] */
+void lpushCommand(client *c) {
+    pushGenericCommand(c,LIST_HEAD,0);
+}
+
+/* RPUSH <key> <element> [<element> ...] */
+void rpushCommand(client *c) {
+    pushGenericCommand(c,LIST_TAIL,0);
+}
+
+/* Implements LPUSH/RPUSH/LPUSHX/RPUSHX. 
+ * 'xx': push if key exists.（如果为true，如果key不存在则不自动创建key） 
+ client：客户端信息，包括命令，redis将命令存放在 argv 数组中
+ where：LIST_HEAD、LIST_TAIL，从头还是尾新增数据
+ */
+void pushGenericCommand(client *c, int where, int xx) {
+    int j;
+
+    // 尝试找到key对应的list，（robj即RedisObjejct对象，RedisObject封装了quicklist）
+    // lpush key v1 v2，argv[1]取得是 key
+    robj *lobj = lookupKeyWrite(c->db, c->argv[1]);
+
+    // 检查类型是否正确，判断 robj.type 是否是 OBJ_LIST类型
+    if (checkType(c,lobj,OBJ_LIST)) return;
+
+    // 检查robj是否为空
+    if (!lobj) {
+
+        // xx 值为false才会自动创建不存在的key，默认是false
+        if (xx) {
+            addReply(c, shared.czero);
+            return;
+        }
+
+        // 如果为空，则自动创建新的QuickList
+        lobj = createQuicklistObject();
+
+        /*
+            限制QuickList大小
+            list_max_listpack_size：限制每一个ZipList大小小于8Kb，新版本使用list_max_listpack_size替换了list-max-ziplist-size
+            list_compress_depth：首尾压缩的个数，默认0即不压缩
+        */
+        quicklistSetOptions(lobj->ptr, server.list_max_listpack_size,
+                            server.list_compress_depth);
+
+        // 添加元素
+        dbAdd(c->db,c->argv[1],lobj);
+    }
+
+    for (j = 2; j < c->argc; j++) {
+        listTypePush(lobj,c->argv[j],where);
+        server.dirty++;
+    }
+
+    addReplyLongLong(c, listTypeLength(lobj));
+
+    char *event = (where == LIST_HEAD) ? "lpush" : "rpush";
+    signalModifiedKey(c,c->db,c->argv[1]);
+    notifyKeyspaceEvent(NOTIFY_LIST,event,c->argv[1],c->db->id);
+}
+```
+
+`createQuicklistObject()`
+
+```c
+// object.c
+robj *createQuicklistObject(void) {
+    // 申请内存并初始化 QuickList
+    quicklist *l = quicklistCreate();
+
+    // 创建RedisObject，type为OBJ_LIST，ptr指向 QuickList
+    robj *o = createObject(OBJ_LIST,l);
+
+    // 设置编码为 OBJ_ENCODING_QUICKLIST
+    o->encoding = OBJ_ENCODING_QUICKLIST;
+    return o;
+}
+
+robj *createObject(int type, void *ptr) {
+    robj *o = zmalloc(sizeof(*o));
+    o->type = type;
+    o->encoding = OBJ_ENCODING_RAW;
+    o->ptr = ptr;
+    o->refcount = 1;
+
+    /* Set the LRU to the current lruclock (minutes resolution), or
+     * alternatively the LFU counter. */
+    if (server.maxmemory_policy & MAXMEMORY_FLAG_LFU) {
+        o->lru = (LFUGetTimeInMinutes()<<8) | LFU_INIT_VAL;
+    } else {
+        o->lru = LRU_CLOCK();
+    }
+    return o;
+}
+```
+
+List的内存结构如下：
+
+![](../image/redis_源码_List_内存结构.png)
+
+##### Set
+
+Set是Redis中的集合，不一定确保元素有序，元素唯一、查询效率高。
+
+- 为了查询效率和唯一性，Set采用ht编码（Dict）。Dict中的key用来存储元素，value统一为null。
+
+- 当存储的所有数据都是整数，并且元素数量不超过配置项`set-max-intset-entries`值时，Set会采用IntSet编码以节省内存。
+
+第一次添加set，只添加纯数字（`sadd s1 5 10 20`），其内存结构为：
+
+![](../image/redis_源码_Set_IntSet内存结构.png)
+
+如果此时向set中添加一个字符串（`sadd s1 m1`），其内存结构为：
+
+![](../image/redis_源码_Set_Dict内存结构.png)
+
+获取默认值：`config get set-max-intset-entries`；设置值：`config set set-max-intset-entries`；默认(intset容量)是512。
+
+Set初始化创建：
+
+![](../image/redis_源码_Set_创建SetObject.png)
+
+在每一次新增元素时，都会检查Set存储的所有数据是不是都是整数，并且元素数量不超过配置项`set-max-intset-entries`值。如果不满足任意一个条件，Set都会将IntSet编码转换成ht（Dict）编码。
+
+![](../image/redis_源码_Set_编码转换.png)
+
+##### ZSet
+
+##### Hash
 
 ### 网络模型
 
