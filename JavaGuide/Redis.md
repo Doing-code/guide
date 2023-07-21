@@ -3727,7 +3727,7 @@ ZipList特性：
 
 3. 如果列表数据过多，导致链表过程，可能影响查询性能。
 
-4. 增或删较大数据时有可能发生连续更新问题。
+4. 增或删较大数据时有可能发生连续更新问题。（在Redis新版本中采用ListPack（紧凑列表）解决ZipList的连锁更新问题。）
 
 #### QuickList
 
@@ -4020,9 +4020,327 @@ Set初始化创建：
 
 ##### ZSet
 
+ZSet也就是SortedSet，其中每一个元素都需要指定一个score值和member值：
+
+```shell
+127.0.0.1:6379> zadd z1 10 m1 20 m2 30 m3
+(integer) 3
+127.0.0.1:6379> zscore z1 m1
+"10"
+```
+
+其特点为：可以根据score值排序，member唯一，可以根据member查询分数。而哪种编码结构可以满足这三个需求呢？
+
+- SkipList：可排序，并且可以同时存储score和ele（member）值。
+
+- HT（Dict）：可以键值存储，并且可以根据key找value。
+
+Redis中ZSet采用了SkipList+Dict两者配合实现。其数据结构如下：
+
+![](../image/redis_源码_ZSet_数据结构.png)
+
+其内存结构如下：
+
+![](../image/redis_源码_ZSet_内存结构.png)
+
+虽然ZSet查询、排序性能好，但是也占用大量内存。
+
+所以当元素较少时，HT和SkipList的优势不明显，而且更耗内存。因此ZSet还会采用ZipList结构来节省内存，不过需要同时满足两个条件：
+
+1. 元素数量小于`zset_max_ziplist_entries`，默认128。
+
+2. 每个元素都小于`zset_max_ziplist_value`字节，默认64。
+
+初始化时的流程：
+
+![](../image/redis_源码_ZSet_初始化流程.png)
+
+zset用到了多个编码，那么必然会涉及到编码转换：
+
+![](../image/redis_源码_ZSet_zsetAdd_编码转换.png)
+
+而默认初始化为ZipList，ZipList本身是没有排序功能的，且没有键值对的概念，因此需要ZSet通过业务编码实现：
+
+- ZipList是连续空间，因此score和element是紧挨在一起的两个entry，element在前，score在后。
+
+- score越小越接近队首，score越大越接近队尾，按照score值升序排列。
+
+其内存结构如下：
+
+![img.png](../image/redis_源码_ZSet_默认ZipList内存结构.png)
+
 ##### Hash
 
+Hash底层采用的编码与ZSet基本一致，只需要把排序有关的SkipList屏蔽即可。
+
+- Hash结构默认采用ZipList编码，以节省内存。ZipList中相邻的两个entry分别保存field和value。
+
+![](../image/redis_源码_hash_默认ZipList编码_内存结构.png)
+
+- 当数据量较大时，Hash结构会转为HT（Dict）编码，触发条件有两个（满足其一即可）：
+  
+  1. ZipList中的元素数量超过了`hash-max-ziplist-entries`（默认512）。
+  
+  2. ZipList中的任意entry大小超过了`hash-max-ziplist-value`（默认64字节）。
+
+![](../image/redis_源码_hash_内存结构.png)
+
+其部分源码如下：
+
+```c
+// t_hash.c
+// hset u1 name Jack age 21
+void hsetCommand(client *c) {
+    int i, created = 0;
+    robj *o;
+
+    if ((c->argc % 2) == 1) {
+        addReplyErrorArity(c);
+        return;
+    }
+
+    /*
+        判断hash的key是否存在，不存在则创建
+        默认采用ZipList编码
+    */
+    if ((o = hashTypeLookupWriteOrCreate(c,c->argv[1])) == NULL) return;
+
+    // 判断是否需要将ZipList转为Dict
+    hashTypeTryConversion(o,c->argv,2,c->argc-1);
+
+    // 遍历命令参数的所有 field和value，并执行hset命令
+    for (i = 2; i < c->argc; i += 2)
+        created += !hashTypeSet(o,c->argv[i]->ptr,c->argv[i+1]->ptr,HASH_SET_COPY);
+
+    /* HMSET (deprecated) and HSET return value is different. */
+    char *cmdname = c->argv[0]->ptr;
+    if (cmdname[1] == 's' || cmdname[1] == 'S') {
+        /* HSET */
+        addReplyLongLong(c, created);
+    } else {
+        /* HMSET */
+        addReply(c, shared.ok);
+    }
+    signalModifiedKey(c,c->db,c->argv[1]);
+    notifyKeyspaceEvent(NOTIFY_HASH,"hset",c->argv[1],c->db->id);
+    server.dirty += (c->argc - 2)/2;
+}
+
+robj *hashTypeLookupWriteOrCreate(client *c, robj *key) {
+    // 查找key
+    robj *o = lookupKeyWrite(c->db,key);
+    if (checkType(c,o,OBJ_HASH)) return NULL;
+
+    // 不存在则创建
+    if (o == NULL) {
+        o = createHashObject();
+        dbAdd(c->db,key,o);
+    }
+    return o;
+}
+
+// object.c
+robj *createHashObject(void) {
+
+    /*  创建对象，申请内存空间：
+        6.2.6版本默认采用ZipList编码，
+        而7.0.12版本默认采用了ListPack（紧凑列表）编码
+    */
+    unsigned char *zl = lpNew(0);
+    robj *o = createObject(OBJ_HASH, zl);
+
+    /*  设置编码：
+        6.2.6版本采用ZipList编码，
+        而7.0.12版本默认采用了ListPack（紧凑列表）编码
+    */
+    o->encoding = OBJ_ENCODING_LISTPACK;
+    return o;
+}
+
+// t_hash.c
+// 编码转换
+void hashTypeTryConversion(robj *o, robj **argv, int start, int end) {
+    int i;
+    size_t sum = 0;
+
+    // 6.2.6版本编码为ZipList；7.0.12版本编码为listpack
+    if (o->encoding != OBJ_ENCODING_LISTPACK) return;
+
+    // 依次遍历命令中的 field、value参数
+    for (i = start; i <= end; i++) {
+        if (!sdsEncodedObject(argv[i]))
+            continue;
+        size_t len = sdslen(argv[i]->ptr);
+
+        /*
+            6.2.6：如果field或value超过了hash_max_ziplist_value，则转为ht
+            7.0.12：如果field或value超过了hash_max_listpack_value，则转为ht
+        */
+        if (len > server.hash_max_listpack_value) {
+            hashTypeConvert(o, OBJ_ENCODING_HT);
+            return;
+        }
+        sum += len;
+    }
+
+    /*
+        6.2.6：如果ZipList大小超过1G，则转为ht
+        7.0.12：如果ListPack大小超过1G，则转为ht
+    */
+    if (!lpSafeToAdd(o->ptr, sum))
+        hashTypeConvert(o, OBJ_ENCODING_HT);
+}
+```
+
+在Redis6.2.6版本中，`hashTypeSet()` 执行hset命令的代码片段：
+
+![](../image/redis_源码_hash_hashtypeset_代码片段.png)
+
 ### 网络模型
+
+#### 用户态&内核态
+
+> 32位系统寻址空间最大为2^32 字节；64位系统寻址空间最大为2^64 字节
+
+为了避免用户应用导致冲突甚至内核崩溃，用户应用和内核是分离的：
+
+- 进程的寻址空间会划分为两部分：内核空间、用户空间。
+
+- 用户空间只能执行受限命令（Ring3），而且不能直接调用系统，必须通过内核提供的接口访问。
+
+- 内核空间可以执行特权命令（Ring0），调用一切系统资源。
+
+![](../image/redis_网络模型_内核态&用户态.png)
+
+拿IO来说，Linux系统为了提高IO效率，会在用户空间和内核空间都加入缓冲区：
+
+- 写数据时，要把用户缓冲区数据拷贝到内核缓冲区，然后写入设备（磁盘，网卡...）
+
+- 读数据时，要从设备读取数据到内核缓冲区，然后拷贝到用户缓冲区
+
+![](../image/redis_网络模型_内核态&用户态_IO_案例.png)
+
+#### 阻塞IO
+
+> 阻塞IO指的是：执行IO操作期间用户空间等待（用户空间阻塞）
+
+![](../image/redis_网络模型_阻塞IO_案例模型.png)
+
+顾名思义，阻塞IO就是两个阶段都必须阻塞等待：
+
+![](../image/redis_网络模型_阻塞IO_模型.png)
+
+如图可以看到，在阻塞IO模型中，在内核响应用户空间之前，用户进程在两个阶段都是阻塞状态。
+
+> 两个阶段：内核从设备（磁盘、网卡...）中读取数据到内核缓冲区；内核拷贝数据到用户空间（用户缓冲区）；
+
+#### 非阻塞IO
+
+顾名思义，非阻塞IO的recvfrom操作会立即返回结果而不是阻塞用户进程。
+
+![](../image/redis_网络模型_非阻塞IO_模型.png)
+
+如图可以看到，非阻塞IO模型中，用户进程在第一个阶段是非阻塞的，第二个阶段是阻塞状态。但是是非阻塞，但性能并没有得到提升。而且轮询机制会导致CPU空转，CPU使用率暴增。
+
+#### IO多路复用
+
+无论是阻塞IO还是非阻塞IO，用户应用在一阶段时都需要调用recvform来获取数据。差别在于无数据时的处理方案：
+
+- 如果调用recvform时，恰好没有数据，阻塞IO会让进程阻塞，非阻塞IO会让CPU空转，两者都无法充分发挥CPU的性能。
+
+- 如果调用recvform时恰好有数据，则用户进程可以直接进入第二阶段，读取并处理数据。
+
+比如服务端在处理客户端Socket请求时，在单线程情况下，只能串行处理每一个Socket，如果正在处理的Socket恰好未就绪（数据不可读或不可写），线程就会被阻塞，其它所有客户端Socket都必须等待阻塞，性能会很差。
+
+文件描述符（File Descriptor）：简称FD，是一个从0开始递增的无符号 整数，用来关联Linux中的一个文件。在Linux中，一切皆文件，例如常规文件、视频、硬件设备等，当然也包括网络套接字（Socket）。
+
+IO多路复用：利用单个线程同时监听多个FD，并在某个FD可读、可写时得到通知，避免无效的等待，充分利用CPU资源。
+
+![](../image/redis_网络模型_IO多路复用_基本思想.png)
+
+监听FD的方式、通知的方式有多种实现，常见的有：select 、poll、epoll。
+
+差异：
+
+- select和poll只会通知用户进程有FD就绪，但不确定具体是哪个FD，需要用户进程遍历FD来确认。
+
+- epoll则会在通知用户进程FD就绪的同时，将已就绪的FD写入用户空间。
+
+##### select
+
+select是Linux中最早的IO多路复用实现方案：
+
+![](../image/redis_网络模型_IO多路复用_select_基本流程.png)
+
+select模式存在的问题：
+
+- 需要将整个`fd_set`从用户空间拷贝到内核空间，select结束还需要从内核空间再次拷贝回用户空间。
+
+- select无法得知具体是哪个fd就绪，用户空间需要遍历整个`fd_set`。
+
+- `fd_set`监听的fd数量最大为1024个。
+
+##### poll
+
+poll模式对select模式做了简单改进，但 性能提升不明显，部分关键代码如下：
+
+
+
+poll模式的IO流程：
+
+1. 创建`pollfd`数组，向数组中添加感兴趣的fd信息，数组大小自定义。
+
+2. 调用poll函数，将`pollfd`数组拷贝到内核空间，在内核空间中转为链表存储，无上限。
+
+3. 内核遍历fd，判断是否就绪。没有则休眠等待。
+
+4. 数据就绪或超时后，拷贝`pollfd`数组到用户空间，返回就绪fd数量n。
+
+5. 用户进程判断n是否大于0。
+
+6. 大于0则遍历`pollfd`数组，找到就绪的fd。
+
+与select对比：
+
+- select模式中的`fd_set`大小固定为1024.而`pollfd`在内核中采用链表，理论上无上限。
+
+- 监听的FD越多，每次遍历也越耗时，性能反而会下降。
+
+##### epoll
+
+epoll模式是对select和poll的改进，它提供了三个函数：
+
+![](../image/redis_网络模型_IO多路复用_epoll.png)
+
+##### 总结
+
+select模式存在的三个问题：
+
+1. 能监听的FD最大不超过1024。
+
+2. 每次select都需要把所有要监听的FD都拷贝到内核空间。（两次拷贝）
+
+3. 每次都要遍历所有FD来判断就绪状态。
+
+poll模式的问题：
+
+- poll利用链表解决了select中监听FD上限的问题，但依然要遍历所有FD，如果监听较多，性能会收到影响。
+
+epoll模式中如何解决这些问题的？
+
+- 基于epoll实例中的红黑树（rb_root）保存要监听的FD，理论上无上限，而且增删改查效率都非常高，性能不会随着监听的FD数量增多而下降。
+
+- 每个FD只需执行一次epoll_ctl函数添加到红黑树，以后每次epoll_wait无需传递任何参数，也无需重复拷贝FD到内核空间。
+
+- 内核会将已就绪的FD拷贝到用户空间的指定位置，用户进程无需遍历所有FD就能得知就绪的FD是谁。
+
+##### 事件通知机制
+
+#### 信号驱动IO
+
+#### 异步IO
+
+#### Redis网络模型
 
 ### 通信协议
 
