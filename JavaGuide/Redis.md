@@ -2628,7 +2628,7 @@ Caffeine提供三种缓存的驱逐策略：
 Cache<String, Person> cache = Caffeine.newBuilder()
     // key的过期时间，10分钟，从最后依次写入开始计时
     .expireAfterWrite(10, TimeUnit.MINUTES)  
-    // key的size，最大10000，超过10000，则默认使用LRU，最近最少使用
+    // key的size，最大10000，超过10000，则默认使用LRU，最少最近使用
     .maximumSize(10_000)    
     .build();
 
@@ -4284,8 +4284,6 @@ select模式存在的问题：
 
 poll模式对select模式做了简单改进，但 性能提升不明显，部分关键代码如下：
 
-
-
 poll模式的IO流程：
 
 1. 创建`pollfd`数组，向数组中添加感兴趣的fd信息，数组大小自定义。
@@ -4334,17 +4332,535 @@ epoll模式中如何解决这些问题的？
 
 - 内核会将已就绪的FD拷贝到用户空间的指定位置，用户进程无需遍历所有FD就能得知就绪的FD是谁。
 
+> 将已就绪FD拷贝到用户空间之前，会将已就绪FD列表指向的链表断开，即list_head没有元素
+
 ##### 事件通知机制
+
+当FD有数据可读时，调用的epoll_wait就可以得到通知。但是事件通知的模式有两种：
+
+- LevelTriggered：简称LT。当FD有数据可读时，会重复通知多次，直到数据处理完成。时Epoll的默认模式。
+
+- EdgeTriggered：简称ET。当FD有数据可读时，只会被通知一次，不管数据是否处理完成。
+
+比如：
+
+1. 假设一个客户端socket对应的FD已经注册到epoll实例中。
+
+2. 客户端socket发送了2KB的数据。
+
+3. 服务端调用epoll_wait，等待FD就绪。
+
+4. 服务端从FD读取了1KB数据。
+
+5. 回到步骤4（再次调用epoll_wait，形成闭环）
+
+![](../image/redis_网络模型_IO多路复用_事件通知机制.png)
+
+如果是ET模式，在拷贝已就绪FD到用户空间之前，内核会将`list_head`指向的链表移除，下次再来获取时就是空链表了。
+
+如果是LT模式，在拷贝已就绪FD到用户空间之前，内核会将`list_head`指向的链表移除。内核如果判断是LT模式，会再次将已就绪的FD添加回`list_head`。
+
+可以调用epoll_ctl函数修改FD状态，内核会将FD再次添加到list_head。
+
+ET模式避免了LT模式可能出现的惊群现象。
+
+ET模式最好结合非阻塞IO读取FD数据，但实现较为复杂。（避免频繁epoll_wait、内核拷贝至用户空间）
+
+##### web服务流程
+
+> Redis本身可以理解为是TCP服务端。类似web服务端。
+
+基于epoll模式的web服务的基本流程如图：
+
+![](../image/redis_网络模型_IO多路复用_基于epoll模式的web服务的基本流程.png)
 
 #### 信号驱动IO
 
+信号驱动IO是与内核建立SIGIO的信号关联并设置回调，当内核有FD就绪时，会发出SIGIO信号通知用户，期间用户应用可以执行其它业务，无需阻塞等待。
+
+![](../image/redis_网络模型_IO多路复用_信号驱动IO.png)
+
+当有大量IO操作时，信号较多，SIGIO处理函数不能及时处理可能导致信号队列溢出。
+
+而且内核空间与用户空间的频繁信号交互性能也较低。
+
 #### 异步IO
+
+异步IO的整个过程都是非阻塞的，用户进程调用完异步API后就可以去执行其它业务，内核等待数据就绪并拷贝到用户空间后才会递交信号，通知用户进程。
+
+![](../image/redis_网络模型_IO多路复用_异步IO.png)
+
+#### 同步和异步
+
+IO操作是同步还是异步，关键看数据在内核空间与用户空间的拷贝过程（数据读写的IO操作），也就是阶段二是同步还是异步：
+
+![](../image/redis_网络模型_IO比较.png)
 
 #### Redis网络模型
 
+- 面试题：Redis是单线程还是多线程？
+  
+  - 如果仅仅聊Redis的核心业务部分（命令处理），答案是单线程（可以明确告诉面试官）。
+  
+  - 如果是聊整个Redis，那么答案就是多线程。
+
+在Redis版本迭代过程中，在两个重要的时间节点上引入两类多线程的支持：
+
+- Redis v4.0：引入多线程异步处理一些耗时较长的任务，例如异步删除命令unlink（删除BigKey）。
+
+- Redis v6.0：在核心网络模型中引入多线程，进一步提高对于多核CPU的利用率。
+
+- 面试题：为什么Redis要选择单线程？
+  
+  - 抛开持久化不谈，Redis是纯内存操作，执行速度非常快，它的性能瓶颈是网络延迟而不是执行速度，因此多线程并不会带来巨大的性能提升。（内存级别可以做到延迟微秒级别）
+  
+  - 多线程会导致过多的上下文切换，带来不必要的开销。
+  
+  - 引入多线程会面临线程安全问题，必然要引入线程锁这样的安全手段，实现复杂度增高，而且性能也会大打折扣。
+
+> 总结：网络模型部分引入了多线程，但是在命令处理部分仍然是单线程，串行执行命令。
+
+Redis通过IO多路复用来提高网络性能，支持多种不同的多路复用实现，并且将这些实现进行封装，提供统一的API库 AE：
+
+![](../image/redis_网络模型_ae库.png)
+
+其封装并暴露统一的API，如下：
+
+```c
+// 创建多路复用程序，比如 epoll_create
+static int aeApiCreate(aeEventLoop *eventLoop) {}
+
+static int aeApiResize(aeEventLoop *eventLoop, int setsize) {}
+
+static void aeApiFree(aeEventLoop *eventLoop) {}
+
+// 注册FD（监听FD），比如 epoll_ctl
+static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {}
+
+// 删除FD，比如 epoll_del
+static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {}
+
+// 等待FD就绪，比如 epoll_wait、select、poll
+static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {}
+
+static char *aeApiName(void) {}
+```
+
+在`ae.c`文件中，根据当前系统环境生效对应的IO多路复用实现：
+
+```c
+/* Include the best multiplexing layer supported by this system.
+ * The following should be ordered by performances, descending. */
+#ifdef HAVE_EVPORT
+#include "ae_evport.c"
+#else
+    #ifdef HAVE_EPOLL
+    #include "ae_epoll.c"
+    #else
+        #ifdef HAVE_KQUEUE
+        #include "ae_kqueue.c"
+        #else
+        #include "ae_select.c"
+        #endif
+    #endif
+#endif
+```
+
+##### 单线程网络模型
+
+程序入口`server.c#main()`
+
+```c
+int main(int argc, char **argv) {
+    // ...
+    // 初始化服务
+    initServer();
+    // ...
+    // 监听事件循环
+    aeMain(server.el);
+    // ...
+}
+```
+
+1. initServer()：
+
+```c
+void initServer(void) {
+    // ...
+    // 内部会调用 aeApiCreate(eventLoop)，类似 epoll_create
+    server.el = aeCreateEventLoop(server.maxclients+CONFIG_FDSET_INCR);
+
+    // ...
+    /* Open the TCP listening socket for the user commands. */
+    // 监听TCP端口，创建ServerSocket，得到FD
+    if (server.port != 0 &&
+        listenToPort(server.port,&server.ipfd) == C_ERR) {
+        /* Note: the following log text is matched by the test suite. */
+        serverLog(LL_WARNING, "Failed listening on port %u (TCP), aborting.", server.port);
+        exit(1);
+    }
+
+    // ...
+    /* Create an event handler for accepting new connections in TCP and Unix
+     * domain sockets. */
+
+    // 注册连接处理器，内部会调用 aeApiAddEvent(&server.ipfd) 监听FD 
+    // acceptTcpHandler可以理解为是回调，如果ssfd可读，那么执行acceptTcpHandler逻辑
+    if (createSocketAcceptHandler(&server.ipfd, acceptTcpHandler) != C_OK) {
+        serverPanic("Unrecoverable error creating TCP socket accept handler.");
+    }
+
+    // ...
+    /* Register before and after sleep handlers (note this needs to be done
+     * before loading persistence since it is used by processEventsWhileBlocked. */
+
+    // 注册 ae_api_poll 前的处理器
+    // 调用 epoll_wait 之前做一些准备工作
+    aeSetBeforeSleepProc(server.el,beforeSleep);
+}
+```
+
+2. aeMain()：
+
+```c
+// ae.c
+void aeMain(aeEventLoop *eventLoop) {
+    eventLoop->stop = 0;
+    // 循环监听事件
+    while (!eventLoop->stop) {
+        aeProcessEvents(eventLoop, AE_ALL_EVENTS|
+                                   AE_CALL_BEFORE_SLEEP|
+                                   AE_CALL_AFTER_SLEEP);
+    }
+}
+
+int aeProcessEvents(aeEventLoop *eventLoop, int flags) {
+    // ...
+    if (eventLoop->maxfd != -1 ||
+        ((flags & AE_TIME_EVENTS) && !(flags & AE_DONT_WAIT))) {
+        // ...
+
+        // 调用前置处理器 beforesleep
+        if (eventLoop->beforesleep != NULL && flags & AE_CALL_BEFORE_SLEEP)
+            eventLoop->beforesleep(eventLoop);
+
+        // 等待FD就绪，类似 epoll_wait，返回就绪FD数量
+        numevents = aeApiPoll(eventLoop, tvp);
+
+        /* After sleep callback. */
+        if (eventLoop->aftersleep != NULL && flags & AE_CALL_AFTER_SLEEP)
+            eventLoop->aftersleep(eventLoop);
+
+        for (j = 0; j < numevents; j++) {
+            // ... 遍历处理已就绪的FD，调用对应的处理器（比如 ServerSocket的acceptTcpHandler）
+            // ServerSocket的acceptTcpHandler做了两件事，
+            // 1：accept() 接收客户端socket，得到FD
+            // 2：将客户端socket对应的FD注册到epoll实例中，开始监听客户端socketFD
+        }
+    }
+    // ...
+    return processed; /* return the number of processed file/time events */
+}
+```
+
+先看一下acceptTcpHandler的实现：
+
+```c
+// networking.c
+// ServerSocket 数据读处理器，处理客户端连接
+void acceptTcpHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    // ...
+    while(max--) {
+        // accept 客户端连接
+        cfd = anetTcpAccept(server.neterr, fd, cip, sizeof(cip), &cport);
+        // ...
+        // 客户端创建客户端状态（redisClient）
+        acceptCommonHandler(connCreateAcceptedSocket(cfd),0,cip);
+    }
+}
+
+// anet.c
+int anetTcpAccept(char *err, int serversock, char *ip, size_t ip_len, int *port) {
+    // ...
+    if ((fd = anetGenericAccept(err,serversock,(struct sockaddr*)&sa,&salen)) == ANET_ERR)
+        return ANET_ERR;
+    // ...
+    return fd;
+}
+
+// anet.c
+static int anetGenericAccept(char *err, int s, struct sockaddr *sa, socklen_t *len) {
+    int fd;
+    do {
+        // ..
+        // 接收socket连接，获取FD
+        fd = accept(s,sa,len);
+        //...
+    } while(fd == -1 && errno == EINTR);
+    // ...
+    return fd;
+}
+
+// connection.c
+connection *connCreateAcceptedSocket(int fd) {
+    // 创建 connection，关联fd
+    connection *conn = connCreateSocket();
+    conn->fd = fd;
+    conn->state = CONN_STATE_ACCEPTING;
+    return conn;
+}
+
+// networking.c
+static void acceptCommonHandler(connection *conn, int flags, char *ip) {
+    // ...
+    /* Create connection and client */
+    if ((c = createClient(conn)) == NULL) {
+        serverLog(LL_WARNING,
+            "Error registering fd event for the new client: %s (conn: %s)",
+            connGetLastError(conn),
+            connGetInfo(conn, conninfo, sizeof(conninfo)));
+        connClose(conn); /* May be already closed, just ignore errors */
+        return;
+    }
+    // ...
+}
+
+// networking.c
+client *createClient(connection *conn) {
+    // ... 
+    if (conn) {
+        connEnableTcpNoDelay(conn);
+        if (server.tcpkeepalive)
+            connKeepAlive(conn,server.tcpkeepalive);
+
+        // 内部调用aeApiAddEvent(fd, READABLE)
+        // 监听客户端socket的FD读事件，并绑定读处理器 readQueryFromClient
+        connSetReadHandler(conn, readQueryFromClient);
+        connSetPrivateData(conn, c);
+    }
+    // ...
+    return c;
+}
+```
+
+acceptTcpHandler 做了两件事：
+
+- 1、接收客户端连接。
+
+- 2、添加对于客户端socket的监听
+
+![](../image/redis_网络模型_server.c.png)
+
+readQueryFromClient 处理客户端socketFD读事件（`set name Jack`）：
+
+![](../image/redis_网络模型_client_handler.png)
+
+来看一下Redis单线程网络模型的整个流程：
+
+> 这里 beforeSleep() 的意思是新进来的fd会去帮队列中其它fd绑定的socket写操作。
+> 
+> 而如果执行回调sendReplyToClient并将缓冲区数据写完了，接着会处理timer事件，最终也会再次执行aeMain()，新客户端fd的socket写也会得到执行，形成一个闭环。
+> 
+> 可以参考文章：https://www.zhihu.com/tardis/bd/art/144805500?source_id=1001
+> 
+> 就绪就是：1、客户端和服务器建立连接（接收到ClientSocket，客户端的信息就绪），2、建立好连接后，有客户端发来请求(请求数据就绪)，3、服务器请求处理完后准备返回数据（响应数据已就绪）
+
+![](../image/redis_网络模型_Redis单线程网络模型.png)
+
+可以把aeEventLoop()、beforeSleep()、aeApiPoll()看作是IO多路复用+事件派发。其实Redis的整个网络模型就是IO多路复用+事件派发机制。
+
+##### 多线程网络模型
+
+Redis 6.0版本中引入了多线程，目的是为了提高IO读写效率。因此在解析客户端命令、写响应数据时采用了多线程。而核心的命令执行、IO多路复用模块仍然是由主线程执行。
+
+![](../image/redis_网络模型_Redis多线程网络模型.png)
+
 ### 通信协议
 
+#### RESP协议
+
+Redis是一个CS架构的软件，通信一般分为两步（不包括Pipeline和PubSub）：
+
+1. 客户端（client）向服务端（server）发送一条命令。
+
+2. 服务端解析并执行命令，返回响应结果给客户端。
+
+因此客户端发送命令的格式、服务端响应结果的格式必须有一个规范，而这个规范就是通信协议。
+
+而在Redis中采用的是RESP（Redis Serialization Protocol）协议：
+
+- Redis 1.2版本 引入了RESP协议。
+
+- Redis 2.0版本中成为与Redis服务端通信的标准，简称RESP2。
+
+- Redis 6.0版本中，从RESP2升级到了RESP3协议，增加了更多的数据类型并且支持6.0的新特性（客户端缓存）
+
+但是因为RESP3与RESP2不兼容，默认使用的依然是RESP2协议。
+
+在RESP中，通过首字节的字符来区分不同数据类型，常用的数据类型包括5种：
+
+- 单行字符串：首字节为`+`，后面跟上单行字符串，以CRLF（`\r\n`）结尾。例如服务端返回`"OK"`：`"+OK\r\n"`。（服务端返回）
+
+- 错误（Error）：首字节为`-`，与单行字符串格式一样，只不过字符串是异常西悉尼，例如：`"-Error message \r\n"`。（服务端返回）
+
+- 数值：首字节为`:`，后面跟上数字格式的字符串，以CRLF结尾。例如`":10\r\n"`。（服务端返回）
+
+- 多行字符串：首字节为`$`，表示二进制安全的字符串，最大支持512MB。例如`"$5\r\nhello\r\n"`。`$5`表示读取5个字节。（服务端返回）
+  
+  - 如果大小为0，则代表空字符串：`"$0\r\n\r\n"`。
+  
+  - 如果大小为-1，则代表不存在：`"$-1\r\n"`。
+
+- 数组：首字节为`*`，后面跟上数组元素个数，再跟上元素，元素数据类型不限，元素也可以是数组本身。（服务端返回/客户端请求）
+
+![](../image/redis_通信协议_数据类型_数组类型.png)
+
+#### 模拟Redis客户端
+
+利用TCP与Redis服务端建立连接。并按照Redis通信协议发送请求命令。
+
 ### 内存策略
+
+#### 过期策略
+
+可以通过expire命令给Redis的key设置TTL（过期时间）。当key的TTL到期后，再次访问key返回的是nil，说明这个key已经不存在了，对应的内存也得到释放。从而起到内存回收的目的。
+
+有两个问题需要思考：
+
+1. Redis如何知道一个key是否过期？
+   
+   - 利用两个Dict分别记录key-value键值对以及key-ttl键值对。
+
+2. TTL到期就立即删除吗？
+   
+   - 惰性删除。
+   
+   - 周期删除。
+
+##### DB结构
+
+Redis本身是一个典型的key-value内存存储数据库，因此所有的key、value都保存在DIct结构中。不过在其database结构体中，有两个Dict：一个用来记录key-value；另一个用来记录key-TTL。（源码 server.c）
+
+![](../image/redis_内存策略_过期策略_redisDb.png)
+
+内存结构为（这里做了简化，事实上ht[0]中每一个的DictEntry指向的是RedisObject，RedisObject再指向对应的数据结构）：
+
+![](../image/redis_内存策略_过期策略_redisDb_内存结构.png)
+
+到这里，可以回答上面的第一个问题思考了。
+
+##### 惰性删除
+
+惰性删除并不是在TTL到期后就立即删除，而是在访问一个key的时候（增删改查），检查该key的存活时间，如果已经过期才执行删除。
+
+![](../image/redis_内存策略_过期策略_惰性删除.png)
+
+##### 周期删除
+
+周期删除是通过一个定时任务，周期性的抽样部分过期的key，然后执行删除。执行周期有两种方式：
+
+- Redis会设置一个定时任务`serverCron()`，按照`server.hz`的频率来执行过期key处理，模式为SLOW。
+
+- Redis的每个事件循环前会调用`beforeSleep()`函数，执行过期key清理，模式为FAST。
+
+> server.hz 默认是10，即一秒钟最多执行10次。默认间隔100ms执行周期
+
+![](../image/redis_内存策略_过期策略_周期删除.png)
+
+SLOW模式规则：
+
+1. 执行频率受`server.hz`影响，默认10，即每秒执行10次，每个执行周期100ms。
+
+2. 执行清理耗时不超过一次执行周期的25%。（即25ms）
+
+3. 逐个遍历db中bucket，抽取20个key判断是否过期。（最终所有过期key都会被扫描到）
+
+4. 如果还没达到时间上限（25ms），并且过期key比例大于10%，就再进行一次抽样，否则执行结束。
+
+FAST模式规则（过期key比例小于10%不执行）：
+
+1. 执行频率受`beforeSleep()`调用频率影响，但两次FAST模式间隔不低于2ms。
+
+2. 执行清理耗时不超过1ms。
+
+3. 逐个遍历db中bucket，抽取20个key判断是否过期。（最终所有过期key都会被扫描到）
+
+4. 如果还没达到时间上限（1ms），并且过期key比例大于10%，就再进行一次抽样，否则执行结束。
+
+##### 总结
+
+Redis Key的TTL记录方式：
+
+- 在RedisDB中通过一个Dict记录每个key的TTL时间。（如果设置了key的TTL，才会记录）
+
+过期key的删除策略：
+
+- 惰性删除：每次查找key时会判断key是否过期，如果过期则删除。
+
+- 定期删除：定期抽样部分key，判断是否过期，如果过期则删除。
+
+定期清理的两种模式：
+
+- SLOW模式执行频率默认为10，每次不超过25ms。
+
+- FAST模式执行频率不固定，但两次间隔不低于2ms，每次耗时不超过1ms。
+
+#### 淘汰策略
+
+内存淘汰：就是当Redis内存使用达到设置的阈值时，Redis主动挑选部分key进行删除以释放更多内存的流程。
+
+Redis会在处理客户端命令的方法`processCommand()`中尝试做内存淘汰：
+
+![](../image/redis_内存策略_内存淘汰_processCommand.png)
+
+Redis支持8种不同策略来选择要删除的key：
+
+- noeviction：不淘汰任何值，但是在内存不足时不允许写入新数据，默认策略。
+
+- volatile-ttl：对设置了TTL的key，比较key的剩余TTL值，TTL越小越先被淘汰。
+
+- allkeys-random：对所有的key，随机进行淘汰。也就是从db-dict种随机挑选。
+
+- volatile-random：对设置了TTL的key，随机进行淘汰。也就是从db-expires种随机挑选。（db-expires存储的是key-ttl）
+
+- allkeys-lru：对所有的key，基于LRU算法进行淘汰。
+
+- volatile-lru：对设置了TTL的key，基于LRU算法进行淘汰。
+
+- allkeys-lfu：对所有的key，基于LFU算法进行淘汰。
+
+- volatile-lfu：对设置了TTL的key，基于LFU算法进行淘汰。
+
+LRU（Least Recently Used）：最少最近使用。用当前时间减去最后一次访问时间，这个值越大则淘汰优先级越高。
+
+LFU（Least Frequently Used）：最少频率使用。会统计每个key的访问频率，值越小淘汰优先级越高。
+
+淘汰策略可以通过配置进行修改：
+
+```conf
+# default
+maxmemory-policy noeviction
+```
+
+而LRU、LFU的信息被封装在RedisObject结构：
+
+![](../image/redis_内存策略_淘汰策略_LRU&LFU.png)
+
+LFU的访问次数之所以称为逻辑访问次数，是因为并不是每个key被访问都计数，而是通过运算：
+
+1. 生成0~1之间的随机数R。
+
+2. 计算`1/(旧访问次数 * lfu_log_factor + 1)`，记录为P，`lfu_log_factor`默认为10。
+
+3. 如果 R < P，则计数器+1，且最大值不超过255。
+
+4. 访问次数会随着时间而衰减，距离上一次访问时间每隔`lfu_decay_time`分钟（默认1分钟），计数器-1.
+
+`lfu_log_factor`及`lfu_decay_time`都可以通过redis.conf进行配置，也可以通过`config set lfu_log_factor`命令行进行配置。
+
+##### 淘汰策略流程图
+
+![](../image/redis_内存策略_淘汰策略流程图.png)
 
 ## 附录
 
