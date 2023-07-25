@@ -889,7 +889,7 @@ t2 ->> ready : 读取ready=true
 t2 ->> num : 读取num=2
 ```
 
-#### happens-before
+### happens-before
 
 happens-before 规定了哪些写操作对其它线程的读操作可见，是一套可见性与有序性的规则总结。
 
@@ -1074,13 +1074,13 @@ markableReference.compareAndSet(oldReference, newReference, true, false);
 
 ### 原子累加器
 
-```txt
-原文：https://www.bilibili.com/video/BV16J411h7Rd?p=180
-
-LongAdder 原理跳过了，逻辑感很强，不愧是 Doug Lea 操刀。。。等后续涉及到并发编程时再来复习回顾。
-```
+- LongAdder
 
 #### LongAdder 原理
+
+cas锁，伪共享。
+
+##### 域
 
 ```java
 /**
@@ -1101,10 +1101,14 @@ transient volatile long base;
 /**
  * Spinlock (locked via CAS) used when resizing and/or creating Cells.
 
-    在 cells 创建或扩容时，置为 1，表示加锁
+    在 cells 创建或扩容时，置为 1，表示加锁（CAS实现加锁）
  */
 transient volatile int cellsBusy;
 ```
+
+##### 伪共享
+
+伪共享：即一个缓存行加入了多个Cell对象。
 
 `@sun.misc.Contended`作用是防止缓存行伪共享，即一个 Cell 对应一个 缓存行。
 
@@ -1112,30 +1116,51 @@ transient volatile int cellsBusy;
 @sun.misc.Contended static final class Cell {
     volatile long value;
     Cell(long x) { value = x; }
+
+    // 最重要的方法。用 cas 方式进行累加，cmp表示旧值，val表示新值
     final boolean cas(long cmp, long val) {
         return UNSAFE.compareAndSwapLong(this, valueOffset, cmp, val);
     }
-
-    // Unsafe mechanics
-    private static final sun.misc.Unsafe UNSAFE;
-    private static final long valueOffset;
-    static {
-        try {
-            UNSAFE = sun.misc.Unsafe.getUnsafe();
-            Class<?> ak = Cell.class;
-            valueOffset = UNSAFE.objectFieldOffset
-                (ak.getDeclaredField("value"));
-        } catch (Exception e) {
-            throw new Error(e);
-        }
-    }
+    // ...
 }
 ```
+
+![img.png](../image/juc_longadder_缓存&内存.png)
+
+| 从CPU到 | 大约需要的时钟周期                  |
+| ----- | -------------------------- |
+| 寄存器   | 1 cycle，（4GHz的PCU约为0.25ns） |
+| L1    | 3~4cycle                   |
+| L2    | 10~20cycle                 |
+| L3    | 40~45cycle                 |
+| 内存    | 120~240cycle               |
+
+因为CP与内存的速度差异很大，因此需要靠预读数据至缓存来提升效率。
+
+而缓存以缓存行为单位，每隔缓存行对应一块内存，一般是64byte（8个long）
+
+但是缓存的加入会造成数据副本的产生，即同一份数据会缓存在不同核心的缓存行中。
+
+CPU要保证数据的一致性，如果某个CPU核心更改了数据，那么其它CPU核心对应的整个缓存行必须失效。
+
+![](../image/juc_longadder_缓存行_01.png)
+
+如上图，因为Cell是数组形式，在内存中是连续存储的，一个Cell为24字节（16字节的对象头和8字节的value），因此缓存行可以存下2个Cell对象。那么问题来了：
+
+- Core-0要修改Cell[0]。
+
+- Core-1要修改Cell[1]。
+
+无论谁修改成功，都会导致对象 Core 的缓存行失效。
+
+`@sun.misc.Contended`注解就是用来解决这个问题的。它的原理是在使用此注解的对象或字段的前后各增加128字节大小的padding，从而让CPU将对象预读至缓存时占用不同的缓存行。这样就不会造成对象缓存行的失效。如下图：
+
+![](../image/juc_longadder_缓存行_02.png)
 
 #### LongAdder 源码
 
 ```java
-LongAdder adder = new LongAdder();
+LongAdder adder = new subgraph Connector `NIO EndPoint`();
 adder.increment();
 
 public void increment() {
@@ -1155,7 +1180,8 @@ public void add(long x) {
 ```
 
 ```mermaid
-graph LR;
+graph LR
+subgraph 分析 LongAdder.add 方法
   A(当前线程)-->B(cells)
   B --为空--> C(cas base 累加)
   C --成功--> D(return)
@@ -1165,9 +1191,23 @@ graph LR;
   G --成功--> D
   G --失败--> E
   F --未创建--> E
+end
 ```
 
 ##### cells 未创建
+
+```mermaid
+graph LR
+subgraph cells 创建
+  E --失败--> A
+  A(循环入口)-->B(cells不存在&加锁&未新建)
+  B --> C(加锁)
+  C --成功--> D(创建 cells 并初始化一个 cell)
+  C --失败--> E(cas base 累加)
+  D --> R(return)
+  E --成功--> R
+end
+```
 
 ```java
 final void longAccumulate(long x, LongBinaryOperator fn,
@@ -1230,21 +1270,39 @@ final void longAccumulate(long x, LongBinaryOperator fn,
             }
             h = advanceProbe(h);
         }
+
+        /*
+            cells 未创建：
+                cellsBusy == 0：还没有其它线程对其加锁
+                cells == as：未新建
+                casCellsBusy()：加锁
+        */
         else if (cellsBusy == 0 && cells == as && casCellsBusy()) {
             boolean init = false;
             try {                           // Initialize table
                 if (cells == as) {
+                    // 初始化累加单元数组长度为2
                     Cell[] rs = new Cell[2];
+
+                    // x为要累加的值
                     rs[h & 1] = new Cell(x);
+
+                    // 将初始化的 rs 赋值给成员变量 cells
                     cells = rs;
                     init = true;
                 }
             } finally {
+
+                // 解锁
                 cellsBusy = 0;
             }
             if (init)
                 break;
         }
+
+        /*
+            casBase()：cas base 累加
+        */
         else if (casBase(v = base, ((fn == null) ? v + x :
                                     fn.applyAsLong(v, x))))
             break;                          // Fall back on using base
@@ -1252,7 +1310,338 @@ final void longAccumulate(long x, LongBinaryOperator fn,
 }
 ```
 
-##### cells 已创建
+##### cell 未创建
+
+```mermaid
+graph LR
+subgraph cell 创建
+  S --失败--> A
+  A(循环入口)-->B(cells存在&cell未创建)
+  B --创建cell--> C(加锁)
+  C --失败--> A
+  C --成功--> S(数组槽位为空)
+  S --成功--> R(return)
+end
+```
+
+```java
+final void longAccumulate(long x, LongBinaryOperator fn,
+                          boolean wasUncontended) {
+    int h;
+    if ((h = getProbe()) == 0) {
+        ThreadLocalRandom.current(); // force initialization
+        h = getProbe();
+        wasUncontended = true;
+    }
+    boolean collide = false;                // True if last slot nonempty
+    for (;;) {
+        Cell[] as; Cell a; int n; long v;
+
+        /*
+            cell未创建
+                cells存在但cell未创建（另一个线程）
+        */
+        if ((as = cells) != null && (n = as.length) > 0) {
+
+            // 如果为null，说明当前线程还没有创建累加单元 cell
+            if ((a = as[(n - 1) & h]) == null) {
+                if (cellsBusy == 0) {       // Try to attach new Cell
+                    // 创建 cell
+                    Cell r = new Cell(x);   // Optimistically create
+
+                    // 无锁的情况才尝试加锁
+                    if (cellsBusy == 0 && casCellsBusy()) {
+                        boolean created = false;
+                        try {               // Recheck under lock
+                            Cell[] rs; int m, j;
+
+                            /*
+                                rs[j = (m - 1) & h] == null：如果返回false，说明数组索引处不为空，有其它线程已经抢先一步占有了，继续循环。
+                            */
+                            if ((rs = cells) != null &&
+                                (m = rs.length) > 0 &&
+                                rs[j = (m - 1) & h] == null) {
+
+                                // 将创建的Cell赋值给数组对应索引处
+                                rs[j] = r;
+                                created = true;
+                            }
+                        } finally {
+                            cellsBusy = 0;
+                        }
+                        if (created)
+                            break;
+                        continue;           // Slot is now non-empty
+                    }
+                }
+                collide = false;
+            }
+            else if (!wasUncontended)       // CAS already known to fail
+                wasUncontended = true;      // Continue after rehash
+            else if (a.cas(v = a.value, ((fn == null) ? v + x :
+                                         fn.applyAsLong(v, x))))
+                break;
+            else if (n >= NCPU || cells != as)
+                collide = false;            // At max size or stale
+            else if (!collide)
+                collide = true;
+            else if (cellsBusy == 0 && casCellsBusy()) {
+                try {
+                    if (cells == as) {      // Expand table unless stale
+                        Cell[] rs = new Cell[n << 1];
+                        for (int i = 0; i < n; ++i)
+                            rs[i] = as[i];
+                        cells = rs;
+                    }
+                } finally {
+                    cellsBusy = 0;
+                }
+                collide = false;
+                continue;                   // Retry with expanded table
+            }
+            h = advanceProbe(h);
+        }
+
+        /*
+            cells 未创建：
+                cellsBusy == 0：还没有其它线程对其加锁
+                cells == as：未新建
+                casCellsBusy()：加锁
+        */
+        else if (cellsBusy == 0 && cells == as && casCellsBusy()) {
+            boolean init = false;
+            try {                           // Initialize table
+                if (cells == as) {
+                    // 初始化累加单元数组长度为2
+                    Cell[] rs = new Cell[2];
+
+                    // x为要累加的值
+                    rs[h & 1] = new Cell(x);
+
+                    // 将初始化的 rs 赋值给成员变量 cells
+                    cells = rs;
+                    init = true;
+                }
+            } finally {
+
+                // 解锁
+                cellsBusy = 0;
+            }
+            if (init)
+                break;
+        }
+
+        /*
+            casBase()：cas base 累加
+        */
+        else if (casBase(v = base, ((fn == null) ? v + x :
+                                    fn.applyAsLong(v, x))))
+            break;                          // Fall back on using base
+    }
+}
+```
+
+##### cell 已创建
+
+```mermaid
+graph LR
+subgraph cell 创建
+  G --> A
+  A(循环入口)-- cells存在&cell已创建 --> B(cas cell 累加)
+  B --成功--> R(return)
+  B --失败--> D(数组长度是否超过CPU上限)
+  D --是--> E(改变线程对应的cell)
+  E --> A
+  D --否--> F(加锁)
+  F --失败--> E
+  F --成功--> G(扩容)
+end
+```
+
+```java
+final void longAccumulate(long x, LongBinaryOperator fn,
+                          boolean wasUncontended) {
+    int h;
+    if ((h = getProbe()) == 0) {
+        ThreadLocalRandom.current(); // force initialization
+        h = getProbe();
+        wasUncontended = true;
+    }
+    boolean collide = false;                // True if last slot nonempty
+    for (;;) {
+        Cell[] as; Cell a; int n; long v;
+
+        /*
+            cell未创建
+                cells存在但cell未创建（另一个线程）
+        */
+        if ((as = cells) != null && (n = as.length) > 0) {
+
+            // 如果为null，说明当前线程还没有创建累加单元 cell
+            if ((a = as[(n - 1) & h]) == null) {
+                if (cellsBusy == 0) {       // Try to attach new Cell
+                    // 创建 cell
+                    Cell r = new Cell(x);   // Optimistically create
+
+                    // 无锁的情况才尝试加锁
+                    if (cellsBusy == 0 && casCellsBusy()) {
+                        boolean created = false;
+                        try {               // Recheck under lock
+                            Cell[] rs; int m, j;
+
+                            /*
+                                rs[j = (m - 1) & h] == null：如果返回false，说明数组索引处不为空，有其它线程已经抢先一步占有了，继续循环。
+                            */
+                            if ((rs = cells) != null &&
+                                (m = rs.length) > 0 &&
+                                rs[j = (m - 1) & h] == null) {
+
+                                // 将创建的Cell赋值给数组对应索引处
+                                rs[j] = r;
+                                created = true;
+                            }
+                        } finally {
+                            cellsBusy = 0;
+                        }
+                        if (created)
+                            break;
+                        continue;           // Slot is now non-empty
+                    }
+                }
+                collide = false;
+            }
+            else if (!wasUncontended)       // CAS already known to fail
+                wasUncontended = true;      // Continue after rehash
+
+            /*
+                cas cell 累加
+            */
+            else if (a.cas(v = a.value, ((fn == null) ? v + x :
+                                         fn.applyAsLong(v, x))))
+
+                // 累加成功
+                break;
+
+            /*
+                判断数组长度是否在于CPU数
+            */    
+            else if (n >= NCPU || cells != as)
+                collide = false;            // At max size or stale
+
+            /*
+                n >= NCPU：如果为true，collide = false
+                会进入这个 else if；就不会进入到扩容的else if中了
+            */
+            else if (!collide)
+                collide = true;
+
+            /*
+                扩容
+            */
+            else if (cellsBusy == 0 && casCellsBusy()) {
+                try {
+                    if (cells == as) {      // Expand table unless stale
+
+                        // 扩容为原来的两倍，默认Cell[]为2
+                        Cell[] rs = new Cell[n << 1];
+                        for (int i = 0; i < n; ++i)
+                            // 旧数组对应下标内容拷贝到新数组中
+                            rs[i] = as[i];
+                        cells = rs;
+                    }
+                } finally {
+                    // 解锁
+                    cellsBusy = 0;
+                }
+                collide = false;
+                continue;                   // Retry with expanded table
+            }
+
+            /*
+                改变线程对应的cell，即换一个cell累加单元试试
+            */
+            h = advanceProbe(h);
+        }
+
+        /*
+            cells 未创建：
+                cellsBusy == 0：还没有其它线程对其加锁
+                cells == as：未新建
+                casCellsBusy()：加锁
+        */
+        else if (cellsBusy == 0 && cells == as && casCellsBusy()) {
+            boolean init = false;
+            try {                           // Initialize table
+                if (cells == as) {
+                    // 初始化累加单元数组长度为2
+                    Cell[] rs = new Cell[2];
+
+                    // x为要累加的值
+                    rs[h & 1] = new Cell(x);
+
+                    // 将初始化的 rs 赋值给成员变量 cells
+                    cells = rs;
+                    init = true;
+                }
+            } finally {
+
+                // 解锁
+                cellsBusy = 0;
+            }
+            if (init)
+                break;
+        }
+
+        /*
+            casBase()：cas base 累加
+        */
+        else if (casBase(v = base, ((fn == null) ? v + x :
+                                    fn.applyAsLong(v, x))))
+            break;                          // Fall back on using base
+    }
+}
+```
+
+##### sum
+
+获取最终结果通过sum方法：
+
+```java
+public long sum() {
+    Cell[] as = cells; Cell a;
+    long sum = base;
+    if (as != null) {
+        for (int i = 0; i < as.length; ++i) {
+            if ((a = as[i]) != null)
+                sum += a.value;
+        }
+    }
+    return sum;
+}
+```
+
+简单来说即：原子累加器会在有竞争的情况下创建数组，数组元素对应不同的线程，不同线程的索引都是懒加载的对象。没有竞争情况下，就是单线程只会使用一个long类型。
+
+读源码最难的还是理清作者的逻辑和思路，框架逻辑不见得有这个复杂。
+
+### Unsafe
+
+#### 概述
+
+Unsafe对象提供了非常底层的操作内存、线程发方法。Unsafe对象不饿能直接调用，需要通过反射获取。
+
+```java
+try {
+    Field theUnsafe = Unsafe.class.getDeclaredField("theUnsafe");
+    theUnsafe.setAccessible(true);
+    Unsafe unsafe = (Unsafe) theUnsafe.get(null);
+    System.out.println(unsafe);
+} catch (Exception e) {
+    e.printStackTrace();
+}
+```
+
+#### Unsafe CAS操作
 
 ## 共享模型之不可变
 
@@ -1316,6 +1705,8 @@ public ThreadPoolExecutor(int corePoolSize,
 
 阻塞队列满了，新添加的任务才会去创建临时线程。最大线程数满了才会执行拒绝策略。
 
+执行流程：
+
 ```txt
 1. 线程池刚开始没有线程，当一个任务提交给线程池后，线程池会创建一个核心线程来执行该任务。
 2. 当线程数达到 corePoolSize 后，这时新添加的任务会被加入到 workQueue 阻塞队列中，等待被线程池执行。
@@ -1328,7 +1719,7 @@ public ThreadPoolExecutor(int corePoolSize,
 5. 当高峰过去后，超过 corePoolSize 的临时线程如果在一段时间没有执行任务，则需要结束线程资源。这个时间由 keepAliveTime和unit 控制。
 ```
 
-##### Executors.newFixedThreadPool
+##### Executors.newFixedThreadPool()
 
 固定大小线程池：
 
@@ -1355,7 +1746,7 @@ public static ExecutorService newFixedThreadPool(int nThreads, ThreadFactory thr
 
 适用于任务量已知，相对耗时的任务。
 
-##### Executors.newCachedThreadPool
+##### Executors.newCachedThreadPool()
 
 带缓冲线程池：
 
@@ -1382,7 +1773,7 @@ public static ExecutorService newCachedThreadPool(ThreadFactory threadFactory) {
 
 适用于任务数比较密集，但每个任务执行时间较短的情况。
 
-##### Executors.newSingleThreadExecutor
+##### Executors.newSingleThreadExecutor()
 
 单线程的线程池：
 
@@ -1505,7 +1896,7 @@ public List<Runnable> shutdownNow() {
 
 - `ScheduledThreadPoolExecutor.schedule()`：延时执行。
 
-- `ScheduledThreadPoolExecutor.scheduleAtFixedRate()`：定时执行。
+- `ScheduledThreadPoolExecutor.scheduleAtFixedRate()`：定时执行。固定计时。
 
 - `ScheduledThreadPoolExecutor.scheduleWithFixedDelay()`：定时执行，以任务执行完成后开始计时。
 
@@ -1607,7 +1998,7 @@ Tomcat 当提交的任务数超过核心线程数，但没超过最大线程数�
 
 #### Fork/Join
 
-JDK7 加入的新的线程池实现。体现了分治思想。适用于能够进行任务拆分的 CPU 密集型运算。所谓的任务拆分，是将一个大任务拆分为算法上相同的小任务，然后求解。
+JDK7 加入的新的线程池实现。体现了分治思想。适用于能够进行任务拆分的 CPU 密集型运算。所谓的任务拆分，是将一个大任务拆分为算法上相同的小任务，直到不能拆分可以直接求解。
 
 Fork/Join 可以把每个任务的分解和合并交给不同的线程来完成。提升运算效率。
 
@@ -1615,43 +2006,62 @@ Fork/Join 默认会创建与 CPU 核心数相同的线程池。
 
 需要返回值就继承`RecursiveTask`，不需要返回值就继承`RecusiveAction`。`fork()`方法用于拆分任务，`join()`方法用于合并结果。
 
+定义了一个对1~n之间的整数求和的任务：
+
 ```java
 public class Demo5 {
     public static void main(String[] args) {
-        ForkJoinPool forkJoinPool=new ForkJoinPool(4);
-        forkJoinPool.invoke(new AddTask(1,10));
+        ForkJoinPool forkJoinPool = new ForkJoinPool(4);
+        forkJoinPool.invoke(new AddTask(1, 10));
     }
+
     static class AddTask extends RecursiveTask<Integer> {
         int head;
         int last;
-        AddTask(int head,int last){
-            this.head=head;
-            this.last=last;
+
+        AddTask(int head, int last) {
+            this.head = head;
+            this.last = last;
         }
 
         @Override
         protected Integer compute() {
-            if(head==last){
+
+            if (head == last) {
                 return head;
             }
-            if (head==last-1){
-                System.out.println(head+"-"+last+"相加为"+(head+last));
-                return head+last;
+
+            if (head == last - 1) {
+                System.out.println(head + "-" + last + "相加为" + (head + last));
+                return head + last;
             }
-            int mid=(head+last)/2;
+
+            int mid = (head + last) / 2;
+
             AddTask addTask = new AddTask(head, mid);
+
+            /*
+                分解任务：
+                    fork内部最终会执行 java.util.concurrent.RecursiveTask#exec()
+                    其exec()方法内部又会调用compute()方法，相当于是递归调用了。直到遇到return为止
+            */
             addTask.fork();
+
             AddTask addTask1 = new AddTask(mid + 1, last);
+
+            // 分解
             addTask1.fork();
-            int result=addTask.join()+addTask1.join();
-            System.out.println(head+"-"+last+"相加为"+result);
+
+            // 合并
+            int result = addTask.join() + addTask1.join();
+            System.out.println(head + "-" + last + "相加为" + result);
             return result;
         }
     }
 }
 ```
 
-类似二分查找法。
+类似二分查找法。深究的话，可以看作是递归调用，递归调用compute()，只不过是多线程下的递归调用。
 
 ### JUC 工具类
 
@@ -1677,15 +2087,17 @@ AbstractQueuedSynchronizer，是阻塞式锁和相关同步器工具的框架。
 
 子类主要实现下面几个方法。（调用父类的会抛异常 `UnsupportedOperationException`）
 
-1. tryAcquire
+1. `tryAcquire()`
 
-2. tryRelease
+2. `tryRelease()`
 
-3. tryAcquireShared
+3. `tryAcquireShared()`
 
-4. tryReleaseShared
+4. `tryReleaseShared()`
 
-5. isHeldExclusively
+5. `isHeldExclusively()`
+
+示例：
 
 ```java
 // 如果获取锁失败
@@ -1807,6 +2219,12 @@ public class App {
 
 ##### 加锁成功
 
+没有发生竞争时：
+
+![](../image/juc_reentrantLock_没有竞争.png)
+
+源码：
+
 ```java
 private final Sync sync;
 
@@ -1829,7 +2247,9 @@ static final class NonfairSync extends Sync {
      */
     final void lock() {
         // 是不是很熟悉，和上面自定义锁使用方式一样
+        // 将state从0改为1，0是未加锁，1是加锁
         if (compareAndSetState(0, 1))
+            // 将owner线程改为当前线程
             setExclusiveOwnerThread(Thread.currentThread());
         else
             acquire(1);
@@ -1840,6 +2260,207 @@ static final class NonfairSync extends Sync {
     }
 }
 ```
+
+##### 加锁失败
+
+![](../image/juc_reentrantLock_有竞争.png)
+
+源码：
+
+```java
+private final Sync sync;
+
+// 默认构造
+public ReentrantLock() {
+    sync = new NonfairSync();
+}
+
+public void lock() {
+    // lock() 是抽象方法，由子类 NonfairSync、FairSync 实现 
+    sync.lock();
+}
+
+static final class NonfairSync extends Sync {
+    private static final long serialVersionUID = 7316153563782823691L;
+
+    /**
+     * Performs lock.  Try immediate barge, backing up to normal
+     * acquire on failure.
+     */
+    final void lock() {
+        // 是不是很熟悉，和上面自定义锁使用方式一样
+        // 将state从0改为1，0是未加锁，1是加锁
+        if (compareAndSetState(0, 1))
+            // 将owner线程改为当前线程
+            setExclusiveOwnerThread(Thread.currentThread());
+        else
+
+            // 加锁失败
+            acquire(1);
+    }
+
+    protected final boolean tryAcquire(int acquires) {
+        return nonfairTryAcquire(acquires);
+    }
+}
+```
+
+`java.util.concurrent.locks.AbstractQueuedSynchronizer#acquire()`：
+
+```java
+public final void acquire(int arg) {
+
+    /* 
+        尝试加锁，tryAcquire(arg)加锁失败返回法拉瑟，取反未true
+        进入acquireQueued()逻辑，加入到阻塞队列
+    */
+    if (!tryAcquire(arg) && acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+        selfInterrupt();
+}
+
+final boolean acquireQueued(final Node node, int arg) {
+    boolean failed = true;
+    try {
+        boolean interrupted = false;
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head && tryAcquire(arg)) {
+                setHead(node);
+                p.next = null; // help GC
+                failed = false;
+                return interrupted;
+            }
+            
+            // parkAndCheckInterrupt() 阻塞线程，等待被unpark()唤醒
+            if (shouldParkAfterFailedAcquire(p, node) && parkAndCheckInterrupt())
+                interrupted = true;
+        }
+    } finally {
+        if (failed)
+            // 调整链表
+            cancelAcquire(node);
+    }
+}
+
+private final boolean parkAndCheckInterrupt() {
+    LockSupport.park(this);
+    return Thread.interrupted();
+}
+```
+
+加锁失败的流程：
+
+1. CAS尝试将state由0改为1，结果失败。
+
+2. 进入tryAcquire()逻辑，这时state已经是1，结果仍然失败。
+
+3. 接下里进入到addWaiter()逻辑，构造Node队列：
+   
+   - 下图中黄色三角形表示该Node的waitStatus状态，0为默认状态。
+   
+   - Node的创建是懒惰的。（第一次会创建两个Node）
+   
+   - 第一个Node称为Dummy（哑元）或哨兵，用来占位，不关联线程。
+   
+   ![](../image/juc_reentrantLock_有竞争_addWaiter.png)
+
+4. 当前线程再进入到acquireQueued()逻辑：
+   
+   - 1、acquireQueued()会在自旋中不断尝试获得锁，失败后进入park阻塞：
+   
+   - 2、如果当前线程紧挨着head（排第二个，即紧跟在Dummy节点后），那么再次tryAcquire()尝试获取锁，当然这时state仍然为1，获取锁失败。
+   
+   - 3、进入shouldParkAfterFailedAcquire()逻辑，将前驱node（即head）的waitStatus改为-1，返回false。（-1 表示Dummy节点需要唤醒其后继节点）
+   
+   ![](../image/juc_reentrantLock_有竞争_acquireQueued.png)
+
+5. shouldParkAfterFailedAcquire()执行完后，会再次tryAcquire()尝试获取锁，当然这时state仍为1，获取锁失败。
+
+6. 当再次执行shouldParkAfterFailedAcquire()时，这时因为其前驱node（Dummy节点）的waitStatus为-1，返回true。
+
+7. 进入parkAndCheckInterrupt()逻辑，将`Thread-1`阻塞。（大概4次尝试获取锁时失败才会进入park阻塞状态）
+
+![](../image/juc_reentrantLock_有竞争_park.png)
+
+假设此时有多个线程都经历上述过程且竞争失败，此时状态如下图所示（-1 表示需要唤醒后继节点）：
+
+![](../image/juc_reentrantLock_有竞争_park_n.png)
+
+##### 解锁竞争成功
+
+释放锁源码：
+
+```java
+public void unlock() {
+    sync.release(1);
+}
+
+public final boolean release(int arg) {
+    if (tryRelease(arg)) {
+        Node h = head;
+        if (h != null && h.waitStatus != 0)
+            unparkSuccessor(h);
+        return true;
+    }
+    return false;
+}
+    
+protected final boolean tryRelease(int releases) {
+    int c = getState() - releases;
+    if (Thread.currentThread() != getExclusiveOwnerThread())
+        throw new IllegalMonitorStateException();
+    boolean free = false;
+    if (c == 0) {
+        free = true;
+        setExclusiveOwnerThread(null);
+    }
+    setState(c);
+    return free;
+}
+
+private void unparkSuccessor(Node node) {
+    
+    int ws = node.waitStatus;
+    if (ws < 0)
+        compareAndSetWaitStatus(node, ws, 0);
+
+    Node s = node.next;
+    if (s == null || s.waitStatus > 0) {
+        s = null;
+        for (Node t = tail; t != null && t != node; t = t.prev)
+            if (t.waitStatus <= 0)
+                s = t;
+    }
+    if (s != null)
+        LockSupport.unpark(s.thread);
+}
+```
+
+Thread-0 释放锁，进入tryRelease()流程，如果成功：
+
+- 设置exclusiveOwnerThread为null。
+
+- state = 0。
+
+![](../image/juc_reentrantLock_释放锁_tryRelease.png)
+
+如果释放锁成功，如果当前队列（park阻塞线程的队列）不为null，且head的waitStatus=-1，则会进入unparkSuccessor()逻辑。
+
+找到队列中离head最近的一个Node（没取消的节点），调用unpark()恢复其运行。
+
+Thread-1被唤醒，执行获取锁流程，acquireQueued流程：
+
+![](../image/juc_reentrantLock_释放锁_重新抢占锁.png)
+
+如果加锁成功（没有竞争），则会设置：
+
+- exclusiveOwnerThread设置为Thread-1，state = 1。
+
+- head指向Thread-1所在的Node，该Node清空Thread。
+
+- 将head从链表断开，可被垃圾回收。
+
+##### 解锁竞争失败
 
 #### 读写锁
 
@@ -1860,5 +2481,3 @@ static final class NonfairSync extends Sync {
 ### guava
 
 #### RateLimiter
-
-原理部分先不看了，平时工作没有应用场景，很难理解，后面有并发工作场景后再来补全这部分吧。
