@@ -3265,7 +3265,7 @@ public Semaphore(int permits) {
 public void acquire() throws InterruptedException {
     sync.acquireSharedInterruptibly(1);
 }
-    
+
 public final void acquireSharedInterruptibly(int arg)
         throws InterruptedException {
     if (Thread.interrupted())
@@ -3273,11 +3273,11 @@ public final void acquireSharedInterruptibly(int arg)
     if (tryAcquireShared(arg) < 0)
         doAcquireSharedInterruptibly(arg);
 }
-    
+
 protected int tryAcquireShared(int acquires) {
     return nonfairTryAcquireShared(acquires);
 }
-    
+
 final int nonfairTryAcquireShared(int acquires) {
     for (;;) {
         int available = getState();
@@ -3287,7 +3287,7 @@ final int nonfairTryAcquireShared(int acquires) {
             return remaining;
     }
 }
-    
+
 private void doAcquireSharedInterruptibly(int arg)
     throws InterruptedException {
     final Node node = addWaiter(Node.SHARED);
@@ -3320,7 +3320,7 @@ public void release() {
 
 public final boolean releaseShared(int arg) {
     if (tryReleaseShared(arg)) {
-    
+
         // AQS中的方法。与ReentrantLock#doReleaseShared()逻辑一致
         doReleaseShared();
         return true;
@@ -3341,25 +3341,25 @@ protected final boolean tryReleaseShared(int releases) {
 ```
 
 - 加锁流程：
-
+  
   - 初始化时，permits（state）为3，但有5个线程来获取资源。
-    
+  
   ![](../image/juc_semaphore_acquire_01.png)
-
+  
   - 假设其中Thread-1、2、4竞争锁成功。而Thread-0、3竞争失败，调用doAcquireSharedInterruptibly()，进入AQS队列park阻塞。
-    
+  
   ![](../image/juc_semaphore_acquire_02.png)
-
+  
   - doAcquireSharedInterruptibly()流程与ReentrantLock中的类似，就不再详述了。
-    
+  
   - 此时Thread-4释放permits，其Sync状态如下：
-    
+  
   ![](../image/juc_semaphore_acquire_03.png)
-
+  
   - 接着Thread-0竞争成功，permits再次设置为0，设置Thread-0所在节点为head节点，移除原head节点。unpark()唤醒后继节点Thread-3节点，但permits为0，因此Thread-3在尝试获取锁失败后再次进入park()状态。
-    
+  
   ![](../image/juc_semaphore_acquire_04.png)
-    
+
 #### CountdownLatch
 
 #### CyclicBarrier
