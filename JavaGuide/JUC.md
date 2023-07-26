@@ -2063,7 +2063,7 @@ public class Demo5 {
 
 类似二分查找法。深究的话，可以看作是递归调用，递归调用compute()，只不过是多线程下的递归调用。
 
-### JUC 工具类
+### JUC
 
 #### AQS
 
@@ -2215,7 +2215,7 @@ public class App {
 }
 ```
 
-#### ReentrantLock
+#### ReentrantLock原理
 
 ##### 加锁成功
 
@@ -2330,7 +2330,7 @@ final boolean acquireQueued(final Node node, int arg) {
                 failed = false;
                 return interrupted;
             }
-            
+
             // parkAndCheckInterrupt() 阻塞线程，等待被unpark()唤醒
             if (shouldParkAfterFailedAcquire(p, node) && parkAndCheckInterrupt())
                 interrupted = true;
@@ -2404,7 +2404,7 @@ public final boolean release(int arg) {
     }
     return false;
 }
-    
+
 protected final boolean tryRelease(int releases) {
     int c = getState() - releases;
     if (Thread.currentThread() != getExclusiveOwnerThread())
@@ -2419,7 +2419,7 @@ protected final boolean tryRelease(int releases) {
 }
 
 private void unparkSuccessor(Node node) {
-    
+
     int ws = node.waitStatus;
     if (ws < 0)
         compareAndSetWaitStatus(node, ws, 0);
@@ -2462,10 +2462,904 @@ Thread-1被唤醒，执行获取锁流程，acquireQueued流程：
 
 ##### 解锁竞争失败
 
-#### 读写锁
+如果这时候有其它线程来竞争（非公平锁的体现），假如此时Thread-4抢占锁了：
+
+![](../image/juc_reentrantLock_释放锁_有竞争.png)
+
+1. Thread-4被设置为exclusiveOwnerThread，state = 1。
+
+2. Thread-1再次进入acquireQueued()流程，获取锁失败，重新进入park阻塞。
+
+##### 锁重入
+
+```java
+abstract static class Sync extends AbstractQueuedSynchronizer {
+    // 锁重入
+    final boolean nonfairTryAcquire(int acquires) {
+        final Thread current = Thread.currentThread();
+        int c = getState();
+        if (c == 0) {
+            if (compareAndSetState(0, acquires)) {
+                setExclusiveOwnerThread(current);
+                return true;
+            }
+        }
+        // 如果已经获得锁，且owner设置的是当前线程，表示发生锁重入
+        else if (current == getExclusiveOwnerThread()) {
+            // state++
+            int nextc = c + acquires;
+            if (nextc < 0) // overflow
+                throw new Error("Maximum lock count exceeded");
+            setState(nextc);
+            return true;
+        }
+        return false;
+    }
+
+    // 继承自父类方法
+    // 解锁
+    protected final boolean tryRelease(int releases) {
+        // state--
+        int c = getState() - releases;
+        if (Thread.currentThread() != getExclusiveOwnerThread())
+            throw new IllegalMonitorStateException();
+        boolean free = false;
+        // 支持锁重入，当state减为0时，锁才释放成功
+        if (c == 0) {
+            free = true;
+            setExclusiveOwnerThread(null);
+        }
+        setState(c);
+        return free;
+    }
+}
+```
+
+##### 可打断
+
+- 不可打断模式：
+  
+  - 即使被打断，仍会驻留在AQS队列中，等待获得锁后才能继续运行（只是打断标记设置为true）
+
+```java
+public void lock() {
+    sync.lock();
+}
+
+final void lock() {
+    if (compareAndSetState(0, 1))
+        setExclusiveOwnerThread(Thread.currentThread());
+    else
+        acquire(1);
+}
+
+public final void acquire(int arg) {
+    if (!tryAcquire(arg) &&
+        acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+
+        // acquireQueued() 返回true说明线程park被打断且获取到锁
+        // 重新产生一次中断
+        selfInterrupt();
+}
+
+private final boolean parkAndCheckInterrupt() {
+    // 如果打断标记已经是true，则park会失效
+    LockSupport.park(this);
+    // Thread.interrupted() 会清除打断标记，下次park还是会阻塞
+    return Thread.interrupted();
+}
+
+final boolean acquireQueued(final Node node, int arg) {
+    boolean failed = true;
+    try {
+        boolean interrupted = false;
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head && tryAcquire(arg)) {
+                setHead(node);
+                p.next = null; // help GC
+                failed = false;
+
+                // 需要获得锁后，才能返回打断状态
+                return interrupted;
+            }
+            if (shouldParkAfterFailedAcquire(p, node) &&
+                parkAndCheckInterrupt())
+
+                // 如果 interrupted 被唤醒，打断状态设置为 true
+                interrupted = true;
+        }
+    } finally {
+        if (failed)
+            cancelAcquire(node);
+    }
+}
+```
+
+- 可打断模式：
+
+```java
+public void lockInterruptibly() throws InterruptedException {
+    sync.acquireInterruptibly(1);
+}
+
+public final void acquireInterruptibly(int arg)
+        throws InterruptedException {
+    if (Thread.interrupted())
+        throw new InterruptedException();
+    if (!tryAcquire(arg))
+        doAcquireInterruptibly(arg);
+}
+
+// 可打断锁的获取锁流程
+private void doAcquireInterruptibly(int arg)
+    throws InterruptedException {
+    final Node node = addWaiter(Node.EXCLUSIVE);
+    boolean failed = true;
+    try {
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head && tryAcquire(arg)) {
+                setHead(node);
+                p.next = null; // help GC
+                failed = false;
+                return;
+            }
+            if (shouldParkAfterFailedAcquire(p, node) &&
+                parkAndCheckInterrupt())
+
+                // 在 park 过程中如果被 interrupt，会进入if内
+                // 抛 InterruptedException 有异常x
+                throw new InterruptedException();
+        }
+    } finally {
+        if (failed)
+            cancelAcquire(node);
+    }
+}
+```
+
+##### 公平锁
+
+回顾一下非公平锁的实现：
+
+```java
+protected final boolean tryAcquire(int acquires) {
+    return nonfairTryAcquire(acquires);
+}
+
+final boolean nonfairTryAcquire(int acquires) {
+    final Thread current = Thread.currentThread();
+    int c = getState();
+
+    // 没有其他线程抢占锁
+    if (c == 0) {
+        // 尝试用cas获取锁，不检查AQS队列，体现了非公平性
+        if (compareAndSetState(0, acquires)) {
+            setExclusiveOwnerThread(current);
+            return true;
+        }
+    }
+    else if (current == getExclusiveOwnerThread()) {
+        int nextc = c + acquires;
+        if (nextc < 0) // overflow
+            throw new Error("Maximum lock count exceeded");
+        setState(nextc);
+        return true;
+    }
+    return false;
+}
+```
+
+公平锁实现：
+
+- 与非公平锁的主要区别在于tryAcquire()方法的实现。
+
+```java
+public final void acquire(int arg) {
+    if (!tryAcquire(arg) &&
+        acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
+        selfInterrupt();
+}
+
+protected final boolean tryAcquire(int acquires) {
+    final Thread current = Thread.currentThread();
+    int c = getState();
+    if (c == 0) {
+        // 先检查AQS队列中是否有前驱节点，没有才竞争锁
+        if (!hasQueuedPredecessors() &&
+            compareAndSetState(0, acquires)) {
+            setExclusiveOwnerThread(current);
+            return true;
+        }
+    }
+    else if (current == getExclusiveOwnerThread()) {
+        int nextc = c + acquires;
+        if (nextc < 0)
+            throw new Error("Maximum lock count exceeded");
+        setState(nextc);
+        return true;
+    }
+    return false;
+}
+
+public final boolean hasQueuedPredecessors() {
+
+    Node t = tail; // Read fields in reverse initialization order
+    Node h = head;
+    Node s;
+    /*
+        h != t 表示队列中有Node
+        (s = h.next) == null 表示此时只有一个Dummy节点
+        s.thread != Thread.currentThread() Dummy节点的后继节点不是当前线程
+    */
+    return h != t &&
+        ((s = h.next) == null || s.thread != Thread.currentThread());
+}
+```
+
+##### 条件变量
+
+每个条件变量其实就对应着一个等待队列，其实现类是ConditionObject。
+
+```java
+public class ConditionObject implements Condition, java.io.Serializable {
+
+    public final void await() throws InterruptedException {
+        if (Thread.interrupted())
+            throw new InterruptedException();
+        // 1. 加入到阻塞队列
+        Node node = addConditionWaiter();
+
+        // 2. 释放锁
+        int savedState = fullyRelease(node);
+        int interruptMode = 0;
+        while (!isOnSyncQueue(node)) {
+            // 3. park() 阻塞当前线程
+            LockSupport.park(this);
+            if ((interruptMode = checkInterruptWhileWaiting(node)) != 0)
+                break;
+        }
+        if (acquireQueued(node, savedState) && interruptMode != THROW_IE)
+            interruptMode = REINTERRUPT;
+        if (node.nextWaiter != null) // clean up if cancelled
+            unlinkCancelledWaiters();
+        if (interruptMode != 0)
+            reportInterruptAfterWait(interruptMode);
+    }
+
+    private Node addConditionWaiter() {
+        Node t = lastWaiter;
+        // If lastWaiter is cancelled, clean out.
+        if (t != null && t.waitStatus != Node.CONDITION) {
+            unlinkCancelledWaiters();
+            t = lastWaiter;
+        }
+        Node node = new Node(Thread.currentThread(), Node.CONDITION);
+        if (t == null)
+            firstWaiter = node;
+        else
+            t.nextWaiter = node;
+        lastWaiter = node;
+        return node;
+    }
+
+    final int fullyRelease(Node node) {
+        boolean failed = true;
+        try {
+            int savedState = getState();
+            if (release(savedState)) {
+                failed = false;
+                return savedState;
+            } else {
+                throw new IllegalMonitorStateException();
+            }
+        } finally {
+            if (failed)
+                node.waitStatus = Node.CANCELLED;
+        }
+    }
+
+    public final boolean release(int arg) {
+        if (tryRelease(arg)) {
+            Node h = head;
+            if (h != null && h.waitStatus != 0)
+
+                // 唤醒后继节点
+                unparkSuccessor(h);
+            return true;
+        }
+        return false;
+    }
+
+    public final void signal() {
+        // ownerThread 才有资格唤醒，否则抛异常
+        if (!isHeldExclusively())
+            throw new IllegalMonitorStateException();
+        Node first = firstWaiter;
+        if (first != null)
+            doSignal(first);
+    }
+
+    private void doSignal(Node first) {
+        do {
+            if ( (firstWaiter = first.nextWaiter) == null)
+                lastWaiter = null;
+            first.nextWaiter = null;
+
+            // transferForSignal() 转移成功跳出循环
+        } while (!transferForSignal(first) &&
+                 (first = firstWaiter) != null);
+    }
+
+    final boolean transferForSignal(Node node) {
+
+        if (!compareAndSetWaitStatus(node, Node.CONDITION, 0))
+            return false;
+
+        // 加入到AQS队列中，如果成功返回前驱节点，当前例子中则返回Thread-3
+        Node p = enq(node);
+        int ws = p.waitStatus;
+        if (ws > 0 || !compareAndSetWaitStatus(p, ws, Node.SIGNAL))
+            LockSupport.unpark(node.thread);
+        return true;
+    }
+}
+```
+
+- await流程：
+  
+  1. Thread-0持有锁，调用await()，进入ConditionObject的addConditionWaiter流程：
+     
+     - 创建新的Node状态为-2（Node.CONDITION），关联Thread-0，加入到等待队列尾部。
+     
+     ![](../image/juc_reentrantLock_条件变量_await_addConditionWaiter.png)
+  
+  2. 接下来进入AQS的fullyRelease()流程，释放同步器上的锁。
+  
+  ![](../image/juc_reentrantLock_条件变量_await_fullyRelease.png)
+  
+  - unpark() AQS队列中的下一个节点去竞争锁。假如没有其它线程线程竞争，则Thread-1竞争成功。
+    
+    ![](../image/juc_reentrantLock_条件变量_await_fullyRelease_unpark.png)
+  3. park()阻塞Thread-0。
+  
+  ![](../image/juc_reentrantLock_条件变量_await_park.png)
+
+- signal流程：
+
+由Thread-1唤醒Thread-0。
+
+进入 ConditionObject 的doSignal()流程，获取等待队列中第一个Node，即Thread-0所在的Node。执行transferForSignal()流程，将该Node假如到AQS队列尾部，将Thread-0的waitStatus设置为0，Thread-3的waitStatus设置为-1。
+
+![](../image/juc_reentrantLock_条件变量_signal_transferForSignal.png)
+
+#### 读写锁原理
+
+##### ReentrantReadWriteLock
+
+> 读读并发，读写互斥，写写互斥
+
+当读操作远高于写操作时，可以使用读写锁让读操作可以并发，提高性能。类似于MySQL中的`select ... from ... lock in share mode`。
+
+```java
+ReentrantReadWriteLock rwl = new ReentrantReadWriteLock();
+ReentrantReadWriteLock.WriteLock rw = rwl.writeLock();
+ReentrantReadWriteLock.ReadLock rr = rwl.readLock();
+re.lock();
+rr.lock();
+```
+
+- 注意事项：
+  
+  - 读锁不支持条件变量。
+  
+  - 不支持重入时升级：即在持有读锁的情况下去获取写锁，会导致写锁永久等待。
+    
+    ```java
+    r.lock();
+    try {
+      w.lock();
+        try {
+    
+        } finally {
+          w.unlock();
+        }
+    } finally {
+      r.unlock();
+    }
+    ```
+  
+  - 支持重入时降级：即在持有写锁的情况下去获取读锁（同一线程）。
+
+读写锁使用的是同一个Sync同步器。因此等待队列、state也是同一个。
+
+源码部分：
+
+```java
+// w.lock
+protected final boolean tryAcquire(int acquires) {
+    Thread current = Thread.currentThread();
+    int c = getState();
+    int w = exclusiveCount(c);
+
+    // 1. c != 0：写锁
+    if (c != 0) {
+        // (Note: if c != 0 and w == 0 then shared count != 0)
+        if (w == 0 || current != getExclusiveOwnerThread())
+            return false;
+        if (w + exclusiveCount(acquires) > MAX_COUNT)
+            throw new Error("Maximum lock count exceeded");
+        // Reentrant acquire
+        setState(c + acquires);
+        return true;
+    }
+    if (writerShouldBlock() ||
+        !compareAndSetState(c, c + acquires))
+        return false;
+    setExclusiveOwnerThread(current);
+    return true;
+}
+
+// r.lock()
+protected final int tryAcquireShared(int unused) {
+    Thread current = Thread.currentThread();
+    int c = getState();
+    if (exclusiveCount(c) != 0 &&
+        getExclusiveOwnerThread() != current)
+        return -1;
+    int r = sharedCount(c);
+    if (!readerShouldBlock() &&
+        r < MAX_COUNT &&
+        compareAndSetState(c, c + SHARED_UNIT)) {
+        if (r == 0) {
+            firstReader = current;
+            firstReaderHoldCount = 1;
+        } else if (firstReader == current) {
+            firstReaderHoldCount++;
+        } else {
+            HoldCounter rh = cachedHoldCounter;
+            if (rh == null || rh.tid != getThreadId(current))
+                cachedHoldCounter = rh = readHolds.get();
+            else if (rh.count == 0)
+                readHolds.set(rh);
+            rh.count++;
+        }
+        return 1;
+    }
+    return fullTryAcquireShared(current);
+}
+
+private void doAcquireShared(int arg) {
+    final Node node = addWaiter(Node.SHARED);
+    boolean failed = true;
+    try {
+        boolean interrupted = false;
+        for (;;) {
+            // 获取node的前一个节点
+            final Node p = node.predecessor();
+            // 判断p是否是Dummy节点
+            if (p == head) {
+                int r = tryAcquireShared(arg);
+                if (r >= 0) {
+                    setHeadAndPropagate(node, r);
+                    p.next = null; // help GC
+                    if (interrupted)
+                        selfInterrupt();
+                    failed = false;
+                    return;
+                }
+            }
+
+            // shouldParkAfterFailedAcquire(p, node)：把node节点的前驱节点的waitStatus设置为-1
+            // 循环三次获取锁还是失败，shouldParkAfterFailedAcquire(p, node)返回true
+            // parkAndCheckInterrupt() park 阻塞    
+            if (shouldParkAfterFailedAcquire(p, node) &&
+                parkAndCheckInterrupt())
+                interrupted = true;
+        }
+    } finally {
+        if (failed)
+            cancelAcquire(node);
+    }
+}
+```
+
+- t1 w.lock()：
+  
+  1. t1成功获取锁，获取锁流程与ReentrantLock相比没有特殊之处，不同的是写锁状态占了state的低16位，而读锁使用的是state的高16位。
+  
+  ![](../image/juc_reentrantReadWriteLock_t1_w.lock.png)
+
+- t2 r.lock()：
+  
+  2. t2执行r.lock()，这时进入读锁的acquireShared(1)流程。首先会进入tryAcquireShared()流程。如果有写锁占据，那么tryAcquireShared()返回-1，表示获取锁失败。
+     
+     - tryAcquireShared()返回值说明：
+       
+       - -1表示失败。 
+       
+       - 0表示成功。不会继续唤醒后继节点。
+       
+       - 大于0表示成功且还有几个后继节点需要唤醒，读写锁返回1。
+     
+     ![](../image/juc_reentrantReadWriteLock_t2_r.lock.png)
+  
+  3. 这时会进入doAcquireShared()流程。首先是调用addWaiter()添加节点，不同之处在于节点被设置为Node.SHARED而非Node.EXCLUSIVE。此时t2仍处于活跃状态。
+  
+  ![](../image/juc_reentrantReadWriteLock_t2_doAcquireShared.png)
+  
+  4. t2会检查自己的节点是不是Dummy节点的后一个节点。如果是，还会再次调用tryAcquireShared(1)尝试获取锁。
+  
+  5. 如果还是获取锁失败，则把前驱节点的waitStatus设置为-1。再循环尝试tryAcquireShared(1)获取锁，（总共循环三次）如果还是失败，则会在parkAndCheckInterrupt() park阻塞。
+  
+  ![](../image/juc_reentrantReadWriteLock_t2_r.lock_park.png)
+
+- t3 r.lock()&t4 w.lock()：
+  
+  - 假设又有t3加读锁，t4加写锁，这期间t1仍然持有锁，则阻塞队列如下所示：
+  
+  ![](../image/juc_reentrantReadWriteLock_t3_t4.png)
+  
+  - 读锁是Node.SHARED，写锁是Node.EXCLUSIVE
+
+t1.unlock()源码部分：
+
+```java
+// w.unlock()
+public void unlock() {
+    sync.release(1);
+}
+
+public final boolean release(int arg) {
+    if (tryRelease(arg)) {
+        Node h = head;
+        if (h != null && h.waitStatus != 0)
+            unparkSuccessor(h);
+        return true;
+    }
+    return false;
+}
+
+protected final boolean tryRelease(int releases) {
+    if (!isHeldExclusively())
+        throw new IllegalMonitorStateException();
+
+    // 计数-1    
+    int nextc = getState() - releases;
+
+    boolean free = exclusiveCount(nextc) == 0;
+    if (free)
+        setExclusiveOwnerThread(null);
+    setState(nextc);
+    return free;
+}
+
+private void unparkSuccessor(Node node) {
+    int ws = node.waitStatus;
+    if (ws < 0)
+        compareAndSetWaitStatus(node, ws, 0);
+
+    Node s = node.next;
+    if (s == null || s.waitStatus > 0) {
+        s = null;
+        for (Node t = tail; t != null && t != node; t = t.prev)
+            if (t.waitStatus <= 0)
+                s = t;
+    }
+    if (s != null)
+        LockSupport.unpark(s.thread);
+}
+
+// t2唤醒执行
+protected final int tryAcquireShared(int unused) {
+    Thread current = Thread.currentThread();
+    int c = getState();
+    if (exclusiveCount(c) != 0 &&
+        getExclusiveOwnerThread() != current)
+        return -1;
+
+    // 读锁，高16位    
+    int r = sharedCount(c);
+
+    // 读锁不应该被阻塞
+    if (!readerShouldBlock() &&
+        r < MAX_COUNT &&
+        compareAndSetState(c, c + SHARED_UNIT)) {
+        if (r == 0) {
+            firstReader = current;
+            firstReaderHoldCount = 1;
+        } else if (firstReader == current) {
+            firstReaderHoldCount++;
+        } else {
+            HoldCounter rh = cachedHoldCounter;
+            if (rh == null || rh.tid != getThreadId(current))
+                cachedHoldCounter = rh = readHolds.get();
+            else if (rh.count == 0)
+                readHolds.set(rh);
+            rh.count++;
+        }
+        return 1;
+    }
+    return fullTryAcquireShared(current);
+}
+
+private void setHeadAndPropagate(Node node, int propagate) {
+    Node h = head; // Record old head for check below
+    setHead(node);
+    if (propagate > 0 || h == null || h.waitStatus < 0 ||
+        (h = head) == null || h.waitStatus < 0) {
+        Node s = node.next;
+        if (s == null || s.isShared())
+            doReleaseShared();
+    }
+}
+
+private void doReleaseShared() {
+    for (;;) {
+        Node h = head;
+        if (h != null && h != tail) {
+            int ws = h.waitStatus;
+            if (ws == Node.SIGNAL) {
+                if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
+                    continue;            // loop to recheck cases
+                unparkSuccessor(h);
+            }
+            else if (ws == 0 &&
+                     !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
+                continue;                // loop on failed CAS
+        }
+        if (h == head)                   // loop if head changed
+            break;
+    }
+}
+```
+
+- t1.unlock()：
+  
+  - 写锁释放会调用sync.release(1)，其内部如果调用tryRelease(1)成功，则同步器状态如下：
+  
+  ![](../image/juc_reentrantReadWriteLock_t1_w.unlock.png)
+  
+  - 接下来执行唤醒流程unparkSuccessor()，即让Dummy节点的后继节点恢复运行（唤醒t2）。这时t2在parkAndCheckInterrupt()中恢复运行。
+  
+  - t2恢复运行后，再执行一次tryAcquireShared(1)，如果成功则让读锁计数+1。
+  
+  ![](../image/juc_reentrantReadWriteLock_state_1.png)
+  
+  - 这时t2已经恢复运行了，接下来t2调用setHeadAndPropagate(node, r)，将原head节点移除，将t2所在的节点置为head节点。
+  
+  ![](../image/juc_reentrantReadWriteLock_setHeadAndPropagate.png)
+  
+  - 在setHeadAndPropagate方法内部还会检查新head节点的后继节点是不是shared，如果是则调用doReleaseShared()将head的状态从-1置为0，并唤醒其后继节点。此时t3在parkAndCheckInterrupt()中恢复运行。
+  
+  ![](../image/juc_reentrantReadWriteLock_t3_interrupt.png)
+  
+  - t3被唤醒后，也会再执行tryAcquireShared(1)，如果成功则让读锁计数+1。重复t2被唤醒时执行的步骤。
+  
+  ![](../image/juc_reentrantReadWriteLock_t3_setHeadAndPropagate.png)    
+  
+  - 此时新head节点的后继节点不是shared，因此不会继续唤醒t4所在节点。
+
+t2.unlock()源码部分：
+
+```java
+// r.unlock()
+
+public void unlock() {
+    sync.releaseShared(1);
+}
+
+public final boolean releaseShared(int arg) {
+    if (tryReleaseShared(arg)) {
+        doReleaseShared();
+        return true;
+    }
+    return false;
+}
+
+protected final boolean tryReleaseShared(int unused) {
+    Thread current = Thread.currentThread();
+    if (firstReader == current) {
+        // assert firstReaderHoldCount > 0;
+        if (firstReaderHoldCount == 1)
+            firstReader = null;
+        else
+            firstReaderHoldCount--;
+    } else {
+        HoldCounter rh = cachedHoldCounter;
+        if (rh == null || rh.tid != getThreadId(current))
+            rh = readHolds.get();
+        int count = rh.count;
+        if (count <= 1) {
+            readHolds.remove();
+            if (count <= 0)
+                throw unmatchedUnlockException();
+        }
+        --rh.count;
+    }
+    for (;;) {
+        int c = getState();
+        int nextc = c - SHARED_UNIT;
+        if (compareAndSetState(c, nextc))
+            // Releasing the read lock has no effect on readers,
+            // but it may allow waiting writers to proceed if
+            // both read and write locks are now free.
+            return nextc == 0;
+    }
+}
+
+private void doReleaseShared() {
+    for (;;) {
+        Node h = head;
+        if (h != null && h != tail) {
+            int ws = h.waitStatus;
+            if (ws == Node.SIGNAL) {
+                if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
+                    continue;            // loop to recheck cases
+                unparkSuccessor(h);
+            }
+            else if (ws == 0 &&
+                     !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
+                continue;                // loop on failed CAS
+        }
+        if (h == head)                   // loop if head changed
+            break;
+    }
+}
+```
+
+- t2.unlock()、t3.unlock()：
+  
+  - t2调用unlock()，进入releaseShared(1)，其内部调用tryReleaseShared(1)，但由于计数还不为零。tryReleaseShared()返回false
+  
+  ![](../image/juc_reentrantReadWriteLock_t2_unlock.png)
+  
+  - t3调用unlock()，进入releaseShared(1)，其内部调用tryReleaseShared(1)，此时计数为零，进入doReleaseShared()将head节点从-1置为0，并唤醒head后继节点。
+  
+  ![](../image/juc_reentrantReadWriteLock_t3_unlock.png)
+  
+  - t4在parkAndCheckInterrupt()中恢复运行，判断t4前驱节点是不是head，如果是，再次执行tryAcquire(1)。此时没有其它线程竞争，获取写锁成功，修改head节点（t4所在节点置为head，原head移除），流程结束。
+  
+  ![](../image/juc_reentrantReadWriteLock_t4_lock.png)
+
+##### StampedLock
+
+该类是在JDK8引入的，是为了进一步优化读性能。
 
 #### Semaphore
 
+Semaphore（信号量），用来限制同时访问共享资源的线程上限。可以理解为限流。
+
+应用：使用Semaphore限流，在访问高峰期时，让请求线程阻塞，等待高峰期过去再释放许可。只适合限制单机线程数量，并且仅是限制线程数，而不是限制资源数（如连接数，参考Tomcat LimitLatch的实现）
+
+演示：
+
+```java
+Semaphore semaphore = new Semaphore(3);
+for (int i = 0; i < 10; i++) {
+    new Thread(() -> {
+        try {
+            // 获取信号量
+            semaphore.acquire();
+            Thread.sleep(2000);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        } finally {
+            // 释放信号量
+            semaphore.release();
+        }
+    }).start();
+}
+```
+
+##### acquire&release
+
+加锁源码：
+
+```java
+public Semaphore(int permits) {
+    sync = new NonfairSync(permits);
+}
+
+public void acquire() throws InterruptedException {
+    sync.acquireSharedInterruptibly(1);
+}
+    
+public final void acquireSharedInterruptibly(int arg)
+        throws InterruptedException {
+    if (Thread.interrupted())
+        throw new InterruptedException();
+    if (tryAcquireShared(arg) < 0)
+        doAcquireSharedInterruptibly(arg);
+}
+    
+protected int tryAcquireShared(int acquires) {
+    return nonfairTryAcquireShared(acquires);
+}
+    
+final int nonfairTryAcquireShared(int acquires) {
+    for (;;) {
+        int available = getState();
+        int remaining = available - acquires;
+        if (remaining < 0 ||
+            compareAndSetState(available, remaining))
+            return remaining;
+    }
+}
+    
+private void doAcquireSharedInterruptibly(int arg)
+    throws InterruptedException {
+    final Node node = addWaiter(Node.SHARED);
+    boolean failed = true;
+    try {
+        for (;;) {
+            final Node p = node.predecessor();
+            if (p == head) {
+                int r = tryAcquireShared(arg);
+                if (r >= 0) {
+                    setHeadAndPropagate(node, r);
+                    p.next = null; // help GC
+                    failed = false;
+                    return;
+                }
+            }
+            if (shouldParkAfterFailedAcquire(p, node) &&
+                parkAndCheckInterrupt())
+                throw new InterruptedException();
+        }
+    } finally {
+        if (failed)
+            cancelAcquire(node);
+    }
+}
+
+public void release() {
+    sync.releaseShared(1);
+}
+
+public final boolean releaseShared(int arg) {
+    if (tryReleaseShared(arg)) {
+    
+        // AQS中的方法。与ReentrantLock#doReleaseShared()逻辑一致
+        doReleaseShared();
+        return true;
+    }
+    return false;
+}
+
+protected final boolean tryReleaseShared(int releases) {
+    for (;;) {
+        int current = getState();
+        int next = current + releases;
+        if (next < current) // overflow
+            throw new Error("Maximum permit count exceeded");
+        if (compareAndSetState(current, next))
+            return true;
+    }
+}
+```
+
+- 加锁流程：
+
+  - 初始化时，permits（state）为3，但有5个线程来获取资源。
+    
+  ![](../image/juc_semaphore_acquire_01.png)
+
+  - 假设其中Thread-1、2、4竞争锁成功。而Thread-0、3竞争失败，调用doAcquireSharedInterruptibly()，进入AQS队列park阻塞。
+    
+  ![](../image/juc_semaphore_acquire_02.png)
+
+  - doAcquireSharedInterruptibly()流程与ReentrantLock中的类似，就不再详述了。
+    
+  - 此时Thread-4释放permits，其Sync状态如下：
+    
+  ![](../image/juc_semaphore_acquire_03.png)
+
+  - 接着Thread-0竞争成功，permits再次设置为0，设置Thread-0所在节点为head节点，移除原head节点。unpark()唤醒后继节点Thread-3节点，但permits为0，因此Thread-3在尝试获取锁失败后再次进入park()状态。
+    
+  ![](../image/juc_semaphore_acquire_04.png)
+    
 #### CountdownLatch
 
 #### CyclicBarrier
