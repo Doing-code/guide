@@ -4,7 +4,7 @@
 
 - [x] [Dubbo](JavaGuide/Dubbo.md)
 - [x] [JavaGuide](JavaGuide/JavaGuide.md)
-- [ ] [JUC](JavaGuide/JUC.md)
+- [x] [JUC](JavaGuide/JUC.md)
 - [x] [JVM](JavaGuide/JVM.md)
 - [ ] [Kafka](JavaGuide/Kafka.md)
 - [x] [MyBatis](https://github.com/Doing-code/MyBatisFramework)
@@ -16,7 +16,7 @@
 - [x] [Zookeeper](JavaGuide/Zookeeper.md)
 
 ## 待办
-
+- [ ] 需重新梳理 JavaGuide 
 - [ ] Spring Cloud
 - [ ] Nginx
 - [ ] Tomcat

@@ -1,36 +1,50 @@
 # Zookeeper
 
 ## 集群模式
+
 `vim zoo.cfg`，增加集群节点。
+
 ```cfg
 server.1=192.168.44.131:2888:3888
 server.2=192.168.44.132:2888:3888
 server.3=192.168.44.129:2888:3888
 ```
+
 参数解读：`server.A=B:C:D`，A表示这是第几号服务器，B表示服务器地址，C表示Follower与Leader交换信息的端口，D表示执行选举时服务器相互通信的端口。
 
 ### zookeeper选举机制第一次启动
+
 ![](../image/zookeeper_选举机制_第一次启动.png)
 
-Zookeeper第一次启动总结：
-1. 服务器1启动，发起一次选举。服务器1投给自己一票。此时服务器1票数为一票，发现票数不够半数（3票），选举无法完成，服务器1的状态保持为`LOOKING`。
-2. 服务器2启动，发起一次选举。服务器1和2分别投给自己一票，并交换选票信息。交换选票之后服务器1发现服务器2的`myid`比自己目前投票选举的（服务器1）大，更改选票为推举服务器2。此时服务器1为0票，服务器2为2票，还是没有半数以上结果，选举无法完成，服务器1和2的状态保持`LOOKING`。
-3. 服务器3启动，发起一次选举。服务器1、2和3分别投给自己一票，并交换选票信息。而此时服务器1和2都会更改选票为服务器3。`此次投票结果：服务器1为0票，服务器2为0票，服务器3为3票`。此时服务器3的票数已经超过半数，服务器3当选`Leader`。服务器1和2更改状态为`FOLLOWING`，服务器3更改状态为`LEADING`。
-4. 服务器4启动，发起一次选举。此时服务器1，2，3已经不是`LOOKING`状态，不会更改选票信息。交换选票信息结果：`服务器3为3票，服务器4为1票`。此时服务器4服从多数，更改选票信息为服务器3，并更改状态为`FOLLOWING`。
-5. 服务器 5启动，同4一样当`FOLLOWING`。
+Zookeeper第一次启动流程：
 
+1. 服务器1启动，发起一次选举。服务器1投给自己一票。此时服务器1票数为一票，发现票数不够半数（3票），选举无法完成，服务器1的状态保持为`LOOKING`。
+
+2. 服务器2启动，发起一次选举。服务器1和2分别投给自己一票，并交换选票信息。交换选票之后服务器1发现服务器2的`myid`比自己目前投票选举的（服务器1）大，更改选票为推举服务器2。此时服务器1为0票，服务器2为2票，还是没有半数以上结果，选举无法完成，服务器1和2的状态保持`LOOKING`。
+
+3. 服务器3启动，发起一次选举。服务器1、2和3分别投给自己一票，并交换选票信息。而此时服务器1和2都会更改选票为服务器3。`此次投票结果：服务器1为0票，服务器2为0票，服务器3为3票`。此时服务器3的票数已经超过半数，服务器3当选`Leader`。服务器1和2更改状态为`FOLLOWING`，服务器3更改状态为`LEADING`。
+
+4. 服务器4启动，发起一次选举。此时服务器1，2，3已经不是`LOOKING`状态，不会更改选票信息。交换选票信息结果：`服务器3为3票，服务器4为1票`。此时服务器4服从多数，更改选票信息为服务器3，并更改状态为`FOLLOWING`。
+
+5. 服务器5启动，同4一样当`FOLLOWING`。
 - SID：服务id，用来唯一标识一台Zookeeper集群中的机器，且不能重复，和myid一致。
+
 - ZXID：事务id，用来标识依次服务状态的变更。在某一时刻，集群中的每台ZXID不一定完全一致，这和Zookeeper服务器对于客户端`更新请求`的处理逻辑有关。每次写操作都有事务id（zxid）。
+
 - Epoch：每个Leader任期的代号。没有Leader时同一轮投票过程中的逻辑时钟时相同的，每投完一次选票这个数据就会增加。
 
 <span style="color: red">注意：</span>两个节点各自生成各自的选票，选票就是SID、ZXID，两个节点各自选出ZXID/SID最大的，放到投票箱当中。初始化选举Leader规则：①事务id大的胜出 ；②事务id相同，服务器id大的胜出
 
 ### zookeeper选举机制非第一次启动
+
 当Zookeeper集群中的一台服务器出现`服务器初始化启动或者服务器运行期间无法和Leader保持连接`时就会开始Leader选举。
 
 而当一台机器开始Leader选举流程时，当前集群也可能会处于以下两种状态：
+
 1. 集群中已经存在一个Leader：机器视图去选举Leader时，会被告知当前服务器的Leader信息，对于该机器而言，仅仅需要和Leader机器建立连接并进行状态同步即可。
+
 2. 集群中不存在Leader：选举Leader规则：①EPOCH大的直接胜出；②EPOCH相同，事务id大的胜出；③事务id相同，服务器id大的胜出。
+
 ```txt
 在某一时刻，服务器3（Leader）和服务器5出现故障，因此开始Leader选举。
 SID为1、2、4的机器的（EPOCH，ZXID，SID ）情况：
@@ -40,58 +54,23 @@ SID为1、2、4的机器的（EPOCH，ZXID，SID ）情况：
 根据选举规则，服务器4为新的Leader
 ```
 
-### 启动停止脚本
-```shell
-#!/bin/bash
-
-#zookeeper节点
-zookeeperServers='192.168.44.129 192.168.44.131 192.168.44.132'
-
-case $1 in 
-"start") {
-	for zoo in $zookeeperServers
-	do
-		echo ---------- Zookeeper $zoo 启动 ----------
-		ssh $zoo "/mydata/zookeeper/zookeeper-3.5.7/bin/zkServer.sh start"
-	done
-}
-;;
-case $1 in 
-"stop") {
-	for zoo in $zookeeperServers
-	do
-		echo ---------- Zookeeper $zoo 停止 ----------
-		ssh $zoo "/mydata/zookeeper/zookeeper-3.5.7/bin/zkServer.sh stop"
-	done
-}
-;;
-case $1 in 
-"status") {
-	for zoo in $zookeeperServers
-	do
-		echo ---------- Zookeeper $zoo 状态 ----------
-		ssh $zoo "/mydata/zookeeper/zookeeper-3.5.7/bin/zkServer.sh status"
-	done
-}
-;;
-esac
-```
-运行脚本期间可能会遇到两个问题：1、J`AVA_HOME`找不到路径，修改`zkEnv.sh`文件指定`JAVA_HOME`即可；2、每次ssh都需要输入密码（设置免密登录即可）。
-
 ### 客户端操作
+
 #### 命令行语法
-|   语法   |    描述  |
-| ---- | ---- |
-|   help   |   显式索引操作命令   |
-|   ls path   |   查看当前 `znode` 的子节点 <br/>`-w` 监听子节点变化 <br/>`-s` 附加次级信息   |
-|   create   |   创建 `znode` 节点 <br/>`-s` 带有序列的节点 <br/> `-e` 临时节点（重启或超时消失）  |
-|   get path   |   获取节点的值 <br/> `-w` 监听节点内容变化 <br/>`-s` 附加信息   |
-|   set   |   设置节点的具体值   |
-|   stat   |   查看节点状态   |
-|   delete   |   删除节点   |
-|   deleteall   |   递归删除节点   |
+
+| 语法        | 描述                                                       |
+| --------- | -------------------------------------------------------- |
+| help      | 显式索引操作命令                                                 |
+| ls path   | 查看当前 `znode` 的子节点 <br/>`-w` 监听子节点变化 <br/>`-s` 附加次级信息     |
+| create    | 创建 `znode` 节点 <br/>`-s` 带有序列的节点 <br/> `-e` 临时节点（重启或超时消失） |
+| get path  | 获取节点的值 <br/> `-w` 监听节点内容变化 <br/>`-s` 附加信息                |
+| set       | 设置节点的具体值                                                 |
+| stat      | 查看节点状态                                                   |
+| delete    | 删除节点                                                     |
+| deleteall | 递归删除节点                                                   |
 
 #### znode节点数据信息
+
 ```txt
 [zk: 192.168.44.131:2181(CONNECTED) 6] ls -s /
 [zookeeper]cZxid = 0x0
@@ -131,27 +110,37 @@ numChildren = 1
 ```
 
 #### 节点类型
-持久：客户端和服务端断开连接后，创建的节点不会删除。
 
-临时：客户端和服务端断开连接后，创建的节点会删除。
+- 持久：客户端和服务端断开连接后，创建的节点不会删除。
 
-序列：Zookeeper 给该节点名称进行顺序编号，创建 znode 时设置的顺序标识。顺序号是一个单调递增的计数器，由父节点维护。
+- 临时：客户端和服务端断开连接后，创建的节点会删除。
 
-持久节点、持久序列节点、临时节点、临时序列节点
+- 序列：Zookeeper 给该节点名称进行顺序编号，创建 znode 时设置的顺序标识。顺序号是一个单调递增的计数器，由父节点维护。
+
+组合：持久节点、持久序列节点、临时节点、临时序列节点
 
 #### 监听器及节点删除
+
 ![](../image/zookeeper_监听器原理.png)
 
 监听器原理总结：
+
 1. 启动 Zookeeper 客户端。
+
 2. 在客户端启动过程中，会创建两个线程。一个辅助网络连接通信（connect），一个负责监听（listener）。
+
 3. 通过`connect`线程将注册的监听事件发送给服务端。
+
 4. 在服务端的注册监听器列表中将注册的监听事件添加到列表中。
+
 5. 服务端监听到有数据或路径发生变化，就会将这个消息发送给`listener`线程。
+
 6. `listener`线程内部调用`process()`方法。
 
 常见的监听方式：
+
 1. 监听节点数据的变化：`get path [watch]`
+
 2. 监听子节点增减的变化：`ls path [watch]`
 
 注册一次，监听一次。想再次监听，需要再次注册。但是不会对二级子节点进行监听
@@ -159,46 +148,65 @@ numChildren = 1
 #### 客户端API
 
 ### 写数据原理
+
 客户端向服务端写数据流程：Zookeeper 遵循半数机制，集群中超过半数成功就会做出响应。
 
 ##### 客户端写请求发送给leader节点
+
 ![](../image/zookeeper_客户端写请求发送给leader节点.png)
 
 客户端写请求发送给leader节点大概步骤：
+
 1. 客户端向 Leader 节点发送写请求（写请求可以是创建节点、更新节点数据、删除节点等操作。）。
+
 2. Leader 节点接收并处理写请求，Leader 节点会将事务广播给 ZooKeeper 集群中的其他 Follower 节点，以便进行数据同步。
+
 3. Follower 节点接收到 Leader 节点广播的事务后，Follower 节点会将事务添加到自己的事务日志中，确保事务持久化到磁盘。然后 Follower 节点会向 Leader 节点发送 ACK（确认）信息。
+
 4. Leader 节点等待大多数节点（包括自己）的 ACK。
+
 5. 客户端收到写请求的响应。
 
 ##### 客户端写请求发送给follower节点
+
 ![](../image/zookeeper_客户端写请求发送给follower节点.png)
 
 客户端写请求发送给follower节点大概步骤：
+
 1. 客户端向 Follower 节点发送写请求（写请求可以是创建节点、更新节点数据、删除节点等操作。）。
+
 2. Follower 节点收到客户端发送的写请求后，会将写请求转发给 Leader 节点，因为只有 Leader 节点才能处理写操作。
+
 3. Leader 节点接收并处理写请求：Leader 节点收到来自 Follower 节点的写请求后，会按照`客户端写请求发送给leader节点流程的2-4步骤`处理该请求。
+
 4. Leader 节点将响应发送给 Follower 节点。
+
 5. Follower 节点将响应发送给客户端。
 
 ## 服务器动态上下限监听
 
-基本思路就是：服务器上限则创建临时节点，客户端监听父节点中子节点的变化。服务器下线时临时节点也会删除，watcher 也会通知 客户端，服务器下线了。
+基本思路就是：服务器上线则创建临时节点，客户端监听父节点中子节点的变化。服务器下线时临时节点也会删除，watcher 也会通知客户端服务器下线了。
 
 ## 分布式锁
-![](../image/zookeeper_分布式锁实现.png)
 
 ![](../image/zookeeper_分布式锁实现.png)
 
 zookeeper分布式锁流程：
+
 1. 客户端连接 zookeeper 集群，并创建临时序列节点。
+
 2. 判断自己创建的节点是不是当前节点下最小序列的节点：
-    1. 是，获取到锁。
-    2. 不是，对前一个节点进行监听。
+   
+   - 是，获取到锁。
+   
+   - 不是，对前一个节点进行监听。
+
 3. 获取到锁，处理完业务后，delete删除节点释放锁。
+
 4. 然后其他发起监听的客户端会判断释放的节点是不是自己前一个节点，如果是则唤醒当前节点，否则继续阻塞。
 
-- 分布式共享锁实现
+### 分布式共享锁实现
+
 ```java
 import org.apache.curator.RetryPolicy;
 import org.apache.curator.framework.CuratorFramework;
@@ -322,8 +330,11 @@ public class DistributedLock {
 ```
 
 Curator 客户端提供一个`InterProcessMutex`排他锁。省去造轮子的过程。
-## Zookeeper 算法 
+
+## Zookeeper 算法
+
 ### paxos 算法
+
 paxos 算法是一种居于消息传递且具有高度容错性的一致性算法。
 
 paxos 算法所解决的问题就是如何快速正确的在分布式系统中对某个数据值达成一致，并且保证不论发生任何异常，都不会破坏整个系统的一致性。
@@ -333,39 +344,61 @@ paxos 算法所解决的问题就是如何快速正确的在分布式系统中�
 在一个Paxos系统中，首先将所有节点划分为Proposer（提议者）、Acceptor（接收者）和Learner（学习者）。且每个节点都可以有多个角色。
 
 Paxos算法流程分为三个阶段：
-1. Prepare准备阶段
+
+1. Prepare准备阶段：
+   
    1. Proposer向多个Acceptor发出Propose请求Promise。
+   
    2. Acceptor针对接收到的Propose请求进行Promise。
-2. Accept接收阶段
+
+2. Accept接收阶段：
+   
    1. Proposer接收到多数Acceptor的Promise后，向Acceptor发出Propose请求。
+   
    2. Acceptor针对接收到的Propose请求进行Accept处理。
+
 3. Learn学习阶段：Proposer将表决的决议发送给所有Learners。
 
 ![](../image/zookeeper_paxos_算法流程解释.png)
 
 1. Prepare：`Proposer`生成全局唯一且递增的`Proposal ID`，向所有`Acceptor`发送`Propose`请求，无需携带提案内容，只携带`Proposal ID`即可。
+
 2. Promise：`Acceptor`收到`Propose`请求后，做出`两个承诺，一个应答`。
+   
    1. 不再接受`Proposal ID`小于等于当前请求的Propose请求。
+   
    2. 不再接受`Proposal ID`小于当前请求的Accept请求。
+   
    3. 不违背以前做出的`Promise`承诺下，响应已经`Accept`过的提案中`Proposal ID`最大的哪个提案的`Value`和`Proposal ID`，没有则返回 null。（Acceptor Promise）
+
 3. Propose：`Proposer`收到多数`Acceptor`的`Promise`应答后，从应答中选择`Proposal ID`最大的提案的`Value`，作为 本次要发起的提案。如果所有应答的提案`Value`都为null，则可以自己指定提案`Value`。然后携带当前`Proposal ID`，向所有`Acceptor`发送`Propose`请求。
+
 4. Accept：`Acceptor`收到`Propose`请求后，在不违背之前做出的承诺下，接受并持久化当前`Proposal ID`和提案`Value`。
+
 5. Learn：`Proposer`收到多数`Acceptor`的`Accept`后，决议形成，将决议发送给所有`Learner`。
 
 ### ZAB 协议
+
 ZAB协议借鉴了Paxos算法，是专门为Zookeeper设计的支持崩溃恢复的原子广播协议。基于该协议，Zookeeper设计为只有一台客户端（Leader）负责处理外部的写事务请求，然后Leader客户端将数据同步到其他Follower节点。在Zookeeper中只有一个Leader可以发起提案。
 
 zab协议包括两种基本模式：消息广播、崩溃恢复。
 
 #### 消息广播
+
 ![](../image/zookeeper_zab协议_消息广播.png)
 
 消息广播总结：
+
 1. 客户端发起一个写操作请求。
+
 2. `Leader`服务器将客户端的请求转化为事务`Proposal`提案，同时为每个`Proposal`分配一个全局的ID，即zxid。
+
 3. `Leader`服务器会为每个`Follower`服务器都分配一个队列，然后将需要广播的`Proposal`依次放到队列中，并且根据`FIFO`策略进行消息发送。
+
 4. `Follower`接收到`Proposal`后，首先会将其以事务日志的方式写入本地磁盘中，写入成功后向`Leader`响应一个`Ack`消息。
+
 5. `Leader`接收到超过半数以上`Follower`的`Ack`响应消息后（包括Leader自身），即认为消息发送成功，可以发送`commit`消息。
+
 6. `Leader`向所有`Follower`广播`commit`消息，同时`Leader`也会完成事务提交。`Follower`接收到`commit`消息后，会将上一条事务提交。
 
 Zookeeper采用Zab协议的核心，就是只要有一台服务器提交了Proposal，就要确保所有的服务器最终都能正确提交Proposal。
@@ -373,52 +406,77 @@ Zookeeper采用Zab协议的核心，就是只要有一台服务器提交了Propo
 个人理解：Proposal可以理解为客户端的一次写操作（创建节点、修改节点、删除节点等），只有Leader有写操作权限，所以由Leader将操作具体内容（创建节点、修改节点、删除节点等）广播给Follower。提交事务就是将数据永久持久化到磁盘中。
 
 ZAB协议针对事务请求的处理过程类似于两阶段提交过程：
+
 1. 广播事务阶段。
+
 2. 广播提交操作。
 
 两阶段提交有可能会因为Leader宕机带来数据不一致。如：
+
 1. Leader发起一个事务Proposal后宕机了，Follower来不及Proposal。
+
 2. Leader收到半数ACK后宕机，来不及向Follower发送commit；
 
 一旦Leader服务器与过半Follower失去联系，那么就会进入崩溃恢复模式。
+
 #### 崩溃恢复
+
 ![](../image/zookeeper_zab协议_崩溃恢复.png)
 
 假设异常情况：
+
 1. 一个事务在Leader提出之后，Leader宕机。
+
 2. 一个事务在Leader提交后，且过半的Follower都响应Ack了，但是Leader在commit消息发出之前宕机。
 
 Zab协议崩溃恢复需要满足以下两个要求：
+
 1. 确保已经被Leader提交的提案Proposal，必须最终被所有的Follower服务器提交。（已经产生的提案，Follower必须执行）
+
 2. 确保丢弃已经被Leader提出，但是还没有被提交的Proposal。
 
 崩溃恢复主要包括两部分：Leader选举、数据恢复。
-#####　Leader选举
+
+##### Leader选举
+
 ![](../image/zookeeper_zab协议_崩溃恢复＿Leader选举.png)
 
 Zab协议需要保证选举出来的Leader满足以下条件：
+
 1. 新选举的Leader不能包含未提交的Proposal。（新Leader必须都是已经提交了Proposal的Follower节点（Ack））
+
 2. 新选举的Leader节点中是最大的zxid。（可以避免Leader服务器检查Proposal的提交和丢弃工作）
-#####　数据恢复
+
+##### 数据恢复
+
 ![](../image/zookeeper_zab协议_崩溃恢复＿Leader选举.png)
 
 Zab数据同步：
+
 1. 完成Leader选举后，在正式开始工作之前（即接收事务请求，然后提出新的Proposal），Leader会先确认事务日志中的所有Proposal是否已经被集群中过半的服务器commit。
+
 2. Leader需要确保所有的Follower服务器能够接收到每一条事务的Proposal，并且能够将所有已提交的事务Proposal应用到内存数据中。等到Follower将所有尚未同步的事务Proposal都从Leader上同步，并且应用到内存数据中后，Leader才会把该Follower加入到真正可用的Follower列表中。
 
 ### CAP理论
+
 1. 一致性（Consistency）：指数据在多个副本之间是否能够保持数据一致的特性。在一致性的需求下，当一个系统在数据一致性的状态下执行变更操作后，应该保证系统的数据仍处于一致的状态。
+
 2. 可用性（Available）：指系统提供的服务必须一直处于可用状态。对于用户的每一次操作请求总能在有限时间内返回结果。
+
 3. 分区容错性（Partition Tolerance）：指在遇到任何网络分区故障时，仍然需要能够保证对外提供满足一致性和可用性的服务。除非整个网络环境都出现故障。
 
 Zookeeper保证的是CP：
+
 1. Zookeeper不能保证每次服务请求的可用性。（在极端情况下，Zookeeper可能会丢弃以下请求，消费者需要重新请求才能获得结果）
+
 2. Leader选举时集群都是不可用。
 
 一个分布式系统不可能同时满足这三个。最多只能同时满足两个，P是必须的，CP或者AP。
 
 ## 源码
+
 ### 持久化源码
+
 Leader和Follower的数据会在内存和磁盘中各保存一份，素以需要将内存中的数据持久化到磁盘中。
 
 在` org.apache.zookeeper.server.persistence`包下的都是和序列化相关的代码。
@@ -428,31 +486,34 @@ Leader和Follower的数据会在内存和磁盘中各保存一份，素以需要
 等到服务器空闲时会将内存数据写入到`TxnLog编辑日志`，再从`TxnLog编辑日志`写入到`snapShot快照`（磁盘）。
 
 #### 快照
+
 ```java
 public interface SnapShot {
-    
+
     // 反序列化
     long deserialize(DataTree dt, Map<Long, Integer> sessions) 
         throws IOException;
-    
+
     // 序列化
     void serialize(DataTree dt, Map<Long, Integer> sessions, 
             File name) 
         throws IOException;
-    
+
     // 查找最近的快照文件
     File findMostRecentSnapshot() throws IOException;
-    
+
     // 释放资源
     void close() throws IOException;
 }
 ```
+
 #### 操作日志
+
 ```java
 public interface TxnLog {
     // 设置监控 fsync 的阈值
     void setServerStats(ServerStats serverStats);
-    
+
     // 回滚日志
     void rollLog() throws IOException;
     // 追加日志
@@ -460,25 +521,25 @@ public interface TxnLog {
 
     // 读取日志
     TxnIterator read(long zxid) throws IOException;
-    
+
     // 获取事务id
     long getLastLoggedZxid() throws IOException;
-    
+
     // 删除日志
     boolean truncate(long zxid) throws IOException;
-    
+
     // 获取此事务日志的 dbid
     long getDbId() throws IOException;
-    
+
     // 提交
     void commit() throws IOException;
 
     // 事务日志运行的同步时间(以毫秒为单位)
     long getTxnLogSyncElapsedTime();
-   
+
     // 释放资源
     void close() throws IOException;
-    
+
     // 用于读取事务日志的迭代接口
     public interface TxnIterator {
         TxnHeader getHeader();
@@ -491,7 +552,9 @@ public interface TxnLog {
 ```
 
 ### 序列化源码
-`zookeeper-jute`是关于Zookeeper序列化相关源码。
+
+`zookeeper-jute`包是关于Zookeeper序列化相关源码。
+
 ```java
 // 序列化实现 OutputArchive 接口
 // 反序列化实现 InputArchive 接口
@@ -543,9 +606,11 @@ public interface InputArchive {
 ```
 
 ### 1、服务端初始化
+
 ![img.png](../image/zookeeper_源码_服务端初始化_不包括选举机制.png)
 
 #### 启动脚本
+
 ```shell
 # zkServer.sh
 if [ -e "$ZOOBIN/../libexec/zkEnv.sh" ]; then
@@ -586,12 +651,12 @@ else
     echo "JMX disabled by user request" >&2
     ZOOMAIN="org.apache.zookeeper.server.quorum.QuorumPeerMain"
  fi
- 
+
  if [ "x$2" != "x" ]
 then
     ZOOCFG="$ZOOCFGDIR/$2"
 fi
-    
+
 # ... ...
 case $1 in
 start)
@@ -619,22 +684,25 @@ fi
 ZOOCFG="$ZOOCFGDIR/$ZOOCFG"
 ```
 
-所以Zookeeper服务端的入口是`org.apache.zookeeper.server.quorum.QuorumPeerMain#main`。
+Zookeeper服务端的入口是`org.apache.zookeeper.server.quorum.QuorumPeerMain#main`。
+
 #### 解析配置文件
-1. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#parse`
+
+1. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#parse`：
+
 ```java
 public void parse(String path) throws ConfigException {
   LOG.info("Reading configuration from: " + path);
- 
+
   try {
       // 获取文件路径
       File configFile = (new VerifyingFileFactory.Builder(LOG)
           .warnForRelativePath()
           .failForNonExistingPath()
           .build()).create(path);
-          
+
       Properties cfg = new Properties();
-      
+
       // IO流的形式读取配置文件
       FileInputStream in = new FileInputStream(configFile);
       try {
@@ -644,7 +712,7 @@ public void parse(String path) throws ConfigException {
       } finally {
           in.close();
       }
-      
+
       // 解析zoo.cfg
       parseProperties(cfg);
   } catch (IOException e) {
@@ -652,11 +720,13 @@ public void parse(String path) throws ConfigException {
   } catch (IllegalArgumentException e) {
       throw new ConfigException("Error processing " + path, e);
   }   
-  
+
   // 省略部分代码 .. 动态配置文件 ...
 }
 ```
-2. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#parseProperties`
+
+2. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#parseProperties`：
+
 ```java
 public void parseProperties(Properties zkProp)
     throws IOException, ConfigException {
@@ -665,7 +735,7 @@ public void parseProperties(Properties zkProp)
         String clientPortAddress = null;
         String secureClientPortAddress = null;
         VerifyingFileFactory vff = new VerifyingFileFactory.Builder(LOG).warnForRelativePath().build();
-        
+
         // zoo.cfg 能够配置的所有配置项，遍历 Properties
         for (Entry<Object, Object> entry : zkProp.entrySet()) {
             String key = entry.getKey().toString().trim();
@@ -762,11 +832,11 @@ public void parseProperties(Properties zkProp)
             }
         }
         // ... 省略部分代码，检查配置参数是否合法
-        
+
         // backward compatibility - dynamic configuration in the same file as
         // static configuration params see writeDynamicConfig()
         if (dynamicConfigFileStr == null) {
-            
+
             // 解析 myid、初始化 ClientPort 等信息
             setupQuorumPeerConfig(zkProp, true);
             if (isDistributed() && isReconfigEnabled()) {
@@ -777,12 +847,14 @@ public void parseProperties(Properties zkProp)
         }
     }
 ```
-3. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#setupQuorumPeerConfig`
+
+3. `org.apache.zookeeper.server.quorum.QuorumPeerConfig#setupQuorumPeerConfig`：
+
 ```java
 void setupQuorumPeerConfig(Properties prop, boolean configBackwardCompatibilityMode)
       throws IOException, ConfigException {
   quorumVerifier = parseDynamicConfig(prop, electionAlg, true, configBackwardCompatibilityMode);
-  
+
   // 服务id 就是 myid
   setupMyId();
   setupClientPort();
@@ -813,10 +885,13 @@ private void setupMyId() throws IOException {
   }
 }
 ```
-主脉络的流程就分析完了。
+
+解析配置文件的主脉络流程就分析完了。
 
 #### 删除过期快照
-1. `org.apache.zookeeper.server.DatadirCleanupManager#start`
+
+1. `org.apache.zookeeper.server.DatadirCleanupManager#start`：
+
 ```java
 // config.getSnapRetainCount() 默认=3，config.getPurgeInterval() 默认=0
 // DatadirCleanupManager purgeMgr = new DatadirCleanupManager(config.getDataDir(), config.getDataLogDir(), config.getSnapRetainCount(), config.getPurgeInterval());
@@ -866,7 +941,9 @@ static class PurgeTask extends TimerTask {
   }
 }
 ```
+
 简单看一下`PurgeTxnLog.purge()`源码：
+
 ```java
 public static void purge(File dataDir, File snapDir, int num) throws IOException {
    // 最少保留3个快照
@@ -885,10 +962,13 @@ public static void purge(File dataDir, File snapDir, int num) throws IOException
   }
 }
 ```
-主脉络的流程就分析完了。
+
+删除过期快照的主脉络流程就分析完了。
 
 #### 通信初始化
-1. `org.apache.zookeeper.server.ServerCnxnFactory#createFactory()`
+
+1. `org.apache.zookeeper.server.ServerCnxnFactory#createFactory()`：
+
 ```java
 static public ServerCnxnFactory createFactory() throws IOException {
   // 默认就是 NIOServerCnxnFactory
@@ -898,7 +978,7 @@ static public ServerCnxnFactory createFactory() throws IOException {
       serverCnxnFactoryName = NIOServerCnxnFactory.class.getName();
   }
   try {
-      
+
       // 创建 NIOServerCnxnFactory
       ServerCnxnFactory serverCnxnFactory = (ServerCnxnFactory) Class.forName(serverCnxnFactoryName)
               .getDeclaredConstructor().newInstance();
@@ -912,7 +992,9 @@ static public ServerCnxnFactory createFactory() throws IOException {
   }
 }
 ```
-2. `org.apache.zookeeper.server.NIOServerCnxnFactory#configure`
+
+2. `org.apache.zookeeper.server.NIOServerCnxnFactory#configure`：
+
 ```java
 public void configure(InetSocketAddress addr, int maxcc, boolean secure) throws IOException {
   if (secure) {
@@ -955,20 +1037,24 @@ public void configure(InetSocketAddress addr, int maxcc, boolean secure) throws 
   acceptThread = new AcceptThread(ss, addr, selectorThreads);
 }
 ```
-主脉络的流程就分析完了。
+
+通信初始化的主脉络流程就分析完了。
+
 #### 加载编辑日志和快照
-1. `org.apache.zookeeper.server.quorum.QuorumPeer#start`
+
+1. `org.apache.zookeeper.server.quorum.QuorumPeer#start`：
+
 ```java
 public synchronized void start() {
   if (!getView().containsKey(myid)) {
       throw new RuntimeException("My id " + myid + " not in the peer list");
    }
-   
+
   // 加载日志数据到内存中
   loadDataBase();
   startServerCnxnFactory();
   try {
-      
+
       /*
          启动adminServer，通过浏览器可以访问
          http://localhost:8080/commands/
@@ -978,25 +1064,27 @@ public synchronized void start() {
       LOG.warn("Problem starting AdminServer", e);
       System.out.println(e);
   }
-  
+
   // 启动快速选举
   startLeaderElection();
-  
+
   // 调用 Thread.start();
   super.start();
 }
 ```
-2. `org.apache.zookeeper.server.quorum.QuorumPeer#loadDataBase`
+
+2. `org.apache.zookeeper.server.quorum.QuorumPeer#loadDataBase`：
+
 ```java
 private void    loadDataBase() {
   try {
-  
+
       // 从磁盘将数据加载到内存中
       zkDb.loadDataBase();
 
       // 获取最新的 zxid
       long lastProcessedZxid = zkDb.getDataTree().lastProcessedZxid;
-      
+
       // 获取 zxid 对应的 EPOCH（代号）
       long epochOfZxid = ZxidUtils.getEpochFromZxid(lastProcessedZxid);
       try {
@@ -1011,7 +1099,9 @@ private void    loadDataBase() {
   }
 }
 ```
-3. `org.apache.zookeeper.server.ZKDatabase#loadDataBase`
+
+3. `org.apache.zookeeper.server.ZKDatabase#loadDataBase`：
+
 ```java
 public long loadDataBase() throws IOException {
   long zxid = snapLog.restore(dataTree, sessionsWithTimeouts, commitProposalPlaybackListener);
@@ -1019,7 +1109,9 @@ public long loadDataBase() throws IOException {
   return zxid;
 }
 ```
-4. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#restore`
+
+4. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#restore`：
+
 ```java
 public long restore(DataTree dt, Map<Long, Integer> sessions, PlayBackListener listener) throws IOException {
   // 1、恢复快照
@@ -1037,7 +1129,9 @@ public long restore(DataTree dt, Map<Long, Integer> sessions, PlayBackListener l
   return finalizer.run();
 }
 ```
-5. `org.apache.zookeeper.server.persistence.SnapShot#deserialize`
+
+5. `org.apache.zookeeper.server.persistence.SnapShot#deserialize`：
+
 ```java
 public long deserialize(DataTree dt, Map<Long, Integer> sessions) throws IOException {
   // we run through 100 snapshots (not all of them)
@@ -1049,17 +1143,17 @@ public long deserialize(DataTree dt, Map<Long, Integer> sessions) throws IOExcep
   }
   File snap = null;
   boolean foundValid = false;
-  
+
   // 依次遍历每一个快照的数据
   for (int i = 0, snapListSize = snapList.size(); i < snapListSize; i++) {
       snap = snapList.get(i);
       LOG.info("Reading snapshot " + snap);
-      
+
       // 反序列化 环境准备
       try (InputStream snapIS = new BufferedInputStream(new FileInputStream(snap));
            CheckedInputStream crcIn = new CheckedInputStream(snapIS, new Adler32())) {
           InputArchive ia = BinaryInputArchive.getArchive(crcIn);
-          
+
           // 反序列化
           deserialize(dt, sessions, ia);
           long checkSum = crcIn.getChecksum().getValue();
@@ -1080,7 +1174,9 @@ public long deserialize(DataTree dt, Map<Long, Integer> sessions) throws IOExcep
   return dt.lastProcessedZxid;
 }
 ```
-6. `org.apache.zookeeper.server.persistence.FileSnap#deserialize`
+
+6. `org.apache.zookeeper.server.persistence.FileSnap#deserialize`：
+
 ```java
 public void deserialize(DataTree dt, Map<Long, Integer> sessions,
       InputArchive ia) throws IOException {
@@ -1091,12 +1187,14 @@ public void deserialize(DataTree dt, Map<Long, Integer> sessions,
               + header.getMagic() +
               " !=  " + FileSnap.SNAP_MAGIC);
   }
-  
+
   // 反序列化快照
   SerializeUtils.deserializeSnapshot(dt,ia,sessions);
 }
 ```
-7. `org.apache.zookeeper.server.util.SerializeUtils#deserializeSnapshot`
+
+7. `org.apache.zookeeper.server.util.SerializeUtils#deserializeSnapshot`：
+
 ```java
 public static void deserializeSnapshot(DataTree dt,InputArchive ia,
       Map<Long, Integer> sessions) throws IOException {
@@ -1109,26 +1207,28 @@ public static void deserializeSnapshot(DataTree dt,InputArchive ia,
       }
       count--;
   }
-  
+
   // 反序列化
   dt.deserialize(ia, "tree");
 }
 ```
-8. `org.apache.zookeeper.server.DataTree#deserialize`
+
+8. `org.apache.zookeeper.server.DataTree#deserialize`：
+
 ```java
 public void deserialize(InputArchive ia, String tag) throws IOException {
   aclCache.deserialize(ia);
   nodes.clear();
   pTrie.clear();
   String path = ia.readString("path");
-  
+
   // 循环将快照数据恢复到 DataTree
   while (!"/".equals(path)) {
-  
+
       // 每次循环创建一个节点对象
       DataNode node = new DataNode();
       ia.readRecord(node, "node");
-      
+
       // 将 DataNode恢复到 DataTree
       nodes.put(path, node);
       synchronized (node) {
@@ -1138,7 +1238,7 @@ public void deserialize(InputArchive ia, String tag) throws IOException {
       if (lastSlash == -1) {
           root = node;
       } else {
-      
+
           // // 处理父节点
           String parentPath = path.substring(0, lastSlash);
           DataNode parent = nodes.get(parentPath);
@@ -1146,7 +1246,7 @@ public void deserialize(InputArchive ia, String tag) throws IOException {
               throw new IOException("Invalid Datatree, unable to find " +
                       "parent " + parentPath + " of path " + path);
           }
-          
+
           // // 处理子节点
           parent.addChild(path.substring(lastSlash + 1));
           long eowner = node.stat.getEphemeralOwner();
@@ -1176,23 +1276,25 @@ public void deserialize(InputArchive ia, String tag) throws IOException {
   aclCache.purgeUnused();
 }
 ```
-9. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#fastForwardFromEdits`
+
+9. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#fastForwardFromEdits`：
+
 ```java
 public long fastForwardFromEdits(DataTree dt, Map<Long, Integer> sessions, PlayBackListener listener) throws IOException {
 
   // 从快照的zxid + 1位置开始恢复
   TxnIterator itr = txnLog.read(dt.lastProcessedZxid+1);
-  
+
   // 快照中最大的 zxid，在执行编辑日志时，这个值会不断更新，直到所有操作执行完
   long highestZxid = dt.lastProcessedZxid;
   TxnHeader hdr;
   try {
-  
+
       // 从 lastProcessedZxid事务编号器开始，不断的从编辑日志中恢复剩下的还没有恢复的数据
       while (true) {
           // iterator points to
           // the first valid txn when initialized
-          
+
           // 获取事务头信息，包括 zxid
           hdr = itr.getHeader();
           if (hdr == null) {
@@ -1206,7 +1308,7 @@ public long fastForwardFromEdits(DataTree dt, Map<Long, Integer> sessions, PlayB
               highestZxid = hdr.getZxid();
           }
           try {
-              
+
               // 根据编辑日志恢复数据到 DataTree 每 执行一次，对应的事务 idhighestZxid + 1
               processTransaction(hdr,dt,sessions, itr.getTxn());
           } catch(KeeperException.NoNodeException e) {
@@ -1225,7 +1327,9 @@ public long fastForwardFromEdits(DataTree dt, Map<Long, Integer> sessions, PlayB
   return highestZxid;
 }
 ```
-10. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#processTransaction`
+
+10. `org.apache.zookeeper.server.persistence.FileTxnSnapLog#processTransaction`：
+
 ```java
 public void processTransaction(TxnHeader hdr,DataTree dt, Map<Long, Integer> sessions, Record txn)
   throws KeeperException.NoNodeException {
@@ -1253,7 +1357,7 @@ public void processTransaction(TxnHeader hdr,DataTree dt, Map<Long, Integer> ses
       rc = dt.processTxn(hdr, txn);
       break;
   default:
-  
+
       // 处理事务请求，创建节点、删除节点和其他的各种事务操作等
       rc = dt.processTxn(hdr, txn);
   }
@@ -1271,7 +1375,9 @@ public void processTransaction(TxnHeader hdr,DataTree dt, Map<Long, Integer> ses
   }
 }
 ```
-11. `org.apache.zookeeper.server.DataTree#processTxn`
+
+11. `org.apache.zookeeper.server.DataTree#processTxn`：
+
 ```java
 public ProcessTxnResult processTxn(TxnHeader header, Record txn, boolean isSubTxn)
     {
@@ -1288,7 +1394,7 @@ public ProcessTxnResult processTxn(TxnHeader header, Record txn, boolean isSubTx
                 case OpCode.create:
                     CreateTxn createTxn = (CreateTxn) txn;
                     rc.path = createTxn.getPath();
-                    
+
                     // 创建节点
                     createNode(
                             createTxn.getPath(),
@@ -1314,38 +1420,50 @@ public ProcessTxnResult processTxn(TxnHeader header, Record txn, boolean isSubTx
         return rc;
     }
 ```
+
 ZooKeeper 服务端的初始化流程如下：
-```txt
+
 1. 读取配置文件：
-   ZooKeeper 服务端会读取配置文件，包括服务器的IP地址、端口号、数据目录、最大连接数等配置信息。
+   
+   - ZooKeeper 服务端会读取配置文件，包括服务器的IP地址、端口号、数据目录、最大连接数等配置信息。
+
 2. 初始化数据目录：
-   ZooKeeper 会检查数据目录是否存在，如果不存在则创建。数据目录用于存储 ZooKeeper 的数据和事务日志。
+   
+   - ZooKeeper 会检查数据目录是否存在，如果不存在则创建。数据目录用于存储 ZooKeeper 的数据和事务日志。
+
 3. 加载数据和事务日志：
-   如果数据目录中存在数据和事务日志，ZooKeeper 会加载它们，并恢复到最新的状态。
+   
+   - 如果数据目录中存在数据和事务日志，ZooKeeper 会加载它们，并恢复到最新的状态。
+
 4. 初始化服务器状态：
-   ZooKeeper 会初始化服务器状态，包括服务器的 ID、IP 地址、端口号等信息，并根据配置文件中的参数进行初始化。
+   
+   - ZooKeeper 会初始化服务器状态，包括服务器的 ID、IP 地址、端口号等信息，并根据配置文件中的参数进行初始化。
+
 5. 启动内部线程：
-   ZooKeeper 会启动多个内部线程，包括选举线程、请求处理线程等，用于处理客户端请求、管理集群状态等。
-```
+   
+   - ZooKeeper 会启动多个内部线程，包括选举线程、请求处理线程等，用于处理客户端请求、管理集群状态等。
 
 ### 2、选举机制
-选举机制大致流程
+
+选举机制大致流程：
 
 ![img.png](../image/zookeeper_源码_选举机制大致流程.png)
 
 #### 选举准备
+
 创建选票、通络通信监听、发送和接收的消息队列等等。
 
 ![img.png](../image/zookeeper_源码_选举机制准备.png)
 
-1. `org.apache.zookeeper.server.quorum.QuorumPeer#startLeaderElection`
+1. `org.apache.zookeeper.server.quorum.QuorumPeer#startLeaderElection`：
+
 ```java
 synchronized public void startLeaderElection() {
  try {
- 
+
      // 当前节点在启动的时候，初始状态都是LOOKING，都会先投自己一票
      if (getPeerState() == ServerState.LOOKING) {
-     
+
          // 创建选票，选票包括myid（serverid）、zxid（事务id）、epoch（当前选举轮数）
          currentVote = new Vote(myid, getLastLoggedZxid(), getCurrentEpoch());
      }
@@ -1367,12 +1485,14 @@ synchronized public void startLeaderElection() {
           throw new RuntimeException(e);
       }
   }
-  
+
   // 根据配置文件配置的选举算法类型创建选举算法，新版zookeeper默认FastLeaderElection，这里electionType=3
   this.electionAlg = createElectionAlgorithm(electionType);
 }
 ```
-2. `org.apache.zookeeper.server.quorum.Vote#Vote()`
+
+2. `org.apache.zookeeper.server.quorum.Vote#Vote()`：
+
 ```java
 public Vote(long id,
               long zxid,
@@ -1385,14 +1505,16 @@ public Vote(long id,
   this.state = ServerState.LOOKING;
 }
 ```
-3. `org.apache.zookeeper.server.quorum.QuorumPeer#createElectionAlgorithm`
+
+3. `org.apache.zookeeper.server.quorum.QuorumPeer#createElectionAlgorithm`：
+
 ```java
 protected Election createElectionAlgorithm(int electionAlgorithm){
   Election le=null;
 
   //TODO: use a factory rather than a switch
   switch (electionAlgorithm) {
-  
+
   // 在 3.7.1 版本中默认 FastLeaderElection
   case 0:
       le = new LeaderElection(this);
@@ -1404,17 +1526,17 @@ protected Election createElectionAlgorithm(int electionAlgorithm){
       le = new AuthFastLeaderElection(this, true);
       break;
   case 3:
-  
+
       // QuorumCnxManager 负责发起网络请求（将投票发送出去或者接收其他节点发送的投票）
       QuorumCnxManager qcm = createCnxnManager();
       QuorumCnxManager oldQcm = qcmRef.getAndSet(qcm);
-      
+
       // 如果已经在选举了，则停止选举
       if (oldQcm != null) {
           LOG.warn("Clobbering already-set QuorumCnxManager (restarting leader election?)");
           oldQcm.halt();
       }
-      
+
       /*
          QuorumCnxManager.Listener 是一个内部类，继承了 Thread
          所以 listener.start() 只需查看其 run() 方法即可
@@ -1426,10 +1548,10 @@ protected Election createElectionAlgorithm(int electionAlgorithm){
       QuorumCnxManager.Listener listener = qcm.listener;
       if(listener != null){
           listener.start();
-          
+
           // 真正选举的地方
           FastLeaderElection fle = new FastLeaderElection(this, qcm);
-          
+
           // 这个`start()`调用的是`messenger.start()`
           // `messenger.start()` 内部启动了 WorkerReceiver 和 WorkerSender线程
           fle.start();
@@ -1444,12 +1566,16 @@ protected Election createElectionAlgorithm(int electionAlgorithm){
   return le;
 }
 ```
-`createElectionAlgorithm()`方法大致做了三件事：
-- 1、启动`QuorumCnxManager.Listener`线程
-- 2、启动`FastLeaderElection.Messenger.WorkerReceiver`线程
-- 3、启动`FastLeaderElection.Messenger.WorkerSender`线程
 
-4. `org.apache.zookeeper.server.quorum.QuorumPeer#createCnxnManager`
+`createElectionAlgorithm()`方法大致做了三件事：
+
+- 1、启动`QuorumCnxManager.Listener`线程
+
+- 2、启动`FastLeaderElection.Messenger.WorkerReceiver`线程
+
+- 3、启动`FastLeaderElection.Messenger.WorkerSender`线程
+4. `org.apache.zookeeper.server.quorum.QuorumPeer#createCnxnManager`：
+
 ```java
 public QuorumCnxManager createCnxnManager() {
   return new QuorumCnxManager(this,
@@ -1463,7 +1589,9 @@ public QuorumCnxManager createCnxnManager() {
           this.isQuorumSaslAuthEnabled());
 }
 ```
-看一下创建`QuorumCnxManager`的源码，`org.apache.zookeeper.server.quorum.QuorumCnxManager#QuorumCnxManager`。
+
+看一下创建`QuorumCnxManager`的源码，`org.apache.zookeeper.server.quorum.QuorumCnxManager#QuorumCnxManager`：
+
 ```java
 public QuorumCnxManager(QuorumPeer self,
                       final long mySid,
@@ -1499,7 +1627,9 @@ public QuorumCnxManager(QuorumPeer self,
   listener.setName("QuorumPeerListener");
 }
 ```
-5. `org.apache.zookeeper.server.quorum.QuorumCnxManager.Listener#run`
+
+5. `org.apache.zookeeper.server.quorum.QuorumCnxManager.Listener#run`：
+
 ```java
 public void run() {
    int numRetries = 0;
@@ -1534,7 +1664,7 @@ public void run() {
            ss.bind(addr);
            while (!shutdown) {
                try {
-                   
+
                    // 阻塞等待其他节点投票
                    client = ss.accept();
                    setSockOpts(client);
@@ -1548,25 +1678,27 @@ public void run() {
                }
            }
        } catch (IOException e) {
-           
+
    }
    // ... 省略 ...
 }
 ```
-6. `org.apache.zookeeper.server.quorum.FastLeaderElection`
+
+6. `org.apache.zookeeper.server.quorum.FastLeaderElection`：
+
 ```java
 public FastLeaderElection(QuorumPeer self, QuorumCnxManager manager){
    this.stop = false;
    this.manager = manager;
    starter(self, manager);
 }
-    
+
 // 创建发送队列和接收队列
 private void starter(QuorumPeer self, QuorumCnxManager manager) {
    this.self = self;
    proposedLeader = -1;
    proposedZxid = -1;
-   
+
    // 发送阻塞队列
    sendqueue = new LinkedBlockingQueue<ToSend>();
    // 接收阻塞队列
@@ -1587,13 +1719,17 @@ Messenger(QuorumCnxManager manager) {
    this.wrThread.setDaemon(true);
 }
 ```
-sendqueue、 recvqueue、 WorkerReceiver WorkerSender、Listener，这五个对象是在 选举准备时创建的。
+
+sendqueue、 recvqueue、 WorkerReceiver WorkerSender、Listener，这五个对象是在选举准备时创建的。
+
 #### 选举执行
+
 ![img.png](../image/zookeeper_源码_选举机制执行.png)
 
 queueSendMap SendWorker、RecvWorker，这三个对象是在真正选举的过程中创建的。
 
-1. `org.apache.zookeeper.server.quorum.QuorumPeer#run`
+1. `org.apache.zookeeper.server.quorum.QuorumPeer#run`：
+
 ```java
 public void run() {
    while (running) {
@@ -1650,7 +1786,9 @@ public void run() {
    }
 }
 ```
-2. `org.apache.zookeeper.server.quorum.FastLeaderElection#lookForLeader`
+
+2. `org.apache.zookeeper.server.quorum.FastLeaderElection#lookForLeader`：
+
 ```java
 public Vote lookForLeader() throws InterruptedException {
   try {
@@ -1665,20 +1803,20 @@ public Vote lookForLeader() throws InterruptedException {
      self.start_fle = Time.currentElapsedTime();
   }
   try {
-      
+
       // 用来存储接收到的投票
       HashMap<Long, Vote> recvset = new HashMap<Long, Vote>();
       HashMap<Long, Vote> outofelection = new HashMap<Long, Vote>();
       int notTimeout = finalizeWait;
       synchronized(this){
-      
+
           // 逻辑时钟 +1
           logicalclock.incrementAndGet();
-          
+
           // 更新选票
           updateProposal(getInitId(), getInitLastLoggedZxid(), getPeerEpoch());
       }
-              
+
       /*
          异步广播选票（放入发送dui），把初始的投票数据发送出去（即第一轮投票）。假设3个zk节点，选票为 Vote(1, 0, 1)
          发送第1个节点（自身）的选票会投递到 QuorumCnxManager的recvQueue<Message>中，由 WorkerReceiver线程 pollRecvQueue() 处理
@@ -1692,19 +1830,19 @@ public Vote lookForLeader() throws InterruptedException {
        */
 
       while ((self.getPeerState() == ServerState.LOOKING) && (!stop)){
-          
+
           // recvqueue 的数据是通过 FastLeaderElection 内部的 WorkerReceiver 线程 offer 的
           // 从 recvqueue 队列中拉数据（投给自己的选票）
           Notification n = recvqueue.poll(notTimeout, TimeUnit.MILLISECONDS);
 
           // 如果为 null 则没有获取到外部的投票，可能是集群之间的节点没有连接上
           if(n == null){
-              
+
               // 检查 queueSendMap 缓存的队列是否都为空，都为空说明所有的票据都已经发布，那么再次发送投票
               if(manager.haveDelivered()){
                   sendNotifications();
               } else {
-                  
+
                   // 再次尝试发起连接发送选票
                   manager.connectAll();
               }
@@ -1713,14 +1851,14 @@ public Vote lookForLeader() throws InterruptedException {
               notTimeout = (tmpTimeOut < maxNotificationInterval ? tmpTimeOut : maxNotificationInterval);
               LOG.info("Notification time out: " + notTimeout);
           } 
-          
+
           // 校验收到的网络投票是否来自配置文件中的 server 列表中的服务器（验证节点serverId是否有效）
           else if (validVoter(n.sid) && validVoter(n.leader)) {
-              
+
               // 判断收到的投票者的状态，如果是 LOOKING 则代表在找 leader
               switch (n.state) {
               case LOOKING:
-              
+
                   // 如果收到的选举的epoch（可理解为周期、轮数）比自己的逻辑时钟大，说明自己的投票轮数落后
                   // 比较 epoch、zxid、sid 谁大就更改选票投谁，totalOrderPredicate() 返回true，说明网络投票优先自己，改投收到的选票信息
                   if (n.electionEpoch > logicalclock.get()) {
@@ -1731,10 +1869,10 @@ public Vote lookForLeader() throws InterruptedException {
                       } else {
                           updateProposal(getInitId(), getInitLastLoggedZxid(), getPeerEpoch());
                       }
-                      
+
                       // 再次发送通知给其他节点，说我已经赞同了提案中的节点为 leader
                       sendNotifications();
-                      
+
                   // 如果收到的选举的epoch（可理解为周期、轮数）比自己的逻辑时钟小，说明收到的投票消息过期，丢弃
                   } else if (n.electionEpoch < logicalclock.get()) {
                       if(LOG.isDebugEnabled()){
@@ -1743,11 +1881,11 @@ public Vote lookForLeader() throws InterruptedException {
                                   + ", logicalclock=0x" + Long.toHexString(logicalclock.get()));
                       }
                       break;
-                      
+
                   // epoch相同，则比较 zxid、sid 谁更大，如果返回true，说明网络投票的胜出，更新选票
                   } else if (totalOrderPredicate(n.leader, n.zxid, n.peerEpoch, proposedLeader, proposedZxid, proposedEpoch)) {
                       updateProposal(n.leader, n.zxid, n.peerEpoch);
-                      
+
                       // 再次发送通知给其他节点，说我已经赞同了提案中的节点为 leader
                       sendNotifications();
                   }
@@ -1770,14 +1908,14 @@ public Vote lookForLeader() throws InterruptedException {
 
                       // 如果 recvqueue 真的没有任务投票数据了，就可以确认节点状态，退出 leader 选举
                       if (n == null) {
-                          
+
                           // 更新节点类型  LEADING | FOLLOWING | OBSERVING
                           self.setPeerState((proposedLeader == self.getId()) ? ServerState.LEADING: learningState());
                           Vote endVote = new Vote(proposedLeader, proposedZxid, logicalclock.get(), proposedEpoch);
-                          
+
                           // 清空收到的选票队列
                           leaveInstance(endVote);
-                          
+
                           // 退出 while 循环,程序回到 QuorumPeer.setCurrentVote(makeLEStrategy().lookForLeader());
                           return endVote;
                       }
@@ -1791,7 +1929,7 @@ public Vote lookForLeader() throws InterruptedException {
                   break;
               }
           } else {
-            
+
           }
       }
       return null;
@@ -1812,12 +1950,13 @@ synchronized void updateProposal(long leader, long zxid, long epoch){
 }
 ```
 
-3. `org.apache.zookeeper.server.quorum.FastLeaderElection#sendNotifications`
+3. `org.apache.zookeeper.server.quorum.FastLeaderElection#sendNotifications`：
+
 ```java
 private void sendNotifications() {
   for (long sid : self.getCurrentAndNextConfigVoters()) {
       QuorumVerifier qv = self.getQuorumVerifier();
-      
+
       // 准备选票 serverid、zxid、epoch
       ToSend notmsg = new ToSend(ToSend.mType.notification,
               proposedLeader,
@@ -1832,18 +1971,20 @@ private void sendNotifications() {
                 " (n.round), " + sid + " (recipient), " + self.getId() +
                 " (myid), 0x" + Long.toHexString(proposedEpoch) + " (n.peerEpoch)");
       }
-      
+
       // 把要发送的选票放入发送队列，由 WorkerSender线程负责拉取（每3秒poll一次）
       sendqueue.offer(notmsg);
   }
 }
 ```
-4. `org.apache.zookeeper.server.quorum.FastLeaderElection.Messenger.WorkerSender#run`
+
+4. `org.apache.zookeeper.server.quorum.FastLeaderElection.Messenger.WorkerSender#run`：
+
 ```java
 public void run() {
     while (!stop) {
         try {
-            
+
             // 每3秒接收一次要发送的选票
             ToSend m = sendqueue.poll(3000, TimeUnit.MILLISECONDS);
             if(m == null) continue;
@@ -1870,17 +2011,19 @@ void process(ToSend m) {
 
 }
 ```
-5. `org.apache.zookeeper.server.quorum.QuorumCnxManager#toSend`
+
+5. `org.apache.zookeeper.server.quorum.QuorumCnxManager#toSend`：
+
 ```java
 public void toSend(Long sid, ByteBuffer b) {
   /*
    * If sending message to myself, then simply enqueue it (loopback).
    */
-   
+
   // 如果是投给自己的
   if (this.mySid == sid) {
        b.position(0);
-       
+
        // 将发送给自己的选票添加到 recvQueue 队列，由 WorkerReceiver 线程负责 pollRecvQueue() 处理
        addToRecvQueue(new Message(b.duplicate(), sid));
       /*
@@ -1894,20 +2037,22 @@ public void toSend(Long sid, ByteBuffer b) {
        ArrayBlockingQueue<ByteBuffer> bq = new ArrayBlockingQueue<ByteBuffer>(
           SEND_CAPACITY);
        ArrayBlockingQueue<ByteBuffer> oldq = queueSendMap.putIfAbsent(sid, bq);
-       
+
        // 由 SendWorker 线程负责 pollSendQueue() 处理
        if (oldq != null) {
            addToSendQueue(oldq, b);
        } else {
            addToSendQueue(bq, b);
        }
-       
+
        // 发送选票
        connectOne(sid);
   }
 }
 ```
-6. `org.apache.zookeeper.server.quorum.QuorumCnxManager#connectOne`
+
+6. `org.apache.zookeeper.server.quorum.QuorumCnxManager#connectOne`：
+
 ```java
 synchronized void connectOne(long sid){
   if (senderWorkerMap.get(sid) != null) {
@@ -1924,7 +2069,7 @@ synchronized void connectOne(long sid){
       Map<Long, QuorumPeer.QuorumServer> lastProposedView = lastSeenQV.getAllMembers();
       if (lastCommittedView.containsKey(sid)) {
           knownId = true;
-          
+
           // 
           if (connectOne(sid, lastCommittedView.get(sid).electionAddr))
               return;
@@ -1943,7 +2088,9 @@ synchronized void connectOne(long sid){
   }
 }
 ```
-7. `org.apache.zookeeper.server.quorum.QuorumCnxManager#connectOne`
+
+7. `org.apache.zookeeper.server.quorum.QuorumCnxManager#connectOne`：
+
 ```java
 synchronized private boolean connectOne(long sid, InetSocketAddress electionAddr){
   if (senderWorkerMap.get(sid) != null) {
@@ -1973,11 +2120,11 @@ synchronized private boolean connectOne(long sid, InetSocketAddress electionAddr
       // sasl server authentication process may take few seconds to
       // finish, this may delay next peer connection requests.
       if (quorumSaslAuthEnabled) {
-      
+
           // 异步
           initiateConnectionAsync(sock, sid);
       } else {
-      
+
           // 同步
           initiateConnection(sock, sid);
       }
@@ -1994,7 +2141,9 @@ synchronized private boolean connectOne(long sid, InetSocketAddress electionAddr
   }
 }
 ```
-8. `org.apache.zookeeper.server.quorum.QuorumCnxManager#initiateConnection`
+
+8. `org.apache.zookeeper.server.quorum.QuorumCnxManager#initiateConnection`：
+
 ```java
 public void initiateConnection(final Socket sock, final Long sid) {
   try {
@@ -2007,13 +2156,15 @@ public void initiateConnection(final Socket sock, final Long sid) {
   }
 }
 ```
-9. `org.apache.zookeeper.server.quorum.QuorumCnxManager#startConnection`
+
+9. `org.apache.zookeeper.server.quorum.QuorumCnxManager#startConnection`：
+
 ```java
 private boolean startConnection(Socket sock, Long sid) throws IOException {
-  
+
   // 通过输出流，向服务器发送数据
   DataOutputStream dout = null;
-  
+
   // 通过输入流，读取对方发送过来的选票
   DataInputStream din = null;
   try {
@@ -2048,7 +2199,7 @@ private boolean startConnection(Socket sock, Long sid) throws IOException {
   }
 
   // If lost the challenge, then drop the new connection
-  
+
   // 如果对方的 sid 大于自己
   if (sid > self.getId()) {
       LOG.info("Have smaller server identifier, so dropping the " +
@@ -2057,7 +2208,7 @@ private boolean startConnection(Socket sock, Long sid) throws IOException {
       // Otherwise proceed with the connection
   } else {
       // 如果对方的 sid 小于自己
-      
+
       // 初始化发送器和接收器
       SendWorker sw = new SendWorker(sock, sid);
       RecvWorker rw = new RecvWorker(sock, din, sid, sw);
@@ -2082,7 +2233,9 @@ private boolean startConnection(Socket sock, Long sid) throws IOException {
   return false;
 }
 ```
-10. `org.apache.zookeeper.server.quorum.QuorumCnxManager.SendWorker#run`
+
+10. `org.apache.zookeeper.server.quorum.QuorumCnxManager.SendWorker#run`：
+
 ```java
 public void run() {
    threadCnt.incrementAndGet();
@@ -2147,7 +2300,9 @@ public void run() {
    LOG.warn("Send worker leaving thread " + " id " + sid + " my id = " + self.getId());
 }
 ```
-11. `org.apache.zookeeper.server.quorum.QuorumCnxManager.RecvWorker#run`
+
+11. `org.apache.zookeeper.server.quorum.QuorumCnxManager.RecvWorker#run`：
+
 ```java
 public void run() {
    threadCnt.incrementAndGet();
@@ -2169,7 +2324,7 @@ public void run() {
            byte[] msgArray = new byte[length];
            din.readFully(msgArray, 0, length);
            ByteBuffer message = ByteBuffer.wrap(msgArray);
-           
+
            // 将发送给自己的选票添加到 recvQueue 队列中，由 WorkerReceiver线程负责 pollRecvQueue() 处理
            addToRecvQueue(new Message(message.duplicate(), sid));
        }
@@ -2183,9 +2338,11 @@ public void run() {
    }
 }
 ```
-1. 逻辑时钟(epoch–logicalclock)：或者叫投票的次数，同一轮投票过程中的逻辑时钟值是相同的。每投完一次票这个数据就会增加，然后与接收到的其它服务器返回的投票信息中的数值相比，根据不同的值做出不同的判断。
+
+辑时钟(epoch–logicalclock)：或者叫投票的次数，同一轮投票过程中的逻辑时钟值是相同的。每投完一次票这个数据就会增加，然后与接收到的其它服务器返回的投票信息中的数值相比，根据不同的值做出不同的判断。
 
 在 ZooKeeper 3.5.7 版本中，Leader 选举的流程如下：
+
 ```txt
 1. 启动阶段：
    1. 每个服务器以 FOLLOWER 状态启动，并与其他服务器建立连接，形成一个 ZooKeeper 集群。
@@ -2208,9 +2365,10 @@ public void run() {
    1. 新的 LEADER 会向其他服务器发送消息，告知它们自己已成为 LEADER，并开始处理客户端请求。
    2. 其他服务器收到消息后，切换为 FOLLOWER 状态，并与新的 LEADER 保持通信。
 ```
+
 ### 3、Leader和Follower状态同步
 
-大致流程：
+Leader和Follower状态同步的大致流程：
 
 ![](../image/zookeeper_Follower和Leader状态同步大致流程.png)
 
@@ -2222,7 +2380,8 @@ Leader 与 Follower 在进行 nio 操作时的对应读写操作（配合源码�
 
 #### Leader
 
-1. `org.apache.zookeeper.server.quorum.Leader#lead`
+1. `org.apache.zookeeper.server.quorum.Leader#lead`：
+
 ```java
 void lead() throws IOException, InterruptedException {
   self.end_fle = Time.currentElapsedTime();
@@ -2236,7 +2395,7 @@ void lead() throws IOException, InterruptedException {
 
   try {
       self.tick.set(0);
-      
+
       // 加载快照和编辑日志（在初始化时已经加载过了）
       zk.loadData();
 
@@ -2271,7 +2430,7 @@ void lead() throws IOException, InterruptedException {
       QuorumVerifier lastSeenQV = self.getLastSeenQuorumVerifier();
       QuorumVerifier curQV = self.getQuorumVerifier();
       if (curQV.getVersion() == 0 && curQV.getVersion() == lastSeenQV.getVersion()) {
-          
+
          try {
              QuorumVerifier newQV = self.configFromString(curQV.toString());
              newQV.setVersion(zk.getZxid());
@@ -2280,20 +2439,20 @@ void lead() throws IOException, InterruptedException {
              throw new IOException(e);
          }
       }
-      
+
       newLeaderProposal.addQuorumVerifier(self.getQuorumVerifier());
       if (self.getLastSeenQuorumVerifier().getVersion() > self.getQuorumVerifier().getVersion()){
          newLeaderProposal.addQuorumVerifier(self.getLastSeenQuorumVerifier());
       }
-      
+
        // 阻塞等待超过半数的 follower/observer 获取新的 epoch，并返回 Leader.ACKEPOCH          
        waitForEpochAck(self.getId(), leaderStateSummary);
-       
+
        // 设置当前新的 epoch
        self.setCurrentEpoch(epoch);    
-      
+
        try {
-       
+
            // 阻塞等待超过半数的 follower/observer 进行数据同步成功，并且返回 Leader.ACK
            waitForNewLeaderAck(self.getId(), zk.getZxid());
        } catch (InterruptedException e) {
@@ -2387,7 +2546,7 @@ void lead() throws IOException, InterruptedException {
 
               // 判断是否有超过半数 follower 在集群中
               if (!tickSkip && !syncedAckSet.hasAllQuorums()) {
-              
+
                   // 如果没有半数，则调用 shutdown() 关闭一些对象，然后 return，重新选举
                   shutdownMessage = "Not sufficient followers synced, only synced with sids: [ "
                           + syncedAckSet.ackSetsToString() + " ]";
@@ -2409,17 +2568,26 @@ void lead() throws IOException, InterruptedException {
   }
 }
 ```
-lead()方法大致会执行下面几个操作：
-* 1、从快照和编辑日志中加载数据。
-* 2、创建一个线程，接收 `follower/observer` 的注册请求。
-* 3、等待过半的 `follower/observer` 注册之后，再继续往下执行程序。
-* 4、等待过半的 `follower/observer` 都获取了新的 epoch，并且返回 `Leader.ACKEPOCH` 之后，再继续往下执行程序。
-* 5、等待过半的 `follower/observer` 进行数据同步成功，并且返回 `Leader.ACK` 之后，再继续往下执行程序。
-* 6、数据同步完成，开启 zkServer，同时开启请求调用连接，接收请求执行。
-* 7、while 循环，每隔 (self.tickTime / 2) 毫秒向 follower 发起 ping 请求（心跳检测）。
-* 8、如果集群中没有过半的 follower，则会调用 shutdown() 关闭一些对象，重新选举。
 
-2. `org.apache.zookeeper.server.quorum.Leader.LearnerCnxAcceptor#run`
+lead()方法大致会执行下面几个操作：
+
+* 1、从快照和编辑日志中加载数据。
+
+* 2、创建一个线程，接收 `follower/observer` 的注册请求。
+
+* 3、等待过半的 `follower/observer` 注册之后，再继续往下执行程序。
+
+* 4、等待过半的 `follower/observer` 都获取了新的 epoch，并且返回 `Leader.ACKEPOCH` 之后，再继续往下执行程序。
+
+* 5、等待过半的 `follower/observer` 进行数据同步成功，并且返回 `Leader.ACK` 之后，再继续往下执行程序。
+
+* 6、数据同步完成，开启 zkServer，同时开启请求调用连接，接收请求执行。
+
+* 7、while 循环，每隔 (self.tickTime / 2) 毫秒向 follower 发起 ping 请求（心跳检测）。
+
+* 8、如果集群中没有过半的 follower，则会调用 shutdown() 关闭一些对象，重新选举。
+2. `org.apache.zookeeper.server.quorum.Leader.LearnerCnxAcceptor#run`：
+
 ```java
 public void run() {
     try {
@@ -2427,19 +2595,19 @@ public void run() {
             Socket s = null;
             boolean error = false;
             try {
-                
+
                 // 阻塞等待，Follower 发送同步申请
                 s = ss.accept();
 
                 // start with the initLimit, once the ack is processed
                 // in LearnerHandler switch to the syncLimit
-                
+
                 // 设置 socket 读取超时时间为 tickTime * initLimit
                 s.setSoTimeout(self.tickTime * self.initLimit);
                 s.setTcpNoDelay(nodelay);
 
                 BufferedInputStream is = new BufferedInputStream(s.getInputStream());
-                
+
                 // 创建 LearnerHandler 并启动线程（处理 leader ~ follower 之间的请求）
                 LearnerHandler fh = new LearnerHandler(s, is, Leader.this);
                 fh.start();
@@ -2453,15 +2621,18 @@ public void run() {
     }
 }
 ```
+
 `Leader`监听`Follower`的请求，为每一个`Follower`都创建一个`LearnerHandler`线程来处理请求响应。
-3. `org.apache.zookeeper.server.quorum.LearnerHandler#run`
+
+3. `org.apache.zookeeper.server.quorum.LearnerHandler#run`：
 
 LearnerHandler是Learner服务器的管理者，主要负责Follower/Observer服务器和Leader服务器之间的一系列网络通信，包括数据同步、请求转发和Proposal提议的投票等。
+
 ```java
 public void run() {
     try {
         leader.addLearnerHandler(this);
-        
+
         // tickOfNextAckDeadline：下次回复ACK的deadline(周期数，不是时间)
         // 启动时(数据同步)是一个标准，完成启动后(正常交互)，是另一个标准
         tickOfNextAckDeadline = leader.self.tick.get() + leader.self.initLimit + leader.self.syncLimit;
@@ -2473,7 +2644,7 @@ public void run() {
 
         // 等待 follower/observer 发出的请求，请求包的类型为 Leader.FOLLOWERINFO 或 Leader.OBSERVERINFO
         QuorumPacket qp = new QuorumPacket();
-        
+
         // 阻塞读取数据。readRecord 读取数据包不断从 learner 节点读数据，如果没读到将会阻塞 readRecord 
         ia.readRecord(qp, "packet");
         if(qp.getType() != Leader.FOLLOWERINFO && qp.getType() != Leader.OBSERVERINFO){
@@ -2511,7 +2682,7 @@ public void run() {
         } else {
             LOG.info("Follower sid: " + this.sid + " not in the current config " + Long.toHexString(leader.self.getQuorumVerifier().getVersion()));
         }
-                    
+
         if (qp.getType() == Leader.OBSERVERINFO) {
               learnerType = LearnerType.OBSERVER;
         }
@@ -2522,7 +2693,7 @@ public void run() {
         long peerLastZxid;
         StateSummary ss = null;
         long zxid = qp.getZxid();
-        
+
         // 如果 learner（follower） 的 epoch 比自己高，更新自己的
         long newEpoch = leader.getEpochToPropose(this.getSid(), lastAcceptedEpoch);
         long newLeaderZxid = ZxidUtils.makeZxid(newEpoch, 0);
@@ -2537,12 +2708,12 @@ public void run() {
         } else {
             byte ver[] = new byte[4];
             ByteBuffer.wrap(ver).putInt(0x10000);
-            
+
             // leader 将新的 epoch 发送给 follower
             QuorumPacket newEpochPacket = new QuorumPacket(Leader.LEADERINFO, newLeaderZxid, ver, null);
             oa.writeRecord(newEpochPacket, "packet");
             bufferedOutput.flush();
-            
+
             // leader 接收到 learner（follower） 的 ACKEPOCH 响应
             QuorumPacket ackEpochPacket = new QuorumPacket();
             ia.readRecord(ackEpochPacket, "packet");
@@ -2553,15 +2724,15 @@ public void run() {
             }
             ByteBuffer bbepoch = ByteBuffer.wrap(ackEpochPacket.getData());
             ss = new StateSummary(bbepoch.getInt(), ackEpochPacket.getZxid());
-            
+
             // 等待 followers 返回 ack 响应，等待过半机器注册
             leader.waitForEpochAck(this.getSid(), ss);
         }
         peerLastZxid = ss.getLastZxid();
-       
+
         // Leader 同步数据给 Follower
         boolean needSnap = syncFollower(peerLastZxid, leader.zk.getZKDatabase(), leader);
-        
+
         /* if we are not truncating or sending a diff just send a snapshot */
         if (needSnap) {
             boolean exemptFromThrottle = getLearnerType() != LearnerType.OBSERVER;
@@ -2588,12 +2759,12 @@ public void run() {
                     newLeaderZxid, null, null);
             oa.writeRecord(newLeaderQP, "packet");
         } else {
-        
+
             // 生成 NEWLEADER 的 packet,发给 learner 代表自己需要同步的信息发完了
             QuorumPacket newLeaderQP = new QuorumPacket(Leader.NEWLEADER,
                     newLeaderZxid, leader.self.getLastSeenQuorumVerifier()
                             .toString().getBytes(), null);
-                            
+
             // 加入到 queuedPackets 队列                 
             queuedPackets.add(newLeaderQP);
         }
@@ -2602,7 +2773,7 @@ public void run() {
         // 启动数据包发送线程，负责处理 queuedPackets 队列
         // 不断发送 packets 直到接受到 proposalOfDeath
         startSendingPackets();
-        
+
         /*
          * Have to wait for the first ACK, wait until
          * the leader is ready, and only then we can
@@ -2610,7 +2781,7 @@ public void run() {
          */
         qp = new QuorumPacket();
         ia.readRecord(qp, "packet");
-        
+
         // follower 接收到 NEWLEADER 一定会返回ACK
         if(qp.getType() != Leader.ACK){
             LOG.error("Next packet was supposed to be an ACK,"
@@ -2621,13 +2792,13 @@ public void run() {
         if(LOG.isDebugEnabled()){
             LOG.debug("Received NEWLEADER-ACK message from " + sid);   
         }
-        
+
         // 等待有过半 follower 返回 ACK
         leader.waitForNewLeaderAck(getSid(), qp.getZxid());
 
         // 开始同步超时检测
         syncLimitCheck.start();
-        
+
         // 请求阶段的读取超时时间为 tickTime * syncLimit
         sock.setSoTimeout(leader.self.tickTime * leader.self.syncLimit);
 
@@ -2644,7 +2815,7 @@ public void run() {
         // using the data
         //
         LOG.debug("Sending UPTODATE message to " + sid);      
-        
+
         // 发送 update 的 packet 代表过半的机器回复了 NEWLEADER 的 ACK
         queuedPackets.add(new QuorumPacket(Leader.UPTODATE, -1, null, null));
 
@@ -2676,7 +2847,7 @@ public void run() {
                         LOG.debug("Received ACK from Observer  " + this.sid);
                     }
                 }
-                
+
                 // 更新 proposal（提案） 对应的 ack 时间
                 syncLimitCheck.updateAck(qp.getZxid());
                 leader.processAck(this.sid, qp.getZxid(), sock.getLocalSocketAddress());
@@ -2689,7 +2860,7 @@ public void run() {
                 while (dis.available() > 0) {
                     long sess = dis.readLong();
                     int to = dis.readInt();
-                    
+
                     // 会话管理，激活
                     leader.zk.touch(sess, to);
                 }
@@ -2708,7 +2879,7 @@ public void run() {
                         //set the session owner
                         // as the follower that
                         // owns the session
-                        
+
                         // 设置 owner 是当前 learnerHandler
                         leader.zk.setOwner(id, this);
                     } catch (SessionExpiredException e) {
@@ -2723,7 +2894,7 @@ public void run() {
                                              + " is valid: "+ valid);
                 }
                 dos.writeBoolean(valid);
-                
+
                 // 返回是否 valid
                 qp.setData(bos.toByteArray());
                 queuedPackets.add(qp);
@@ -2741,7 +2912,7 @@ public void run() {
                     si = new Request(null, sessionId, cxid, type, bb, qp.getAuthinfo());
                 }
                 si.setOwner(this);
-                
+
                 // 提交请求
                 leader.zk.submitLearnerRequest(si);
                 break;
@@ -2774,22 +2945,27 @@ public void run() {
     }
 }
 ```
-说明一下 `syncFollower()` 方法：
-```txt
-lastProcessedZxid：最后一次处理的事务 zxid，该值初始化由最新的 snapshot 文件名中获取。（leader）
-peerLastZxid：follower 最后一次处理的事务 zxid
 
+说明一下 `syncFollower()` 方法：
+
+- lastProcessedZxid：最后一次处理的事务 zxid，该值初始化由最新的 snapshot 文件名中获取。（leader）
+
+- peerLastZxid：follower 最后一次处理的事务 zxid。
+
+```txt
 case 1：（配置 zookeeper.forceSnapshotSync 参数）`forceSnapSync`，强制使用 snapshot 进行同步（一般用于测试）
 case 2：lastProcessedZxid == peerLastZxid
    数据一样，不用同步，Leader发送空的 DIFF 包给 Follower
-case 2：peerLastZxid > maxCommittedLog && !isPeerNewEpochZxid
+case 3：peerLastZxid > maxCommittedLog && !isPeerNewEpochZxid
    follower 的数据比 leader 新，Leader发送 TRUNC 包给 Follower 进行回滚
-case 2：(maxCommittedLog >= peerLastZxid) && (minCommittedLog <= peerLastZxid)
-   follower 的数据比较旧，（DIFF）Leader会以 Proposal 和 commit 方式同步数据给 Follower
-case 2：peerLastZxid < minCommittedLog && txnLogSyncEnabled
+case 4：(maxCommittedLog >= peerLastZxid) && (minCommittedLog <= peerLastZxid)
+   （增量同步）follower 的数据比较旧，（DIFF）Leader会以 Proposal 和 commit 方式同步数据给 Follower
+case 5：peerLastZxid < minCommittedLog && txnLogSyncEnabled
    全量同步 SNAP
 ```
-4. `org.apache.zookeeper.server.quorum.LearnerHandler#syncFollower`- leader发送同步信息
+
+4. `org.apache.zookeeper.server.quorum.LearnerHandler#syncFollower`- leader发送同步信息：
+
 ```java
 public boolean syncFollower(long peerLastZxid, ZKDatabase db, Leader leader) {
 
@@ -2802,10 +2978,10 @@ public boolean syncFollower(long peerLastZxid, ZKDatabase db, Leader leader) {
   ReadLock rl = lock.readLock();
   try {
       rl.lock();
-      
+
       // 内存中记录的最大事务日志的id
       long maxCommittedLog = db.getmaxCommittedLog();
-      
+
       // 内存中记录的最小事务日志的id
       long minCommittedLog = db.getminCommittedLog();
       long lastProcessedZxid = db.getDataTreeLastProcessedZxid();
@@ -2836,18 +3012,18 @@ public boolean syncFollower(long peerLastZxid, ZKDatabase db, Leader leader) {
       if (forceSnapSync) {
           // Force leader to use snapshot to sync with follower
           LOG.warn("Forcing snapshot sync - should not see this in production");
-          
+
       // follower 已经同步过了
       } else if (lastProcessedZxid == peerLastZxid) {
           // Follower is already sync with us, send empty diff
           LOG.info("Sending DIFF zxid=0x" + Long.toHexString(peerLastZxid) +
                    " for peer sid: " +  getSid());
-                   
+
           // 发送DIFF，只是发送的zxidToSend和learner本地一样，相当于空的DIFF
           queueOpPacket(Leader.DIFF, peerLastZxid);
           needOpPacket = false;
           needSnap = false;
-          
+
       // 回滚同步
       } else if (peerLastZxid > maxCommittedLog && !isPeerNewEpochZxid) {
           // Newer than committedLog, send trunc and done
@@ -2858,18 +3034,18 @@ public boolean syncFollower(long peerLastZxid, ZKDatabase db, Leader leader) {
           currentZxid = maxCommittedLog;
           needOpPacket = false;
           needSnap = false;
-          
+
       // 差异化同步
       } else if ((maxCommittedLog >= peerLastZxid)
               && (minCommittedLog <= peerLastZxid)) {
           // Follower is within commitLog range
           LOG.info("Using committedLog for peer sid: " +  getSid());
           Iterator<Proposal> itr = db.getCommittedLog().iterator();
-          
+
           // 将差异化的提交放入队列中，发送给 follower
           currentZxid = queueCommittedProposals(itr, peerLastZxid, null, maxCommittedLog);
           needSnap = false;
-          
+
       // 全量同步
       } else if (peerLastZxid < minCommittedLog && txnLogSyncEnabled) {
           // Use txnlog and committedLog to sync
@@ -2913,14 +3089,21 @@ public boolean syncFollower(long peerLastZxid, ZKDatabase db, Leader leader) {
   return needSnap;
 }
 ```
+
 通过`maxCommittedLog` 、`minCommittedLog` 和 `peerLastZxid`之间的比较确定是否需要同步以及同步类型。
+
 * 直接差异化同步（DIFF同步）
+
 * 先回滚再差异化同步（TRUNC+DIFF同步）
+
 * 仅回滚同步（TRUNC同步）
+
 * 全量同步（SNAP同步）
 
 #### Follower
-1. `org.apache.zookeeper.server.quorum.Follower#followLeader`
+
+1. `org.apache.zookeeper.server.quorum.Follower#followLeader`：
+
 ```java
 void followLeader() throws InterruptedException {
     self.end_fle = Time.currentElapsedTime();
@@ -2932,14 +3115,14 @@ void followLeader() throws InterruptedException {
     self.end_fle = 0;
     fzk.registerJMX(new FollowerBean(this, zk), self.jmxLocalPeerBean);
     try {
-        
+
         // 获取被选举的 Leader 信息
         QuorumServer leaderServer = findLeader();            
         try {
-        
+
             // 连接 leader，创建socket连接
             connectToLeader(leaderServer.addr, leaderServer.hostname);
-            
+
             // 注册当前节点信息到 Leader
             long newEpochZxid = registerWithLeader(Leader.FOLLOWERINFO);
             if (self.isReconfigStateChange())
@@ -2952,17 +3135,17 @@ void followLeader() throws InterruptedException {
                         + " is less than our accepted epoch " + ZxidUtils.zxidToString(self.getAcceptedEpoch()));
                 throw new IOException("Error: Epoch of leader is lower");
             }
-            
+
             // 同步 leader 数据
             syncWithLeader(newEpochZxid);     
-            
+
             // 读取 leader 发送的数据包           
             QuorumPacket qp = new QuorumPacket();
             while (this.isRunning()) {
-            
+
                 // 处理 leader 请求（如：两阶段 primary - accept）
                 readPacket(qp);
-                
+
                 // 处理数据包，处理提案
                 processPacket(qp);
             }
@@ -2982,7 +3165,9 @@ void followLeader() throws InterruptedException {
     }
 }
 ```
-2. `org.apache.zookeeper.server.quorum.Learner#registerWithLeader`
+
+2. `org.apache.zookeeper.server.quorum.Learner#registerWithLeader`：
+
 ```java
 protected long registerWithLeader(int pktType) throws IOException{
    /*
@@ -2992,17 +3177,17 @@ protected long registerWithLeader(int pktType) throws IOException{
    QuorumPacket qp = new QuorumPacket();                
    qp.setType(pktType);
    qp.setZxid(ZxidUtils.makeZxid(self.getAcceptedEpoch(), 0));
- 
+
    // 发送当前节点信息 
    LearnerInfo li = new LearnerInfo(self.getId(), 0x10000, self.getQuorumVerifier().getVersion());
    ByteArrayOutputStream bsid = new ByteArrayOutputStream();
    BinaryOutputArchive boa = BinaryOutputArchive.getArchive(bsid);
    boa.writeRecord(li, "LearnerInfo");
    qp.setData(bsid.toByteArray());
-   
+
    // 发送请求给 leader，并从 leader 获取响应
    writePacket(qp, true);
-   
+
    // leader 收到注册请求后，并将 leader 的基本信息响应给 follower
    readPacket(qp);        
    final long newEpoch = ZxidUtils.getEpochFromZxid(qp.getZxid());
@@ -3023,7 +3208,7 @@ protected long registerWithLeader(int pktType) throws IOException{
       } else {
           throw new IOException("Leaders epoch, " + newEpoch + " is less than accepted epoch, " + self.getAcceptedEpoch());
       }
-      
+
       // follower发送ack信息，一次完整的请求注册就结束了（ackNewEpoch）
       QuorumPacket ackNewEpoch = new QuorumPacket(Leader.ACKEPOCH, lastLoggedZxid, epochBytes, null);
       writePacket(ackNewEpoch, true);
@@ -3040,15 +3225,17 @@ protected long registerWithLeader(int pktType) throws IOException{
    }
 } 
 ```
-3. `org.apache.zookeeper.server.quorum.Learner#syncWithLeader`- follower接收同步数据信息
+
+3. `org.apache.zookeeper.server.quorum.Learner#syncWithLeader`- follower接收同步数据信息：
+
 ```java
 protected void syncWithLeader(long newLeaderZxid) throws Exception{
   QuorumPacket ack = new QuorumPacket(Leader.ACK, 0, null, null);
   QuorumPacket qp = new QuorumPacket();
   long newEpoch = ZxidUtils.getEpochFromZxid(newLeaderZxid);
-  
+
   QuorumVerifier newLeaderQV = null;
-  
+
   // In the DIFF case we don't need to do a snapshot because the transactions will sync on top of any existing snapshot
   // For SNAP and TRUNC the snapshot is needed to save that history
   boolean snapshotNeeded = true;
@@ -3060,7 +3247,7 @@ protected void syncWithLeader(long newLeaderZxid) throws Exception{
           LOG.info("Getting a diff from the leader 0x{}", Long.toHexString(qp.getZxid()));
           snapshotNeeded = false;
       }
-      
+
       // 全量同步
       else if (qp.getType() == Leader.SNAP) {
           LOG.info("Getting a snapshot from leader 0x" + Long.toHexString(qp.getZxid()));
@@ -3080,7 +3267,7 @@ protected void syncWithLeader(long newLeaderZxid) throws Exception{
               throw new IOException("Missing signature");                   
           }
           zk.getZKDatabase().setlastProcessedZxid(qp.getZxid());
-          
+
       // 删除差异化数据
       } else if (qp.getType() == Leader.TRUNC) {
           //we need to truncate the log to the lastzxid of the leader
@@ -3104,7 +3291,7 @@ protected void syncWithLeader(long newLeaderZxid) throws Exception{
       }
       zk.getZKDatabase().initConfigInZKDatabase(self.getQuorumVerifier());
       zk.createSessionTracker();            
-      
+
       long lastQueued = 0;
       outerLoop:
       while (self.isRunning()) {
@@ -3118,7 +3305,7 @@ protected void syncWithLeader(long newLeaderZxid) throws Exception{
   ack.setZxid(ZxidUtils.makeZxid(newEpoch, 0));
   writePacket(ack, true);
   sock.setSoTimeout(self.tickTime * self.syncLimit);
-  
+
   // follower（FollowerZooKeeperServer） 启动
   zk.startup();
 
@@ -3160,7 +3347,9 @@ protected void syncWithLeader(long newLeaderZxid) throws Exception{
   }
 }
 ```
-看一下`zk.startup()`，follower（FollowerZooKeeperServer）启动。
+
+看一下`zk.startup()`，follower（FollowerZooKeeperServer）启动：
+
 ```java
 // org.apache.zookeeper.server.ZooKeeperServer#startup
 
@@ -3191,7 +3380,8 @@ protected void setupRequestProcessors() {
 }
 ```
 
-4. `org.apache.zookeeper.server.quorum.Follower#processPacket`
+4. `org.apache.zookeeper.server.quorum.Follower#processPacket`：
+
 ```java
 protected void processPacket(QuorumPacket qp) throws Exception{
    switch (qp.getType()) {
@@ -3208,27 +3398,27 @@ protected void processPacket(QuorumPacket qp) throws Exception{
                   + Long.toHexString(lastQueued + 1));
       }
       lastQueued = hdr.getZxid();
-      
+
       if (hdr.getType() == OpCode.reconfig){
          SetDataTxn setDataTxn = (SetDataTxn) txn;       
          QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));
          self.setLastSeenQuorumVerifier(qv, true);                               
       }
-      
+
       fzk.logRequest(hdr, txn);
       break;
    case Leader.COMMIT:
-   
+
       // 处理提案
       fzk.commit(qp.getZxid());
       break;
-      
+
    case Leader.COMMITANDACTIVATE:
      // get the new configuration from the request
      Request request = fzk.pendingTxns.element();
      SetDataTxn setDataTxn = (SetDataTxn) request.getTxn();                                                                                                      
      QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));                                
-   
+
      // get new designated leader from (current) leader's message
      ByteBuffer buffer = ByteBuffer.wrap(qp.getData());    
      long suggestedLeaderId = buffer.getLong();
@@ -3255,6 +3445,7 @@ protected void processPacket(QuorumPacket qp) throws Exception{
    }
 }
 ```
+
 Leader和Follower状态同步的流程可以总结如下：
 
 ```java
@@ -3272,13 +3463,12 @@ Leader和Follower状态同步的流程可以总结如下：
       一旦快照同步完成，Follower的数据状态将与Leader完全一致，并与Leader保持同步更新。
 ```
 
-
-
 ### 服务端Leader启动
 
 ![img.png](../image/zookeeper_服务端Leader启动.png)
 
-1. `org.apache.zookeeper.server.quorum.Leader#startZkServer`
+1. `org.apache.zookeeper.server.quorum.Leader#startZkServer`：
+
 ```java
 private synchronized void startZkServer() {
   // Update lastCommitted and Db's zxid to a value representing the new epoch
@@ -3287,7 +3477,7 @@ private synchronized void startZkServer() {
           + newLeaderProposal.ackSetsToString()
           + " ]; starting up and setting last processed zxid: 0x{}",
           Long.toHexString(zk.getZxid()));
-  
+
   /*
    * ZOOKEEPER-1324. the leader sends the new config it must complete
    *  to others inside a NEWLEADER message (see LearnerHandler where
@@ -3296,14 +3486,14 @@ private synchronized void startZkServer() {
    *  config to itself.
    */
   QuorumVerifier newQV = self.getLastSeenQuorumVerifier();
-  
+
   Long designatedLeader = getDesignatedLeader(newLeaderProposal, zk.getZxid());                                         
 
   self.processReconfig(newQV, designatedLeader, zk.getZxid(), true);
   if (designatedLeader != self.getId()) {
       allowedToCommit = false;
   }
-  
+
   // leader（LeaderZooKeeperServer） 启动
   zk.startup();
   /*
@@ -3318,7 +3508,9 @@ private synchronized void startZkServer() {
   zk.getZKDatabase().setlastProcessedZxid(zk.getZxid());
 }
 ```
-2. `org.apache.zookeeper.server.quorum.LeaderZooKeeperServer#startup`
+
+2. `org.apache.zookeeper.server.quorum.LeaderZooKeeperServer#startup`：
+
 ```java
 public synchronized void startup() {
   super.startup();
@@ -3327,25 +3519,33 @@ public synchronized void startup() {
   }
 }
 ```
+
 LeaderZooKeeperServer 继承自 ZooKeeperServer，重写了 startup 和 setupRequestProcessors，这里重点关注 Leader 服务器的请求处理链。
 
-Leader 服务器的请求处理链 LeaderRequestProcessor -> PrepRequestProcessor -> ProposalRequestProcessor -> CommitProcessor -> ToBeAppliedRequestProcessor -> FinalRequestProcessor
-* 1、PrepRequestProcessor 请求预处理器。在Zookeeper中，那些会改变服务器状态的请求称为事务请求（创建节点、更新数据、删除节点、创建会话等），PrepRequestProcessor能够识别出当前客户端请求是否是事务请求。对于事务请求，PrepRequestProcessor处理器会对其进行一系列预处理，如创建请求事务头、事务体、会话检查、ACL检查和版本检查等。
-* 2、ProposalRequestProcessor 事务投票处理器。Leader服务器事务处理流程的发起者，对于非事务性请求，ProposalRequestProcessor会直接将请求转发到CommitProcessor处理器，不再做任何处理，而对于事务性请求，处理将请求转发到CommitProcessor外，还会根据请求类型创建对应的Proposal提议，并发送给所有的Follower服务器来发起一次集群内的事务投票。同时，ProposalRequestProcessor还会将事务请求交付给SyncRequestProcessor进行事务日志的记录。
-* 3、CommitProcessor 事务提交处理器。对于非事务请求，该处理器会直接将其交付给下一级处理器处理；对于事务请求，其会等待集群内针对Proposal的投票直到该Proposal可被提交，利用CommitProcessor，每个服务器都可以很好地控制对事务请求的顺序处理。
-* 4、ToBeCommitProcessor 该处理器有一个toBeApplied队列，用来存储那些已经被CommitProcessor处理过的可被提交的Proposal。其会将这些请求交付给FinalRequestProcessor处理器处理，待其处理完后，再将其从toBeApplied队列中移除。
-* 5、FinalRequestProcessor 用来进行客户端请求返回之前的操作，包括创建客户端请求的响应，针对事务请求，该处理还会负责将事务应用到内存数据库中去。
-* 6、SyncRequestProcessor 事务日志记录处理器。用来将事务请求记录到事务日志文件中，同时会触发Zookeeper进行数据快照。
-* 7、AckRequestProcessor 负责在SyncRequestProcessor完成事务日志记录后，向Proposal的投票收集器发送ACK反馈，以通知投票收集器当前服务器已经完成了对该Proposal的事务日志记录。
+Leader 服务器的请求处理链 LeaderRequestProcessor -> PrepRequestProcessor -> ProposalRequestProcessor -> CommitProcessor -> ToBeAppliedRequestProcessor -> FinalRequestProcessor的作用：
 
-3. `org.apache.zookeeper.server.ZooKeeperServer#startup`
+* 1、PrepRequestProcessor 请求预处理器。在Zookeeper中，那些会改变服务器状态的请求称为事务请求（创建节点、更新数据、删除节点、创建会话等），PrepRequestProcessor能够识别出当前客户端请求是否是事务请求。对于事务请求，PrepRequestProcessor处理器会对其进行一系列预处理，如创建请求事务头、事务体、会话检查、ACL检查和版本检查等。
+
+* 2、ProposalRequestProcessor 事务投票处理器。Leader服务器事务处理流程的发起者，对于非事务性请求，ProposalRequestProcessor会直接将请求转发到CommitProcessor处理器，不再做任何处理，而对于事务性请求，处理将请求转发到CommitProcessor外，还会根据请求类型创建对应的Proposal提议，并发送给所有的Follower服务器来发起一次集群内的事务投票。同时，ProposalRequestProcessor还会将事务请求交付给SyncRequestProcessor进行事务日志的记录。
+
+* 3、CommitProcessor 事务提交处理器。对于非事务请求，该处理器会直接将其交付给下一级处理器处理；对于事务请求，其会等待集群内针对Proposal的投票直到该Proposal可被提交，利用CommitProcessor，每个服务器都可以很好地控制对事务请求的顺序处理。
+
+* 4、ToBeCommitProcessor 该处理器有一个toBeApplied队列，用来存储那些已经被CommitProcessor处理过的可被提交的Proposal。其会将这些请求交付给FinalRequestProcessor处理器处理，待其处理完后，再将其从toBeApplied队列中移除。
+
+* 5、FinalRequestProcessor 用来进行客户端请求返回之前的操作，包括创建客户端请求的响应，针对事务请求，该处理还会负责将事务应用到内存数据库中去。
+
+* 6、SyncRequestProcessor 事务日志记录处理器。用来将事务请求记录到事务日志文件中，同时会触发Zookeeper进行数据快照。
+
+* 7、AckRequestProcessor 负责在SyncRequestProcessor完成事务日志记录后，向Proposal的投票收集器发送ACK反馈，以通知投票收集器当前服务器已经完成了对该Proposal的事务日志记录。
+3. `org.apache.zookeeper.server.ZooKeeperServer#startup`：
+
 ```java
 public synchronized void startup() {
   if (sessionTracker == null) {
       createSessionTracker();
   }
   startSessionTracker();
-    
+
   // 执行子类的方法
   setupRequestProcessors();
 
@@ -3355,7 +3555,9 @@ public synchronized void startup() {
   notifyAll();
 }
 ```
-5. `org.apache.zookeeper.server.quorum.LeaderZooKeeperServer#setupRequestProcessors`
+
+4. `org.apache.zookeeper.server.quorum.LeaderZooKeeperServer#setupRequestProcessors`：
+
 ```java
 protected void setupRequestProcessors() {
     RequestProcessor finalProcessor = new FinalRequestProcessor(this);
@@ -3377,7 +3579,9 @@ protected void setupRequestProcessors() {
     setupContainerManager();
 }
 ```
-5. `org.apache.zookeeper.server.PrepRequestProcessor#run`
+
+5. `org.apache.zookeeper.server.PrepRequestProcessor#run`：
+
 ```java
 public void run() {
   try {
@@ -3406,7 +3610,9 @@ public void run() {
   LOG.info("PrepRequestProcessor exited loop!");
 }
 ```
-6. `org.apache.zookeeper.server.PrepRequestProcessor#pRequest`
+
+6. `org.apache.zookeeper.server.PrepRequestProcessor#pRequest`：
+
 ```java
 protected void pRequest(Request request) throws RequestProcessorException {
   // LOG.info("Prep>>> cxid = " + request.cxid + " type = " +
@@ -3581,12 +3787,14 @@ protected void pRequest(Request request) throws RequestProcessorException {
       }
   }
   request.zxid = zks.getZxid();
-    
+
   // 请求执行链  
   nextProcessor.processRequest(request);
 }
 ```
-服务端 Leader 启动分为三个阶段：服务端初始化、选举机制以及数据同步，前面已经将这三个阶段解析了，现在来总结一些流程，方便理解。
+
+服务端 Leader 启动分为三个阶段：服务端初始化、选举机制以及数据同步，前面已经将这三个阶段解析了，现在来总结一下流程，方便理解：
+
 ```txt
 1. 服务器启动：
       启动ZooKeeper服务器，并加载配置文件。
@@ -3623,12 +3831,15 @@ protected void pRequest(Request request) throws RequestProcessorException {
 13. 处理选举事件：
       如果在运行期间发生了选举事件，Leader需要处理该事件并进行相应的调整。
 ```
+
 总的来说，ZooKeeper服务端Leader启动的流程包括服务器启动、选举Leader、成为Leader、处理客户端请求、数据同步、心跳与保持连接、处理会话、处理集群成员变化、监听变更事件和处理选举事件等环节。在这个过程中，Leader负责维护集群的一致性和可用性，并处理客户端的读写请求。
 
 ### 服务端Follower启动
+
 follower 对应的服务端是`FollowerZooKeeperServer`，其也重写了`setupRequestProcessors()`，所以它也有请求链`FollowerRequestProcessor -> CommitProcessor -> FinalRequestProcessor -> SyncRequestProcessor` 
 
-1. `org.apache.zookeeper.server.quorum.Follower#followLeader`
+1. `org.apache.zookeeper.server.quorum.Follower#followLeader`：
+
 ```java
 void followLeader() throws InterruptedException {
   self.end_fle = Time.currentElapsedTime();
@@ -3654,11 +3865,11 @@ void followLeader() throws InterruptedException {
                       + " is less than our accepted epoch " + ZxidUtils.zxidToString(self.getAcceptedEpoch()));
               throw new IOException("Error: Epoch of leader is lower");
           }
-          
+
           // 如果数据同步完就可以 执行 zk.startup() 启动 follower（FollowerZooKeeperServer）
           syncWithLeader(newEpochZxid);                
           QuorumPacket qp = new QuorumPacket();
-          
+
           // 读取信息、处理信息
           while (this.isRunning()) {
               readPacket(qp);
@@ -3680,7 +3891,9 @@ void followLeader() throws InterruptedException {
   }
 }
 ```
-2. `org.apache.zookeeper.server.quorum.Follower#processPacket`
+
+2. `org.apache.zookeeper.server.quorum.Follower#processPacket`：
+
 ```java
 protected void processPacket(QuorumPacket qp) throws Exception{
   switch (qp.getType()) {
@@ -3697,19 +3910,19 @@ protected void processPacket(QuorumPacket qp) throws Exception{
                   + Long.toHexString(lastQueued + 1));
       }
       lastQueued = hdr.getZxid();
-      
+
       if (hdr.getType() == OpCode.reconfig){
          SetDataTxn setDataTxn = (SetDataTxn) txn;       
          QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));
          self.setLastSeenQuorumVerifier(qv, true);                               
       }
-      
+
       fzk.logRequest(hdr, txn);
       break;
   case Leader.COMMIT:
       fzk.commit(qp.getZxid());
       break;
-      
+
   case Leader.COMMITANDACTIVATE:
      // get the new configuration from the request
      Request request = fzk.pendingTxns.element();
@@ -3742,7 +3955,9 @@ protected void processPacket(QuorumPacket qp) throws Exception{
   }
 }
 ```
+
 ZooKeeper服务端Follower启动的流程可以总结如下：
+
 ```txt
 1. 服务器启动：
       启动ZooKeeper服务器，并加载配置文件。
@@ -3765,9 +3980,11 @@ ZooKeeper服务端Follower启动的流程可以总结如下：
 10. 处理选举事件：
       如果在运行期间发生了选举事件，Follower需要处理该事件并进行相应的调整。
 ```
+
 总的来说，ZooKeeper服务端Follower启动的流程包括服务器启动、加入集群、数据同步、接收心跳、处理客户端请求、处理集群成员变化、监听变更事件和处理选举事件等环节。在这个过程中，Follower负责与Leader保持连接并同步数据，同时处理来自客户端的请求，并参与集群的一致性和可用性。
 
 ### 客户端启动
+
 ![](../image/zookeeper_客户端启动.png)
 
 ```shell
@@ -3790,29 +4007,34 @@ ZOO_LOG_FILE=zookeeper-$USER-cli-$HOSTNAME.log
      org.apache.zookeeper.ZooKeeperMain "$@"
 ```
 
-1. `org.apache.zookeeper.ZooKeeperMain#main`
+1. `org.apache.zookeeper.ZooKeeperMain#main`：
+
 ```java
 public static void main(String args[]) throws CliException, IOException, InterruptedException
 {
   ZooKeeperMain main = new ZooKeeperMain(args);
-  
+
   // 启动客户端
   main.run();
 }
 ```
-2. `org.apache.zookeeper.ZooKeeperMain#ZooKeeperMain`
+
+2. `org.apache.zookeeper.ZooKeeperMain#ZooKeeperMain`：
+
 ```java
 public ZooKeeperMain(String args[]) throws IOException, InterruptedException {
-  
+
   // 解析参数中的 option（可选项）
   cl.parseOptions(args);
   System.out.println("Connecting to " + cl.getOption("server"));
-  
+
   // 连接到 zk 服务器
   connectToZK(cl.getOption("server"));
 }
 ```
-3. `org.apache.zookeeper.ZooKeeperMain#connectToZK`
+
+3. `org.apache.zookeeper.ZooKeeperMain#connectToZK`：
+
 ```java
 protected void connectToZK(String newHost) throws InterruptedException, IOException {
   if (zk != null && zk.getState().isAlive()) {
@@ -3826,12 +4048,14 @@ protected void connectToZK(String newHost) throws InterruptedException, IOExcept
       System.setProperty(ZKClientConfig.SECURE_CLIENT, "true");
       System.out.println("Secure connection is enabled");
   }
-  
+
   // 创建 Zookeeper 客户端
   zk = new ZooKeeperAdmin(host, Integer.parseInt(cl.getOption("timeout")), new MyWatcher(), readOnly);
 }
 ```
-4. `org.apache.zookeeper.admin.ZooKeeperAdmin#ZooKeeperAdmin`
+
+4. `org.apache.zookeeper.admin.ZooKeeperAdmin#ZooKeeperAdmin`：
+
 ```java
 // public class ZooKeeperAdmin extends ZooKeeper
 
@@ -3863,15 +4087,15 @@ public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
       clientConfig = new ZKClientConfig();
   }
   this.clientConfig = clientConfig;
-  
+
   // 创建监听器管理器
   watchManager = defaultWatchManager();
   watchManager.defaultWatcher = watcher;
-  
+
   // url 解析器，多个 zk 服务端地址用 "," 分割，并将 host、post 添加到 serverAddresses 集合中
   ConnectStringParser connectStringParser = new ConnectStringParser(
           connectString);
-          
+
   // 将 ip:port 封装为 HostProvider
   hostProvider = aHostProvider;
 
@@ -3882,21 +4106,25 @@ public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
   cnxn = createConnection(connectStringParser.getChrootPath(),
           hostProvider, sessionTimeout, this, watchManager,
           getClientCnxnSocket(), canBeReadOnly);
-          
+
   // 启动网络连接器，并建立连接
   cnxn.start();
 }
 ```
-* 1、connectStringParser.getChrootPath()：chrootpath，命名空间，可用于隔离。
-* 2、HostProvider：内部对解析出来的地址和端口封装为InetSocketAddress,并提供next方法返回一个服务器地址供客户端连接ClientCnxn。
 
-5. `org.apache.zookeeper.ZooKeeper#defaultWatchManager`
+* 1、connectStringParser.getChrootPath()：chrootpath，命名空间，可用于隔离。
+
+* 2、HostProvider：内部对解析出来的地址和端口封装为InetSocketAddress,并提供next方法返回一个服务器地址供客户端连接ClientCnxn。
+5. `org.apache.zookeeper.ZooKeeper#defaultWatchManager`：
+
 ```java
 protected ZKWatchManager defaultWatchManager() {
   return new ZKWatchManager(getClientConfig().getBoolean(ZKClientConfig.DISABLE_AUTO_WATCH_RESET));
 }
 ```
-6. `org.apache.zookeeper.client.ConnectStringParser#ConnectStringParser`
+
+6. `org.apache.zookeeper.client.ConnectStringParser#ConnectStringParser`：
+
 ```java
 public ConnectStringParser(String connectString) {
   // parse out chroot, if any
@@ -3930,7 +4158,9 @@ public ConnectStringParser(String connectString) {
   }
 }
 ```
-7. `org.apache.zookeeper.ZooKeeper#createConnection`
+
+7. `org.apache.zookeeper.ZooKeeper#createConnection`“
+
 ```java
 protected ClientCnxn createConnection(String chrootPath,
       HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
@@ -3940,7 +4170,9 @@ protected ClientCnxn createConnection(String chrootPath,
           watchManager, clientCnxnSocket, canBeReadOnly);
 }
 ```
-8. `org.apache.zookeeper.ClientCnxn#ClientCnxn`
+
+8. `org.apache.zookeeper.ClientCnxn#ClientCnxn`：
+
 ```java
 public ClientCnxn(String chrootPath, HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
       ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket, boolean canBeReadOnly)
@@ -3967,21 +4199,25 @@ public ClientCnxn(String chrootPath, HostProvider hostProvider, int sessionTimeo
 
   // 用于向服务端发送请求，并接收服务端的响应
   sendThread = new SendThread(clientCnxnSocket);
-  
+
   // 事件处理线程
   eventThread = new EventThread();
   this.clientConfig=zooKeeper.getClientConfig();
   initRequestTimeout();
 }
 ```
-9. `org.apache.zookeeper.ClientCnxn#start`
+
+9. `org.apache.zookeeper.ClientCnxn#start`：
+
 ```java
 public void start() {
   sendThread.start();
   eventThread.start();
 }
 ```
-10. `org.apache.zookeeper.ClientCnxn.SendThread#run`
+
+10. `org.apache.zookeeper.ClientCnxn.SendThread#run`：
+
 ```java
 public void run() {
    clientCnxnSocket.introduce(this, sessionId, outgoingQueue);
@@ -4002,14 +4238,14 @@ public void run() {
                    serverAddress = rwServerAddress;
                    rwServerAddress = null;
                } else {
-               
+
                    // 取出地址
                    serverAddress = hostProvider.next(1000);
                }
-               
+
                // 开始连接
                startConnect(serverAddress);
-               
+
                clientCnxnSocket.updateLastSendAndHeard();
            }
 
@@ -4028,7 +4264,7 @@ public void run() {
                        }
                    }
                    KeeperState authState = zooKeeperSaslClient.getKeeperState();
-                   
+
                    // 权限认证
                    if (authState != null) {
                        if (authState == KeeperState.AuthFailed) {
@@ -4055,7 +4291,7 @@ public void run() {
            } else {
                to = connectTimeout - clientCnxnSocket.getIdleRecv();
            }
-           
+
            // 检查超时
            if (to <= 0) {
                String warnInfo;
@@ -4074,7 +4310,7 @@ public void run() {
                        ((clientCnxnSocket.getIdleSend() > 1000) ? 1000 : 0);
                //send a ping request either time is due or no packet sent out within MAX_SEND_PING_INTERVAL
                if (timeToNextPing <= 0 || clientCnxnSocket.getIdleSend() > MAX_SEND_PING_INTERVAL) {
-               
+
                    // 发送心跳
                    sendPing();
                    clientCnxnSocket.updateLastSend();
@@ -4098,7 +4334,7 @@ public void run() {
                }
                to = Math.min(to, pingRwTimeout - idlePingRwServer);
            }
-           
+
            // 传输请求
            clientCnxnSocket.doTransport(to, pendingQueue, ClientCnxn.this);
        } catch (Throwable e) {
@@ -4152,7 +4388,9 @@ public void run() {
                   + Long.toHexString(getSessionId()));
 }
 ```
-11. `org.apache.zookeeper.ClientCnxn.SendThread#startConnect`
+
+11. `org.apache.zookeeper.ClientCnxn.SendThread#startConnect`：
+
 ```java
 private void startConnect(InetSocketAddress addr) throws IOException {
    // initializing it for new connection
@@ -4190,7 +4428,9 @@ private void startConnect(InetSocketAddress addr) throws IOException {
    clientCnxnSocket.connect(addr);
 }
 ```
-12. `org.apache.zookeeper.ClientCnxnSocketNIO#connect`
+
+12. `org.apache.zookeeper.ClientCnxnSocketNIO#connect`：
+
 ```java
 void connect(InetSocketAddress addr) throws IOException {
   SocketChannel sock = createSock();
@@ -4210,7 +4450,9 @@ void connect(InetSocketAddress addr) throws IOException {
   incomingBuffer = lenBuffer;
 }
 ```
-13. `org.apache.zookeeper.ClientCnxnSocketNIO#registerAndConnect`
+
+13. `org.apache.zookeeper.ClientCnxnSocketNIO#registerAndConnect`：
+
 ```java
 void registerAndConnect(SocketChannel sock, InetSocketAddress addr) 
 throws IOException {
@@ -4221,11 +4463,13 @@ throws IOException {
   }
 }
 ```
-14. `org.apache.zookeeper.ClientCnxnSocketNIO#doTransport`
+
+14. `org.apache.zookeeper.ClientCnxnSocketNIO#doTransport`：
+
 ```java
 void doTransport(int waitTimeOut, List<Packet> pendingQueue, ClientCnxn cnxn)
       throws IOException, InterruptedException {
-  
+
   // nio 阻塞    
   selector.select(waitTimeOut);
   Set<SelectionKey> selected;
@@ -4238,7 +4482,7 @@ void doTransport(int waitTimeOut, List<Packet> pendingQueue, ClientCnxn cnxn)
   updateNow();
   for (SelectionKey k : selected) {
       SocketChannel sc = ((SocketChannel) k.channel());
-      
+
       // 没有连接成功，再次尝试连接
       if ((k.readyOps() & SelectionKey.OP_CONNECT) != 0) {
           if (sc.finishConnect()) {
@@ -4247,7 +4491,7 @@ void doTransport(int waitTimeOut, List<Packet> pendingQueue, ClientCnxn cnxn)
               sendThread.primeConnection();
           }
       } else if ((k.readyOps() & (SelectionKey.OP_READ | SelectionKey.OP_WRITE)) != 0) {
-      
+
           // 处理 io
           doIO(pendingQueue, cnxn);
       }
@@ -4261,7 +4505,9 @@ void doTransport(int waitTimeOut, List<Packet> pendingQueue, ClientCnxn cnxn)
   selected.clear();
 }
 ```
-15. `org.apache.zookeeper.ClientCnxnSocketNIO#doIO`
+
+15. `org.apache.zookeeper.ClientCnxnSocketNIO#doIO`：
+
 ```java
 void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
       throws InterruptedException, IOException {
@@ -4269,12 +4515,12 @@ void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
   if (sock == null) {
       throw new IOException("Socket is null!");
   }
-  
+
   // 读就绪，服务端响应消息
   if (sockKey.isReadable()) {
-      
+
       int rc = sock.read(incomingBuffer);
-      
+
       // 读到末尾了
       if (rc < 0) {
           throw new EndOfStreamException(
@@ -4282,26 +4528,26 @@ void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
                           + Long.toHexString(sessionId)
                           + ", likely server has closed socket");
       }
-      
+
       // 如果还有数据
       if (!incomingBuffer.hasRemaining()) {
-      
+
           // 谢欢模式
           incomingBuffer.flip();
           if (incomingBuffer == lenBuffer) {
-          
+
               // 新增接收次数
               recvCount.getAndIncrement();
-              
+
               // 取 len 并给 incomingBuffer 分配对应空间
               readLength();
-              
+
           // 如果连接还未初始化    
           } else if (!initialized) {
-          
+
               // 读取 connect 并回复
               readConnectResult();
-              
+
               // 监听读事件
               enableRead();
               if (findSendablePacket(outgoingQueue,
@@ -4313,27 +4559,27 @@ void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
               lenBuffer.clear();
               incomingBuffer = lenBuffer;
               updateLastHeard();
-              
+
               // 初始化完成
               initialized = true;
-              
+
           // 读取服务端响应的数据    
           } else {
-              
+
               // 读响应
               sendThread.readResponse(incomingBuffer);
               lenBuffer.clear();
               incomingBuffer = lenBuffer;
-              
+
               // 跟新上次接收事件
               updateLastHeard();
           }
       }
   }
-  
+
   // 写就绪
   if (sockKey.isWritable()) {
-  
+
       // 从队列中获取请求 Packet
       Packet p = findSendablePacket(outgoingQueue,
               sendThread.tunnelAuthInProgress());
@@ -4349,10 +4595,10 @@ void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
               }
               p.createBB();
           }
-          
+
           // nio 写，发送给服务端
           sock.write(p.bb);
-          
+
           // 数据全部写完
           if (!p.bb.hasRemaining()) {
               sentCount.getAndIncrement();
@@ -4366,7 +4612,7 @@ void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
               }
           }
       }
-      
+
       // 队列是空的，关闭写事件
       if (outgoingQueue.isEmpty()) {
           disableWrite();
@@ -4379,7 +4625,9 @@ void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
   }
 }
 ```
-16. `org.apache.zookeeper.ClientCnxn.SendThread#readResponse`
+
+16. `org.apache.zookeeper.ClientCnxn.SendThread#readResponse`：
+
 ```java
 void readResponse(ByteBuffer incomingBuffer) throws IOException {
    ByteBufferInputStream bbis = new ByteBufferInputStream(
@@ -4388,7 +4636,7 @@ void readResponse(ByteBuffer incomingBuffer) throws IOException {
    ReplyHeader replyHdr = new ReplyHeader();
 
    replyHdr.deserialize(bbia, "header");
-   
+
    // ping 心跳
    if (replyHdr.getXid() == -2) {
        // -2 is the xid for pings
@@ -4401,7 +4649,7 @@ void readResponse(ByteBuffer incomingBuffer) throws IOException {
        }
        return;
    }
-   
+
    // 权限认证
    if (replyHdr.getXid() == -4) {
        // -4 is the xid for AuthPacket               
@@ -4417,7 +4665,7 @@ void readResponse(ByteBuffer incomingBuffer) throws IOException {
        }
        return;
    }
-   
+
    // 事件
    if (replyHdr.getXid() == -1) {
        // -1 means notification
@@ -4425,7 +4673,7 @@ void readResponse(ByteBuffer incomingBuffer) throws IOException {
            LOG.debug("Got notification sessionid:0x"
                + Long.toHexString(sessionId));
        }
-       
+
        // 监听事件
        WatcherEvent event = new WatcherEvent();
        event.deserialize(bbia, "response");
@@ -4479,7 +4727,7 @@ void readResponse(ByteBuffer incomingBuffer) throws IOException {
     * to the first request!
     */
    try {
-   
+
        // 读取响应
        if (packet.requestHeader.getXid() != replyHdr.getXid()) {
            packet.replyHeader.setErr(
@@ -4501,7 +4749,7 @@ void readResponse(ByteBuffer incomingBuffer) throws IOException {
            lastZxid = replyHdr.getZxid();
        }
        if (packet.response != null && replyHdr.getErr() == 0) {
-       
+
            // 设置响应数据
            packet.response.deserialize(bbia, "response");
        }
@@ -4516,7 +4764,9 @@ void readResponse(ByteBuffer incomingBuffer) throws IOException {
    }
 }
 ```
-17. `org.apache.zookeeper.ZooKeeperMain#run`
+
+17. `org.apache.zookeeper.ZooKeeperMain#run`：
+
 ```java
 void run() throws CliException, IOException, InterruptedException {
   if (cl.getCommand() == null) {
@@ -4543,7 +4793,7 @@ void run() throws CliException, IOException, InterruptedException {
           String line;
           Method readLine = consoleC.getMethod("readLine", String.class);
           while ((line = (String)readLine.invoke(console, getPrompt())) != null) {
-              
+
               // 一行一行读取客户端指令
               executeLine(line);
           }
@@ -4581,7 +4831,9 @@ void run() throws CliException, IOException, InterruptedException {
   System.exit(exitCode);
 }
 ```
-18. `org.apache.zookeeper.ZooKeeperMain#executeLine`
+
+18. `org.apache.zookeeper.ZooKeeperMain#executeLine`：
+
 ```java
 public void executeLine(String line) throws CliException, InterruptedException, IOException {
    if (!line.equals("")) {
@@ -4592,7 +4844,9 @@ public void executeLine(String line) throws CliException, InterruptedException, 
    }
 }
 ```
-19. `org.apache.zookeeper.ZooKeeperMain#processCmd`
+
+19. `org.apache.zookeeper.ZooKeeperMain#processCmd`：
+
 ```java
 protected boolean processCmd(MyCommandOptions co) throws CliException, IOException, InterruptedException {
   boolean watch = false;
@@ -4606,7 +4860,9 @@ protected boolean processCmd(MyCommandOptions co) throws CliException, IOExcepti
   return watch;
 }
 ```
-20. `org.apache.zookeeper.ZooKeeperMain#processZKCmd`
+
+20. `org.apache.zookeeper.ZooKeeperMain#processZKCmd`：
+
 ```java
 protected boolean processZKCmd(MyCommandOptions co) throws CliException, IOException, InterruptedException {
   String[] args = co.getArgArray();
@@ -4620,7 +4876,7 @@ protected boolean processZKCmd(MyCommandOptions co) throws CliException, IOExcep
       usage();
       throw new CommandNotFoundException("Command not found " + cmd);
   }
-  
+
   boolean watch = false;
   LOG.debug("Processing " + cmd);
 
@@ -4657,13 +4913,13 @@ protected boolean processZKCmd(MyCommandOptions co) throws CliException, IOExcep
           connectToZK(host);
       }
   }
-  
+
   // Below commands all need a live connection
   if (zk == null || !zk.getState().isAlive()) {
       System.out.println("Not connected");
       return false;
   }
-  
+
   // execute from commandMap
   CliCommand cliCmd = commandMapCli.get(cmd);
   if(cliCmd != null) {
@@ -4675,7 +4931,9 @@ protected boolean processZKCmd(MyCommandOptions co) throws CliException, IOExcep
   return watch;
 }
 ```
+
 ZooKeeper客户端启动的流程可以总结如下：
+
 ```java
 1. 创建ZooKeeper实例：
       创建ZooKeeper类的实例，用于与ZooKeeper服务器进行通信。
@@ -4694,14 +4952,57 @@ ZooKeeper客户端启动的流程可以总结如下：
 8. 关闭会话：
       当不再需要与ZooKeeper服务器通信时，客户端可以关闭会话并释放相关资源。
 ```
+
 总的来说，ZooKeeper客户端启动的流程包括创建ZooKeeper实例、连接服务器、处理会话和连接事件、注册监听器、发送请求、处理响应以及关闭会话等环节。在这个过程中，客户端与ZooKeeper服务器建立连接，并通过发送请求和处理响应来与服务器进行通信，实现对ZooKeeper集群的节点操作和数据读写。
 
 ## 附录
 
+### 启动停止脚本
+
+```shell
+#!/bin/bash
+
+#zookeeper节点
+zookeeperServers='192.168.44.129 192.168.44.131 192.168.44.132'
+
+case $1 in 
+"start") {
+    for zoo in $zookeeperServers
+    do
+        echo ---------- Zookeeper $zoo 启动 ----------
+        ssh $zoo "/mydata/zookeeper/zookeeper-3.5.7/bin/zkServer.sh start"
+    done
+}
+;;
+case $1 in 
+"stop") {
+    for zoo in $zookeeperServers
+    do
+        echo ---------- Zookeeper $zoo 停止 ----------
+        ssh $zoo "/mydata/zookeeper/zookeeper-3.5.7/bin/zkServer.sh stop"
+    done
+}
+;;
+case $1 in 
+"status") {
+    for zoo in $zookeeperServers
+    do
+        echo ---------- Zookeeper $zoo 状态 ----------
+        ssh $zoo "/mydata/zookeeper/zookeeper-3.5.7/bin/zkServer.sh status"
+    done
+}
+;;
+esac
+```
+
+运行脚本期间可能会遇到两个问题：1、J`AVA_HOME`找不到路径，修改`zkEnv.sh`文件指定`JAVA_HOME`即可；2、每次ssh都需要输入密码（设置免密登录即可）。
+
 ### 本地模式
 
 ### 配置参数解读
+
 `zoo.cfg`
+
 ```cfg
 # 通信心跳时间，Zookeeper服务器与客户端心跳时间，单位毫秒。也可以是服务器与服务器之间的心跳时间
 1. tickTime=2000;
@@ -4720,6 +5021,7 @@ ZooKeeper客户端启动的流程可以总结如下：
 ```
 
 ### 命令
+
 ```bin
 # 启动 Zookeeper 服务器
 bin/zkServer.sh start
@@ -4790,35 +5092,46 @@ dataLength = 8
 numChildren = 0
 ```
 
-
-
 ### 选举机制
+
 半数机制，超过半数的投票则通过选举。
+
 1. 第一次启动选举规则：
-   1. 投票过半数时，服务器id的胜出。
-2. 非第一次启动选举规则：
-   1. EPOCH大的直接胜出。
-   2. EPOCH相同，zxid大的胜出。
-   3. zxid相同，服务器id大的胜出。
    
+   1. 投票过半数时，服务器id的胜出。
+
+2. 非第一次启动选举规则：
+   
+   1. EPOCH大的直接胜出。
+   
+   2. EPOCH相同，zxid大的胜出。
+   
+   3. zxid相同，服务器id大的胜出。
+
 ### 生产环境集群安装多数zk合适？
+
 - 10台服务器：3台zk
+
 - 20台服务器：5台zk
+
 - 100台服务器：1台zk
+
 - 200台服务器：11台zk
 
 服务器越多，提高可靠性，但是也会提高通信延时。
 
 ### 常用命令
+
 ls、get、create、delete ...
 
-
-
 ### Watch 监听事件
+
 ![](../image/zookeeper_Watch_监听事件原理.png)
 
 #### 客户端注册 Watcher
-1. `org.apache.zookeeper.ZooKeeper#getData`
+
+1. `org.apache.zookeeper.ZooKeeper#getData`：
+
 ```java
 public byte[] getData(final String path, Watcher watcher, Stat stat)
   throws KeeperException, InterruptedException
@@ -4829,7 +5142,7 @@ public byte[] getData(final String path, Watcher watcher, Stat stat)
   // the watch contains the un-chroot path
   WatchRegistration wcb = null;
   if (watcher != null) {
-      
+
       // 将 watcher 封装为 DataWatchRegistration，保存 watcher 和监听路径的关系
       wcb = new DataWatchRegistration(watcher, clientPath);
   }
@@ -4840,11 +5153,11 @@ public byte[] getData(final String path, Watcher watcher, Stat stat)
   h.setType(ZooDefs.OpCode.getData);
   GetDataRequest request = new GetDataRequest();
   request.setPath(serverPath);
-  
+
   // 标记 request 为监听状态
   request.setWatch(watcher != null);
   GetDataResponse response = new GetDataResponse();
-  
+
   // 向服务器提交请求
   ReplyHeader r = cnxn.submitRequest(h, request, response, wcb);
   if (r.getErr() != 0) {
@@ -4857,7 +5170,9 @@ public byte[] getData(final String path, Watcher watcher, Stat stat)
   return response.getData();
 }
 ```
-2. `org.apache.zookeeper.ClientCnxn#submitRequest`
+
+2. `org.apache.zookeeper.ClientCnxn#submitRequest`：
+
 ```java
 public ReplyHeader submitRequest(RequestHeader h, Record request,
       Record response, WatchRegistration watchRegistration)
@@ -4870,7 +5185,7 @@ public ReplyHeader submitRequest(RequestHeader h, Record request,
       WatchDeregistration watchDeregistration)
       throws InterruptedException {
   ReplyHeader r = new ReplyHeader();
-    
+
   // 封装提交请求参数为 Packet，并放入发送队列
   // packet是Zookeeper客户端和服务器进行网络传输的最小通信协议单元。
   Packet packet = queuePacket(h, r, request, response, null, null, null,
@@ -4892,7 +5207,9 @@ public ReplyHeader submitRequest(RequestHeader h, Record request,
   return r;
 }
 ```
-3. `org.apache.zookeeper.ClientCnxn#queuePacket`
+
+3. `org.apache.zookeeper.ClientCnxn#queuePacket`：
+
 ```java
 public Packet queuePacket(RequestHeader h, ReplyHeader r, Record request,
       Record response, AsyncCallback cb, String clientPath,
@@ -4922,7 +5239,7 @@ public Packet queuePacket(RequestHeader h, ReplyHeader r, Record request,
           if (h.getType() == OpCode.closeSession) {
               closing = true;
           }
-          
+
           // 加入发送队列 outgoingQueue 
           outgoingQueue.add(packet);
       }
@@ -4931,13 +5248,16 @@ public Packet queuePacket(RequestHeader h, ReplyHeader r, Record request,
   return packet;
 }
 ```
-4. `org.apache.zookeeper.ClientCnxn.SendThread#readResponse`用来接收服务端的响应，接收响应并处理后，会执行 finally 块的逻辑，用于将Watch注册到ZKWatchManager中
-5. `org.apache.zookeeper.ClientCnxn#finishPacket`
+
+4. `org.apache.zookeeper.ClientCnxn.SendThread#readResponse`用来接收服务端的响应，接收响应并处理后.会执行 finally 块的逻辑，用于将Watch注册到ZKWatchManager中
+
+5. `org.apache.zookeeper.ClientCnxn#finishPacket`：
+
 ```java
 protected void finishPacket(Packet p) {
   int err = p.replyHeader.getErr();
   if (p.watchRegistration != null) {
-      
+
       // 将Watch注册到ZKWatchManager中
       p.watchRegistration.register(err);
   }
@@ -4968,7 +5288,7 @@ protected void finishPacket(Packet p) {
   if (p.cb == null) {
       synchronized (p) {
           p.finished = true;
-          
+
           // 唤醒阻塞的线程
           p.notifyAll();
       }
@@ -4980,7 +5300,8 @@ protected void finishPacket(Packet p) {
 ```
 
 #### 服务端处理 Watcher
-1. `org.apache.zookeeper.server.FinalRequestProcessor#processRequest`
+
+1. `org.apache.zookeeper.server.FinalRequestProcessor#processRequest`:
 
 `FinalRequestProcessor.processRequest`用来处理客户端发过来的请求。
 
@@ -4995,16 +5316,16 @@ public void processRequest(Request request) {
                 GetDataRequest getDataRequest = new GetDataRequest();
                 ByteBufferInputStream.byteBuffer2Record(request.request, getDataRequest);
                 DataNode n = zks.getZKDatabase().getNode(getDataRequest.getPath());
-                
+
                 // 处理路径不存在的逻辑
                 if (n == null) {
                     throw new KeeperException.NoNodeException();
                 }
-                
+
                 // 检查访问控制
                 PrepRequestProcessor.checkACL(zks, zks.getZKDatabase().aclForNode(n), ZooDefs.Perms.READ, request.authInfo);
                 Stat stat = new Stat();
-                
+
                 // 判断是否传入 watch
                 byte b[] = zks.getZKDatabase().getData(getDataRequest.getPath(), stat, getDataRequest.getWatch() ? cnxn : null);
                 rsp = new GetDataResponse(b, stat);
@@ -5015,7 +5336,7 @@ public void processRequest(Request request) {
         }
         // ...
         try {
-            
+
             // 响应客户端
             cnxn.sendResponse(hdr, rsp, "response");
             if (request.type == OpCode.closeSession) {
@@ -5026,19 +5347,22 @@ public void processRequest(Request request) {
         }
     }
 ```
+
 #### 服务端触发监听
+
 当节点发生事件时，服务器触发这个path的监听。比如 setData()。数据发生变化会执行请求链，会执行`org.apache.zookeeper.server.FinalRequestProcessor#processRequest`。然后经过多次方法调用。
 
 ```txt
 FinalRequestProcessor 
-	-> ZooKeeperServer 
-		-> ZKDatabase 
-			-> DataTree
+    -> ZooKeeperServer 
+        -> ZKDatabase 
+            -> DataTree
 ```
 
 会触发`org.apache.zookeeper.server.DataTree#processTxn`（处理事务请求，创建节点、删除节点和其他的各种事务操作等）
 
-1. `org.apache.zookeeper.server.DataTree#setData`
+1. `org.apache.zookeeper.server.DataTree#setData`:
+
 ```java
 public Stat setData(String path, byte data[], int version, long zxid,
       long time) throws KeeperException.NoNodeException {
@@ -5062,13 +5386,15 @@ public Stat setData(String path, byte data[], int version, long zxid,
     this.updateBytes(lastPrefix, (data == null ? 0 : data.length)
         - (lastdata == null ? 0 : lastdata.length));
   }
-  
+
   // 当客户端执行一个path的setData后，服务器触发这个path的监听（其他事务操作监听类似）
   dataWatches.triggerWatch(path, EventType.NodeDataChanged);
   return s;
 }
 ```
-2. `org.apache.zookeeper.server.WatchManager#triggerWatch`
+
+2. `org.apache.zookeeper.server.WatchManager#triggerWatch`:
+
 ```java
 Set<Watcher> triggerWatch(String path, EventType type) {
   return triggerWatch(path, type, null);
@@ -5077,11 +5403,11 @@ Set<Watcher> triggerWatch(String path, EventType type) {
 Set<Watcher> triggerWatch(String path, EventType type, Set<Watcher> supress) {
   // WatchedEvent参数：(事件类型，会话状态，节点)
   WatchedEvent e = new WatchedEvent(type, KeeperState.SyncConnected, path);
-  
+
   // 收集需要触发的监听
   HashSet<Watcher> watchers;
   synchronized (this) {
-      
+
       // 移除监听，一次监听只能用一次，并赋值给 watchers，用于执行回调
       watchers = watchTable.remove(path);
       if (watchers == null || watchers.isEmpty()) {
@@ -5092,7 +5418,7 @@ Set<Watcher> triggerWatch(String path, EventType type, Set<Watcher> supress) {
           }
           return null;
       }
-      
+
       // 循环通知客户端调用监听
       for (Watcher w : watchers) {
           HashSet<String> paths = watch2Paths.get(w);
@@ -5105,16 +5431,18 @@ Set<Watcher> triggerWatch(String path, EventType type, Set<Watcher> supress) {
       if (supress != null && supress.contains(w)) {
           continue;
       }
-      
+
       // 触发实现类回调
       w.process(e);
   }
   return watchers;
 }
 ```
+
 `NIOServerCnxn`实现了`Watcher`接口，所以`NIOServerCnxn`会执行`process()`。发送事件通知
 
-3. `org.apache.zookeeper.server.NIOServerCnxn#process`
+3. `org.apache.zookeeper.server.NIOServerCnxn#process`:
+
 ```java
 public void process(WatchedEvent event) {
   ReplyHeader h = new ReplyHeader(-1, -1L, 0);
@@ -5171,8 +5499,11 @@ public void sendResponse(ReplyHeader h, Record r, String tag) throws IOException
 ```
 
 #### 客户端回调
+
 客户端使用`SendThread#readResponse`接收服务端的事件通知。`replyHdr.getXid() == -1`是事件通知。大致逻辑就是：收集需要触发的监听，并包装成WatcherSetEventPair对象，放到waitingEvents队列中以便稍后处理。
-1. `org.apache.zookeeper.ClientCnxn.EventThread#queueEvent`
+
+1. `org.apache.zookeeper.ClientCnxn.EventThread#queueEvent`:
+
 ```java
 public void queueEvent(WatchedEvent event) {
    queueEvent(event, null);
@@ -5197,7 +5528,9 @@ private void queueEvent(WatchedEvent event, Set<Watcher> materializedWatchers) {
    waitingEvents.add(pair);
 }
 ```
-2. `org.apache.zookeeper.ZooKeeper.ZKWatchManager#materialize`
+
+2. `org.apache.zookeeper.ZooKeeper.ZKWatchManager#materialize`:
+
 ```java
 public Set<Watcher> materialize(Watcher.Event.KeeperState state,
                                         Watcher.Event.EventType type,
@@ -5238,7 +5571,7 @@ public Set<Watcher> materialize(Watcher.Event.KeeperState state,
 
        return result;
    case NodeDataChanged:
-   
+
    // 收集需要触发的 watcher，并从 dataWatches 中移除
    case NodeCreated:
        synchronized (dataWatches) {
@@ -5279,8 +5612,11 @@ public Set<Watcher> materialize(Watcher.Event.KeeperState state,
    return result;
 }
 ```
-而`EventThread#run()`会不断的处理`waitingEvents`队列，每次从`waitingEvents`队列中取出一个，并串行的去触发
-3. `org.apache.zookeeper.ClientCnxn.EventThread#run`
+
+而`EventThread#run()`会不断的处理`waitingEvents`队列，每次从`waitingEvents`队列中取出一个，串行触发。
+
+3. `org.apache.zookeeper.ClientCnxn.EventThread#run`:
+
 ```java
 public void run() {
   try {
@@ -5308,18 +5644,20 @@ public void run() {
             Long.toHexString(getSessionId()));
 }
 ```
-4. ``
+
+4. `org.apache.zookeeper.ClientCnxn.EventThread#processEvent`：
+
 ```java
 private void processEvent(Object event) {
  try {
- 
+
      // 监听事件被包装为 WatcherSetEventPair
      if (event instanceof WatcherSetEventPair) {
          // each watcher will process the event
          WatcherSetEventPair pair = (WatcherSetEventPair) event;
          for (Watcher watcher : pair.watchers) {
              try {
-                 
+
                  // 调用具体的监听回调
                  watcher.process(pair.event);
              } catch (Throwable t) {
@@ -5469,7 +5807,9 @@ private void processEvent(Object event) {
  }
 }
 ```
+
 总结：
+
 * Watch使用了推拉相结合发布/订阅的模式。客户端主动向服务器注册监听的节点，一旦节点发生变化，服务器就会主动向客户端发送watcher事件通知，客户端接收到这个通知后，可以主动到服务器获取最新的数据。而且监听是有时序性和顺序性的保证。监听是一次性的，触发后就会移除掉，除非重新注册监听，但是在3.6版本开始可以使用addWatch设置持久递归的监听。
 
 ### startSendingPackets()
