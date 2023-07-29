@@ -1,5 +1,9 @@
 # Kafka
 
+> 官网：https://kafka.apache.org/documentation/
+> 
+> 学习参照尚硅谷视频
+
 ## 入门
 
 ### 定义
@@ -16,9 +20,29 @@
 
 ### 生产者
 
+#### 发送原理
+
+在消息发送的过程中，涉及到了两个线程：main 线程和 Sender 线程。在 main 线程中创建了一个双端队列 RecordAccumulator。main 线程将消息发送给 RecordAccumulator，Sender 线程不断从 RecordAccumulator 中拉取消息发送到 Kafka Broker。
+
 ![](../image/kafka_生产者_发送流程.png)
 
 重试次数默认是 Integer 最大值。
+
+#### 生产者重要配置参数列表
+
+| 参数名称                                  | 描述                                                                                                                                                   |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| bootstrap.servers                     | 生产者连接集群所需的 broker 地址。可以设置 1 个或者多个，中间用逗号隔开。不用指定所有的Broker地址，因为生产者可以从给定的 broker中查找到其他 broker 信息。                                                        |
+| key.serializer 和 value.serializer     | 指定发送消息的 key 和 value 的序列化类型。一定要写全类名。                                                                                                                  |
+| buffer.memory                         | RecordAccumulator 缓冲区总大小，默认 32m。                                                                                                                     |
+| batch.size                            | 缓冲区一批数据最大值，默认 16k。适当增加该值，可以提高吞吐量，但是如果该值设置太大，会导致数据传输延迟增加。                                                                                             |
+| linger.ms                             | 如果数据迟迟未达到 batch.size，sender 等待 linger.time 之后就会发送数据。单位 ms，默认值是 0ms，表示没有延迟。生产环境建议该值大小为 5-100ms 之间。                                                    |
+| acks                                  | 0：生产者发送过来的数据，不需要等数据落盘应答。<br/>1：生产者发送过来的数据，Leader 收到数据后应答。<br/>-1（all）：生产者发送过来的数据，Leader和 isr 队列里面的所有节点收齐数据后应答。默认值是-1，-1 和all 是等价的。                   |
+| max.in.flight.requests.per.connection | 允许最多没有返回 ack 的次数，默认为 5，开启幂等性时要保证该值是 1-5 的数字。                                                                                                         |
+| retries                               | 当消息发送出现错误的时候，系统会重发消息。retries表示重试次数。默认是 int 最大值，2147483647。如果设置了重试，还想保证消息的有序性，需要设置MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION=1 否则在重试此失败消息的时候，其他的消息可能发送成功了。 |
+| retry.backoff.ms                      | 两次重试之间的时间间隔，默认是 100ms。                                                                                                                               |
+| enable.idempotence                    | 是否开启幂等性，默认 true，开启幂等性。                                                                                                                               |
+| compression.type                      | 生产者发送的所有数据的压缩方式。默认是 none，也就是不压缩。支持压缩类型：none、gzip、snappy、lz4 和 zstd。                                                                                  |
 
 #### 分区
 
@@ -122,7 +146,7 @@ public class CustomProducerTransactions {
     // 1. 创建 kafka 生产者的配置对象
     Properties properties = new Properties();
     // 2. 给 kafka 配置对象添加配置信息
-    properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "192.168.1.200:9092");
+    properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092");
 
     // key,value 序列化
     properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
@@ -190,7 +214,7 @@ public class CustomProducerTransactions {
 
 ![](../image/kafka_broker_工作流程总览.png)
 
-##### Broker重要参数
+##### Broker重要配置参数列表
 
 | 参数                                      | 描述                                                                           |
 | --------------------------------------- | ---------------------------------------------------------------------------- |
@@ -236,7 +260,7 @@ public class CustomProducerTransactions {
 2. 生成一个负载均衡的计划
 
 ```shell
-[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server 192.168.1.200:9092 --topics-to-move-json-file topics-to-move.json --broker-list "0,1,2,3" --generate
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --topics-to-move-json-file topics-to-move.json --broker-list "0,1,2,3" --generate
 
 Current partition replica assignment
 
@@ -270,13 +294,13 @@ Proposed partition reassignment configuration
 4. 执行副本存储计划
 
 ```shell
-[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server 192.168.1.200:9092 --reassignment-json-file increase-replication-factor.json --execute
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --reassignment-json-file increase-replication-factor.json --execute
 ```
 
 5. 验证副本存储计划
 
 ```shell
-[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server 192.168.1.200:9092 --reassignment-json-file increase-replication-factor.json --verify
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --reassignment-json-file increase-replication-factor.json --verify
 
 Status of partition reassignment:
 Reassignment of partition first-0 is complete.
@@ -306,7 +330,7 @@ Clearing topic-level throttles on topic first
 2. 创建执行计划。
 
 ```shell
-[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server 192.168.1.200:9092 --topics-to-move-json-file topics-to-move.json --broker-list "0,1,2" --generate
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --topics-to-move-json-file topics-to-move.json --broker-list "0,1,2" --generate
 
 Current partition replica assignment
 
@@ -339,13 +363,13 @@ Proposed partition reassignment configuration
 4. 执行副本存储计划。
 
 ```shell
-[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server 192.168.1.200:9092 --reassignment-json-file increase-replication-factor.json --execute
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --reassignment-json-file increase-replication-factor.json --execute
 ```
 
 5. 验证副本存储计划。
 
 ```shell
-[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server 192.168.1.200:9092 --reassignment-json-file increase-replication-factor.json --verify
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --reassignment-json-file increase-replication-factor.json --verify
 
 Status of partition reassignment:
 Reassignment of partition first-0 is complete.
@@ -405,13 +429,13 @@ Controller 的信息同步工作是依赖于 Zookeeper 的。
 1. 创建一个新的 topic，名称为 second。16 分区，3 个副本
 
 ```shell
-[root@server7 kafka]$ bin/kafka-topics.sh --bootstrap-server 192.168.1.200:9092 --create --partitions 16 --replication-factor 3 --topic second
+[root@server7 kafka]$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --partitions 16 --replication-factor 3 --topic second
 ```
 
 2. 查看分区和副本情况。
 
 ```shell
-[root@server7 kafka]$ bin/kafka-topics.sh --bootstrap-server 192.168.1.200:9092 --describe --topic second
+[root@server7 kafka]$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic second
 Topic: second4 Partition: 0 Leader: 0 Replicas: 0,1,2 Isr: 0,1,2
 Topic: second4 Partition: 1 Leader: 1 Replicas: 1,2,3 Isr: 1,2,3
 Topic: second4 Partition: 2 Leader: 2 Replicas: 2,3,0 Isr: 2,3,0
@@ -437,23 +461,577 @@ Topic: second4 Partition: 15 Leader: 3 Replicas: 3,0,1 Isr: 3,0,1
 
 ##### 手动调整分区副本存储
 
+在生产环境中，每台服务器的配置和性能不一致，但是Kafka只会根据自己的代码规则创建对应的分区副本，就会导致个别服务器存储压力较大。所有需要手动调整分区副本的存储。
+
+需求：创建一个新的topic，4个分区，两个副本，名称为three。将 该topic的所有副本都存储到broker0和broker1两台服务器上。
+
+手动调整分区副本存储的步骤如下：
+
+1. 创建一个新的 topic，名称为 three。
+
+```shell
+[root@server7 kafka]$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --partitions 4 --replication-factor 2 --topic three
+```
+
+2. 查看分区副本存储情况。
+
+```shell
+[root@server7 kafka]$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic three
+```
+
+3. 创建副本存储计划（所有副本都指定存储在 broker0、broker1 中）。
+
+```shell
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --topics-to-move-json-file topics-to-move.json --broker-list "0,1" --generate
+  Current partition replica assignment
+  ...
+  Proposed partition reassignment configuration
+  ...
+
+[root@server7 kafka]$ vim increase-replication-factor.json
+# 填入 Proposed partition reassignment configuration 中的内容
+{
+  "version":1,
+  "partitions":[{"topic":"three","partition":0,"replicas":[0,1]},
+                {"topic":"three","partition":1,"replicas":[0,1]},
+                {"topic":"three","partition":2,"replicas":[1,0]},
+                {"topic":"three","partition":3,"replicas":[1,0]}]
+}
+```
+
+4. 执行副本存储计划。
+
+```shell
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --reassignment-json-file increase-replication-factor.json --execute
+```
+
+5. 验证副本存储计划。
+
+```shell
+[root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --reassignment-json-file increase-replication-factor.json --verify
+```
+
+6. 查看分区副本存储情况。
+
+```shell
+[root@server7 kafka]$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic three
+```
+
+##### Leader Partition 负载平衡
+
+正常情况下，Kafka本身会自动把Leader Partition均匀分散在各个机器上，来保证每台机器的读写吞吐量都是均匀的。但是如果某些broker宕机，会导致Leader Partition过于集中在其他少部分几台broker上，这会导致少数几台broker的读写请求压力过高，其他宕机的broker重启之后都是follower partition，读写请求很低，造成集群负载不均衡。
+
+![img.png](../image/kafka_broker_Leader_Partition_负载平衡.png)
+
+Replicas中排名最靠前的就是Leader。Replicas会分布在不同的Broker中。
+
+broker2和broker3节点和broker0不平衡率一样，需要再平衡。而Broker1的不平衡数为0，不需要再平衡。
+
+| 参数名称                                    | 描述                                                                                |
+| --------------------------------------- | --------------------------------------------------------------------------------- |
+| auto.leader.rebalance.enable            | 默认是 true。 自动 Leader Partition 平衡。生产环境中，leader 重选举的代价比较大，可能会带来性能影响，建议设置为 false 关闭。 |
+| leader.imbalance.per.broker.percentage  | 默认是 10%。每个 broker 允许的不平衡的 leader的比率。如果每个 broker 超过了这个值，控制器会触发 leader 的平衡。         |
+| leader.imbalance.check.interval.seconds | 默认值 300 秒。检查 leader 负载是否平衡的间隔时间。                                                  |
+
+##### 增加副本因子
+
+在生产环境当中，由于某个主题的重要等级需要提升，我们考虑增加副本。副本数的增加需要先制定计划，然后根据计划执行。
+
+先准备一个主题。
+
+```shell
+[root@server7 kafka]$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --partitions 3 --replication-factor 1 --topic four
+```
+
+1. 手动增加副本存储
+   
+   - 创建副本存储计划（所有副本都指定存储在 broker0、broker1、broker2 中）。
+   
+   ```shell
+   [root@server7 kafka]$ vim increase-replication-factor.json
+   
+   {
+    "version":1,
+    "partitions":[{"topic":"four","partition":0,"replicas":[0,1,2]},
+                  {"topic":"four","partition":1,"replicas":[0,1,2]},
+                  {"topic":"four","partition":2,"replicas":[0,1,2]}]
+   }
+   ```
+   
+   - 执行副本存储计划。
+   
+   ```shell
+   [root@server7 kafka]$ bin/kafka-reassign-partitions.sh --bootstrap-server localhost:9092 --reassignment-json-file increase-replication-factor.json --execute
+   ```
+
 #### 文件存储
 
+##### 文件存储机制
+
+Topic是逻辑上的概念，而partition是物理上的概念，每个partition对应于一个log文件，该log文件中存储的就是Producer生产的数据。Producer生产的数据会被不断追加到该log文件末端，为防止log文件过大导致数据定位效率低下，Kafka采取了分片和索引机制，将每个partition分为多个segment。每个segment包括：`.index`文件、`.log`文件和`.timeindex`等文件。这些文件位于一个文件夹下，该文件夹的命名规则为：topic名称+分区序号，例如：first-0。
+
+![img.png](../image/kafka_broker_文件存储机制.png)
+
+一个Topic（主题）被分为多个Partition（分区）。一个Partition被分为多个Segment。
+
+- `.log`：日志文件。
+
+- `.index`：偏移量索引文件。
+
+- `.timeindex`：时间戳索引文件。
+
+- 其它文件
+
+index和log文件以当前segment的第一条消息的offset命名。
+
+每一个Segment容量是1G。
+
+###### Topic数据存储在什么位置？
+
+1. 启动生产者并发送消息。
+
+```shell
+[root@server7 kafka]$ bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic first
+>hello world
+```
+
+2. 查看集群中任意一台服务器上的`的/opt/module/kafka/datas/first-1`（first=0、first-2）路径中的文件。
+
+```shell
+[root@server7 first-1]$ ls
+00000000000000000000.index
+00000000000000000000.log
+00000000000000000000.snapshot
+00000000000000000000.timeindex
+leader-epoch-checkpoint
+partition.metadata
+```
+
+3. 直接查看log日志是乱码，需通过工具查看index和log信息。
+
+```shell
+[root@server7 first-1]$ kafka-run-class.sh kafka.tools.DumpLogSegments --files ./00000000000000000000.index
+
+Dumping ./00000000000000000000.index
+offset: 3 position: 152
+
+[root@server7 first-1]$ kafka-run-class.sh kafka.tools.DumpLogSegments --files ./00000000000000000000.log
+
+Dumping datas/first-0/00000000000000000000.log
+Starting offset: 0
+baseOffset: 0 lastOffset: 1 count: 2 baseSequence: -1 lastSequence: -1 producerId: -1 producerEpoch: -1 partitionLeaderEpoch: 0 isTransactional: false isControl: false position: 0 CreateTime: 1636338440962 size: 75 magic: 2 compresscodec: none crc: 2745337109 isvalid: true
+baseOffset: 2 lastOffset: 2 count: 1 baseSequence: -1 lastSequence: -1 producerId: -1 producerEpoch: -1 partitionLeaderEpoch: 0 isTransactional: false isControl: false position: 75 CreateTime: 1636351749089 size: 77 magic: 2 compresscodec: none crc: 273943004 isvalid: true
+baseOffset: 3 lastOffset: 3 count: 1 baseSequence: -1 lastSequence: -1 producerId: -1 producerEpoch: -1 partitionLeaderEpoch: 0 isTransactional: false isControl: false position: 152 CreateTime: 1636351749119 size: 77 magic: 2 compresscodec: none crc: 106207379 isvalid: true
+baseOffset: 4 lastOffset: 8 count: 5 baseSequence: -1 lastSequence: -1 producerId: -1 producerEpoch: -1 partitionLeaderEpoch: 0 isTransactional: false isControl: false position: 229 CreateTime: 1636353061435 size: 141 magic: 2 compresscodec: none crc: 157376877 isvalid: true
+baseOffset: 9 lastOffset: 13 count: 5 baseSequence: -1 lastSequence: -1 producerId: -1 producerEpoch: -1 partitionLeaderEpoch: 0 isTransactional: false isControl: false position: 370 CreateTime: 1636353204051 size: 146 magic: 2 compresscodec: none crc: 4058582827 isvalid: true
+```
+
+###### Log文件和Index文件详解
+
+![img.png](../image/kafka_Log文件和Index文件详解.png)
+
+1. 根据目标offset（600）定位Segment文件。
+
+2. 找到小于等于目标offset的最大offset对应的索引项。
+
+3. 定位到log文件。
+
+4. 向下遍历找到目标Record。
+
+`.index`文件中的索引为稀疏索引，大约每往log文件写入4KB数据，会往index文件写入一条索引。由参数`log.index.interval.bytes`控制，默认4KB。
+
+.Index文件中保存的offset为相对offset，这样能确保offset的值所占空间不会过大，因此能将offset的值控制在固定大小。
+
+###### 日志存储参数配置
+
+| 参数                       | 描述                                                  |
+| ------------------------ | --------------------------------------------------- |
+| log.segment.bytes        | Kafka 中 log 日志是分成一块块存储的，此配置是指 log 日志划分成块的大小，默认值 1G。 |
+| log.index.interval.bytes | 默认 4kb，kafka 里面每当写入了 4kb 大小的日志（.log），然后就            |
+
+##### 文件清理策略
+
+Kafka 中默认的日志保存时间为 7 天，可以通过调整如下参数修改保存时间。
+
+- log.retention.hours，最低优先级小时，默认 7 天。
+
+- log.retention.minutes，分钟。
+
+- log.retention.ms，最高优先级毫秒。
+
+- log.retention.check.interval.ms，负责设置检查周期，默认 5 分钟。
+
+如果日志超过了设置的时间，怎么处理呢？Kafka 中提供的日志清理策略有 delete 和 compact 两种。
+
+- `log.cleanup.policy=delete`（default）：过期数据删除
+  
+  - 基于时间：默认打开。以 segment 中所有记录中的最大时间戳作为该文件时间戳（按照segment中最后一条记录的时间戳作为过期时间）。
+  
+  - 基于大小：默认关闭。超过设置的所有日志总大小，删除最早的 segment。由参数`log.retention.bytes`控制，默认等于-1，表示无穷大。
+
+如果一个 segment 中有一部分数据过期，一部分没有过期，怎么处理？
+
+![](../image/kafka_broker_日志清除策略_delete.png)
+
+如果一个 segment 中有一部分数据过期，一部分没有过期，以最后一条记录的时间戳作为新的计算周期进行删除。即最后一条记录过期后，再删除这个segment。
+
+- `log.cleanup.policy=compact`：日志压缩（compact日志压缩：对于相同key的不同value值，只保留最后一个版本。）
+
+![](../image/kafka_broker_日志清除策略_compact.png)
+
+压缩后的offset可能是不连续的，比如上图中没有6，当从这些offset消费消息时，将会拿到比这个offset大的offset对应的消息，实际上会拿到offset为7的消息，并从这个位置开始消费。
+
+这种策略只适合特殊场景，比如消息的key是用户ID，value是用户的资料，通过这种压缩策略，整个消息集里就保存了所有用户最新的资料。
+
+#### 高效读写数据
+
+1. Kafka 本身是分布式集群，可以采用分区技术，并行度高
+
+2. 读数据采用稀疏索引，可以快速定位要消费的数据
+
+3. 顺序写磁盘
+   
+   - Kafka 的 producer 生产数据，要写入到 log 文件中，写的过程是一直追加到文件末端，为顺序写。顺序写之所以快，是因为其省去了大量磁头寻址的时间。
+
+4. 页缓存 + 零拷贝技术
+   
+   - 零拷贝：Kafka的数据加工处理操作交由Kafka生产者和Kafka消费者处理。Kafka Broker应用层不关心存储的数据，所以就不用走应用层，传输效率高。
+   
+   - PageCache页缓存：Kafka重度依赖底层操作系统提供的PageCache功 能。当上层有写操作时，操作系统只是将数据写入PageCache。当读操作发生时，先从PageCache中查找，如果找不到，再去磁盘中读取。实际上PageCache是把尽可能多的空闲内存 都当做了磁盘缓存来使用。
+
+![](../image/kafka_broker_高效读写数据_零拷贝_PageCache.png)
+
+| 参数                          | 描述                                                                |
+| --------------------------- | ----------------------------------------------------------------- |
+| log.flush.interval.messages | 强制页缓存刷写到磁盘的条数，默认是 long 的最大值，9223372036854775807。一般不建议修改，交给系统自己管理。 |
+| log.flush.interval.ms       | 每隔多久，刷数据到磁盘，默认是 null。一般不建议修改，                                     |
+
 ### 消费者
+
+#### 消费方式
+
+- pull（拉）模 式：consumer采用从broker中主动拉取数据。（Kafka采用这种方式）
+
+- push（推）模式：Kafka没有采用这种方式，因为由broker决定消息发送速率，很难适应所有消费者的消费速率。
+
+pull模式不足之处是，如 果Kafka没有数据，消费者可能会陷入循环中，一直返回空数据。
+
+#### 消费者工作流程
+
+##### 消费者工作流程
+
+![](../image/kafka_消费者总体工作流程.png)
+
+##### 消费者组原理
+
+Consumer Group（CG）：消费者组，由多个consumer组成。形成一个消费者组的条件是所有消费者的groupid相同。
+
+- 消费者组内每个消费者负责消费不同分区的数据，一个分区只能由一个组内消费者消费。
+
+- 消费者组之间互不影响。所有的消费者都属于某个消费者组，即消费者组是逻辑上的一个订阅者。
+
+![](../image/kafka_消费者组.png)
+
+如果向消费组中添加更多的消费者，超过主题分区数量，则有一部分消费者就会闲置，不会接收任何消息。
+
+![](../image/kafka_消费者组_02.png)
+
+##### 消费者组初始化流程
+
+coordinator：辅助实现消费者组的初始化和分区的分配。coordinator节点选择：groupid的hashcode值 % 50（ __consumer_offsets的分区数量，默认50）
+
+例如： groupid的hashcode值 = 1，1% 50 = 1，那么__consumer_offsets 主题的1号分区，在哪个broker上，就选择这个节点的coordinator作为这个消费者组的老大。消费者组下的所有的消费者提交offset的时候就往这个分区去提交offset。
+
+![](../image/kafka_消费者组初始化流程.png)
+
+##### 消费者组详细消费流程
+
+![](../image/kafka_消费者组详细消费流程.png)
+
+##### 消费者重要参数
+
+| 参数                                    | 描述                                                                                                                                                                            |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| bootstrap.servers                     | 向 Kafka 集群建立初始连接用到的 host/port 列表。                                                                                                                                             |
+| key.deserializer 和 value.deserializer | 指定接收消息的 key 和 value 的反序列化类型。一定要写全类名。                                                                                                                                          |
+| group.id                              | 标记消费者所属的消费者组。                                                                                                                                                                 |
+| enable.auto.commit                    | 默认值为 true，消费者会自动周期性地向服务器提交偏移量。                                                                                                                                                |
+| auto.commit.interval.ms               | 如果设置了 enable.auto.commit 的值为 true， 则该值定义了消费者偏移量向 Kafka 提交的频率，默认 5s。                                                                                                           |
+| auto.offset.reset                     | 当 Kafka 中没有初始偏移量或当前偏移量在服务器中不存在（如，数据被删除了），该如何处理？<br/>earliest：自动重置偏移量到最早的偏移量。<br/>latest：默认，自动重置偏移量为最新的偏移量。<br/>none：如果消费组原来的（previous）偏移量不存在，则向消费者抛异常。<br/>anything：向消费者抛异常。  |
+| heartbeat.interval.ms                 | Kafka 消费者和 coordinator 之间的心跳时间，默认 3s。该条目的值必须小于 session.timeout.ms ，也不应该高于session.timeout.ms 的 1/3。                                                                            |
+| session.timeout.ms                    | Kafka 消费者和 coordinator 之间连接超时时间，默认 45s。超过该值，该消费者被移除，消费者组执行再平衡。                                                                                                                |
+| max.poll.interval.ms                  | 消费者处理消息的最大时长，默认是 5 分钟。超过该值，该消费者被移除，消费者组执行再平衡。                                                                                                                                 |
+| fetch.min.bytes                       | 默认 1 个字节。消费者获取服务器端一批消息最小的字节数。                                                                                                                                                 |
+| fetch.max.wait.ms                     | 默认 500ms。如果没有从服务器端获取到一批数据的最小字节数。该时间到，仍然会返回数据。                                                                                                                                 |
+| fetch.max.bytes                       | 默认 Default: 52428800（50 m）。消费者获取服务器端一批消息最大的字节数。如果服务器端一批次的数据大于该值（50m）仍然可以拉取回来这批数据，因此，这不是一个绝对最大值。一批次的大小受 message.max.bytes （broker config）和 max.message.bytes （topic config）影响。 |
+| max.poll.records                      | 一次 poll 拉取数据返回消息的最大条数，默认是 500 条。                                                                                                                                              |
+
+#### 分区的分配以及再平衡
+
+一个consumer group中有多个consumer组成，一个 topic有多个partition组成，现在的问题是，到底由哪个consumer来消费哪个partition的数据?
+
+Kafka有四种主流的分区分配策略：Range、RoundRobin、Sticky、CooperativeSticky。可以通过配置参数`partition.assignment.strategy`，修改分区的分配策略。默认策略是Range + CooperativeSticky。Kafka可以同时使用多个分区分配策略。
+
+同时可以自定义消费分区策略：实现`org.apache.kafka.clients.consumer.ConsumerPartitionAssignor`接口。
+
+| 参数                            | 描述                                                                                                                              |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| heartbeat.interval.ms         | Kafka 消费者和 coordinator 之间的心跳时间，默认 3s。该条目的值必须小于 session.timeout.ms，也不应该高于session.timeout.ms 的 1/3。                               |
+| session.timeout.ms            | Kafka 消费者和 coordinator 之间连接超时时间，默认 45s。超过该值，该消费者被移除，消费者组执行再平衡。                                                                  |
+| max.poll.interval.ms          | 消费者处理消息的最大时长，默认是 5 分钟。超过该值，该消费者被移除，消费者组执行再平衡。                                                                                   |
+| partition.assignment.strategy | 消费者分区配策略，默认策略是 Range +CooperativeSticky。Kafka 可以同时使用多个分区分配策略。可 以 选 择 的 策 略 包 括 ： Range 、 RoundRobin 、 Sticky 、CooperativeSticky |
+
+##### Range
+
+###### Range 分区策略原理
+
+Range 是对每个 topic 而言的。首先对同一个 topic 里面的分区按照序号进行排序，并对消费者按照字母顺序进行排序。
+
+假如现在有 7 个分区，3 个消费者，排序后的分区将会是0,1,2,3,4,5,6；消费者排序完之后将会是C0,C1,C2。
+
+通过 partitions数/consumer数 来决定每个消费者应该消费几个分区。如果除不尽，那么前面几个消费者将会多消费 1 个分区。
+
+例如，7/3 = 2 余 1 ，除不尽，那么 消费者 C0 便会多消费 1 个分区。 8/3=2余2，除不尽，那么C0和C1分别多消费一个。
+
+但如果只是针对 1 个 topic 而言，C0消费者多消费1个分区影响不是很大。但是如果有 N 多个 topic，那么针对每个 topic，消费者 C0都将多消费 1 个分区，topic越多，C0消费的分区会比其他消费者明显多消费 N 个分区。
+
+![img.png](../image/kafka_分区分配策略之Range.png)
+
+###### Range 分区分配再平衡案例
+
+Kafka集群消费者消费说明：
+
+- 0 号消费者：消费到 1、2 号分区数据。
+
+- 1 号消费者：消费到 3、4 号分区数据。
+
+- 2 号消费者：消费到 5、6 号分区数据。
+1. 手动停止掉 0 号消费者，快速重新发送消息观看结果（45s 以内，越快越好）。
+
+0 号消费者挂掉后，消费者组需要按照超时时间 45s 来判断它是否退出，所以需要等待，时间到了 45s 后，判断它真的退出就会把任务分配给其他 broker 执行。
+
+而0号消费者的任务会整体被分配到 1 号消费者或者 2 号消费者。
+
+2. 再次重新发送消息观看结果（45s 以后）。（分区分配再平衡）
+- 1 号消费者：消费到 0、1、2、3 号分区数据。
+
+- 2 号消费者：消费到 4、5、6 号分区数据。
+
+消费者 0 已经被踢出消费者组，所以重新按照 range 方式分配。
+
+##### RoundRobin
+
+###### RoundRobin 分区策略原理
+
+RoundRobin 是针对集群中所有Topic而言。
+
+RoundRobin 轮询分区策略，是把所有的 partition 和所有的 consumer 都列出来，然后按照 hashcode 进行排序，最后通过轮询算法来分配 partition 给到各个消费者。
+
+![](../image/kafka_分区分配策略之RoundRobin.png)
+
+###### RoundRobin 分区分配再平衡案例
+
+Kafka集群消费者消费说明：
+
+- 0 号消费者：消费到 1、4、7 号分区数据。
+
+- 1 号消费者：消费到 2、5 号分区数据。
+
+- 2 号消费者：消费到 3、6 号分区数据。
+1. 手动停止掉 0 号消费者，快速重新发送消息观看结果（45s 以内，越快越好）。
+
+0 号消费者挂掉后，消费者组需要按照超时时间 45s 来判断它是否退出，所以需要等待，时间到了 45s 后，判断它真的退出就会把任务分配给其他 broker 执行。
+
+而0 号消费者的任务会按照 RoundRobin 的方式，把数据轮询分成 0 、6 和 3 号分区数据，分别由 1 号消费者或者 2 号消费者消费。（Kafka分区从0开始）
+
+2. 再次重新发送消息观看结果（45s 以后）。
+- 1 号消费者：消费到 0、2、4、6 号分区数据
+
+- 2 号消费者：消费到 1、3、5 号分区数据
+
+消费者 0 已经被踢出消费者组，所以重新按照 RoundRobin 方式分配。
+
+##### Sticky
+
+Sticky 是针对集群中所有Topic而言。
+
+粘性分区定义：可以理解为分配的结果带有`粘性的`。即在执行一次新的分配之前，考虑上一次分配的结果，尽量少的调整分配的变动，可以节省大量的开销。
+
+粘性分区是 Kafka 从 0.11.x 版本开始引入这种分配策略，首先会尽量均衡的放置分区到消费者上面，在出现同一消费者组内消费者出现问题的时候，会尽量保持原有分配的分区不变化。
+
+#### offset位移
+
+##### offset默认维护position
+
+Kafka0.9版本之前，consumer默认将offset保存在Zookeeper中。从0.9版本开始，consumer默认 将offset保存在Kafka一个内置的topic中，该topic为`__consumer_offsets`。
+
+![img.png](../image/kafka_offset的默认维护位置.png)
+
+`__consumer_offsets` 主题里面采用 key 和 value 的方式存储数据。key 是 group.id+topic+分区号，value 就是当前 offset 的值。每隔一段时间，kafka 内部会对这个 topic 进行 compact，也就是每个 group.id+topic+分区号就保留最新数据。
+
+如果需要消费系统主题`__consumer_offsets`，在配置文件`consumer.properties`中添加配置 `exclude.internal.topics=false`，默认是 true，表示不能消费系统主题。为了查看该系统主题数据，所以该参数修改为 false。
+
+```shell
+[root@server7 kafka]$ bin/kafka-console-consumer.sh --topic __consumer_offsets --bootstrap-server localhost:9092 --consumer.config config/consumer.properties --formatter "kafka.coordinator.group.GroupMetadataManager\$OffsetsMessageFormatter" --from-beginning
+```
+
+##### 自动提交offset
+
+- enable.auto.commit：是否开启自动提交offset功能，默认是true
+
+- auto.commit.interval.ms：自动提交offset的时间间隔，默认是5s
+
+![](../image/kafka_自动提交offset.png)
+
+| 参数                      | 描述                                         |
+| ----------------------- | ------------------------------------------ |
+| enable.auto.commit      | 默认值为 true，消费者会自动周期性地向服务器提交偏移量。             |
+| auto.commit.interval.ms | 如果设置了 enable.auto.commit 的值为 true， 则该值定义了消 |
+
+##### 手动提交offset
+
+手动提交offset的方法有两种：分别是commitSync（同步提交）和commitAsync（异步提交）。两者的相同点是，都会将本次提交的一批数据中最高的偏移量提交；不同点是，同步提交阻塞当前线程，一直到提交成功，并且会自动失败重试（由不可控因素导致，也会出现提交失败）；而异步提交则没有失败重试机制，故有可能提交失败。
+
+- commitSync()（同步提交）：必须等待offset提交完毕，再去消费下一批数据。
+  
+  - 同步提交 offset 有失败重试机制，故更加可靠，但是由于一直等待提交结果，提交的效率比较低。
+
+- commitAsync()（异步提交） ：发送完提交offset请求后，就开始消费下一批数据了。
+  
+  - 然同步提交 offset 更可靠一些，但是由于其会阻塞当前线程，直到提交成功。因此吞吐量会受到很大的影响。因此更多的情况下，会选用异步提交 offset 的方式。
+
+![](../image/kafka_手动提交offset.png)
+
+##### 指定offset消费
+
+配置项 auto.offset.reset 取值有三种（earliest 、latest、none）默认是 latest。
+
+当 Kafka 中没有初始偏移量（消费者组第一次消费）或服务器上不再存在当前偏移量时（例如该数据已被删除），该怎么办？
+
+1. earliest：自动将偏移量重置为最早的偏移量。等同于命令行参数`--from-beginning`。
+
+2. latest（默认值）：自动将偏移量重置为最新偏移量。
+
+3. none：如果未找到消费者组的先前偏移量，则向消费者抛出异常。
+
+![](../image/kafka_指定offset提交.png)
+
+4. 任意指定 offset 位移开始消费。
+
+```java
+Set<TopicPartition> assignment= new HashSet<>();
+
+while (assignment.size() == 0) {
+    kafkaConsumer.poll(Duration.ofSeconds(1));
+    // 获取消费者分区分配信息（有了分区分配信息才能开始消费）
+    assignment = kafkaConsumer.assignment();
+}
+
+// 遍历所有分区，并指定 offset 从 1700 的位置开始消费
+for (TopicPartition tp: assignment) {
+    kafkaConsumer.seek(tp, 1700);
+}
+```
+
+##### 指定时间消费
+
+需求：在生产环境中，会遇到最近消费的几个小时数据异常，想重新按照时间消费。例如要求按照时间消费前一天的数据，怎么处理？
+
+```java
+Set<TopicPartition> assignment = new HashSet<>();
+
+while (assignment.size() == 0) {
+    kafkaConsumer.poll(Duration.ofSeconds(1));
+
+    // 获取消费者分区分配信息（有了分区分配信息才能开始消费）
+    assignment = kafkaConsumer.assignment();
+}
+
+HashMap<TopicPartition, Long> timestampToSearch = new HashMap<>();
+
+// 封装集合存储，每个分区对应一天前的数据
+for (TopicPartition topicPartition : assignment) {
+    timestampToSearch.put(topicPartition, System.currentTimeMillis() - 1 * 24 * 3600 * 1000);
+}
+
+// 获取从 1 天前开始消费的每个分区的 offset
+Map<TopicPartition, OffsetAndTimestamp> offsets = kafkaConsumer.offsetsForTimes(timestampToSearch);
+
+// 遍历每个分区，对每个分区设置消费时间。
+for (TopicPartition topicPartition : assignment) {
+    OffsetAndTimestamp offsetAndTimestamp =
+    offsets.get(topicPartition);
+
+    // 根据时间指定开始消费的位置
+    if (offsetAndTimestamp != null){
+        kafkaConsumer.seek(topicPartition,
+        offsetAndTimestamp.offset());
+    }
+}
+```
+
+##### 漏消费和重复消费
+
+- 重复消费：已经消费了数据，但是 offset 没提交。
+  
+  - 自动提交offset引起。
+    
+    ![img.png](../image/kafka_重复消费.png)
+
+- 漏消费：先提交 offset 后消费，有可能会造成数据的漏消费。
+  
+  - 设置offset为手动提交，当offset被提交时，数据还在内存中未落盘，此时刚好消费者线程被kill掉，那么offset已经提交，但是数据未处理，导致这部分内存中的数据丢失。
+    
+    ![img.png](../image/kafka_漏消费.png)
+
+怎么能做到既不漏消费也不重复消费呢？需要用到消费者事务。
+
+#### 消费者事务
+
+如果想完成Consumer端的精准一次性消费，那么需要Kafka消费端将消费过程和提交offset过程做原子绑定。此时我们需要将Kafka的offset保存到支持事务的自定义介质（比如MySQL）。
+
+![img.png](../image/kafka_消费者事务.png)
+
+#### 数据积压（消费者如何提高吞吐量）
+
+数据挤压原因：
+
+1. 如果是Kafka消费能力不足，则可以考虑增加Topic的分区数，并且同时提升消费组的消费者数量，消费者数 = 分区数。（两者缺一不可）
+
+![](../image/kafka_数据积压1.png)
+
+2. 如果是下游的数据处理不及时：提高每批次拉取的数量。批次拉取数据过少（拉取数据/处理时间 < 生产速度），使处理的数据小于生产的数据，也会造成数据积压。
+
+![](../image/kafka_数据积压2.png)
+
+| 参数               | 描述                                                                                                                                                                            |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| fetch.max.bytes  | 默认 Default: 52428800（50 m）。消费者获取服务器端一批消息最大的字节数。如果服务器端一批次的数据大于该值（50m）仍然可以拉取回来这批数据，因此，这不是一个绝对最大值。一批次的大小受 message.max.bytes （broker config）和 max.message.bytes （topic config）影响。 |
+| max.poll.records | 一次 poll 拉取数据返回消息的最大条数，默认是 500 条                                                                                                                                               |
 
 ### Eagle 监控
 
+Kafka-Eagle 框架可以监控 Kafka 集群的整体运行情况，在生产环境中经常使用。Kafka-Eagle 的安装依赖于 MySQL，MySQL 主要用来存储可视化展示的数据。
+
 ### Kraft 模式
 
-## 调优
+#### Kafka-Kraft 架构
 
-### 硬件配置选择
+![](../image/kafka_Kraft架构.png)
 
-### 生产者
+左图为 Kafka 现有架构，元数据在 zookeeper 中，运行时动态选举 controller，由 controller 进行 Kafka 集群管理。
 
-### Broker
+右图为 kraft 模式架构（实验性），不再依赖 zookeeper 集群，而是用三台 controller 节点代替 zookeeper，元数据保存在 controller 中，由 controller 直接进行 Kafka 集群管理。
 
-### 消费者
+kraft 模式架构的优点：
+
+- Kafka 不再依赖外部框架，而是能够独立运行；
+
+- controller 管理集群时，不再需要从 zookeeper 中先读取数据，集群性能上升；
+
+- 由于不依赖 zookeeper，集群扩展时不再受到 zookeeper 读写能力限制；
+
+- controller 不再动态选举，而是由配置文件规定。这样我们可以有针对性的加强 controller 节点的配置，而不是像以前一样对随机 controller 节点的高负载束手无策。
 
 ## 源码
 
@@ -2416,7 +2994,7 @@ log.dirs=/mydata/kafka/data/logs
 zookeeper.connect=192.168.44.129:2181,192.168.44.131:2181,192.168.44.132:2181/kafka
 ```
 
-### Kafka 命令
+### Kafka 命令行
 
 ```txt
 # ----------------------kafka-console-producer.sh----------------------------
@@ -2448,12 +3026,16 @@ Topic: sanguo    TopicId: EJah9n4zQFSGZq4xg7HW1g    PartitionCount: 1    Replica
 /mydata/kafka/bin/kafka-server-start.sh -daemon /mydata/kafka/config/server.properties
 ```
 
-#### kafka-topics.sh
+#### 主题命令行操作
+
+```shell
+[root@server7kafka]$ bin/kafka-topics.sh [option]
+```
 
 | 参数                                                 | 描述                           |
 | -------------------------------------------------- | ---------------------------- |
 | --bootstrap-server <String: server to connect to>  | 连接 Kafka Broker 的 ip:prot 地址 |
-| --topic <String: topic>                            | 指定 需要操作的 topic 名称            |
+| --topic <String: topic>                            | 指定需要操作的 topic 名称             |
 | --create                                           | 创建主题                         |
 | --delete                                           | 删除主题                         |
 | --alter                                            | 修改主题                         |
@@ -2462,6 +3044,30 @@ Topic: sanguo    TopicId: EJah9n4zQFSGZq4xg7HW1g    PartitionCount: 1    Replica
 | --partitions <Integer: # of partitions>            | 设置分区数                        |
 | --replication-factor <Integer: replication factor> | 设置分区副本                       |
 | --config <String: name=value>                      | 更新系统默认的配置                    |
+
+#### 生产者命令行操作
+
+```shell
+[root@server7kafka]$ bin/kafka-console-producer.sh [option]
+```
+
+| 参数                                               | 描述                         |
+| ------------------------------------------------ | -------------------------- |
+| --bootstrap-server <String: server toconnect to> | 连接的 Kafka Broker 主机名称和端口号。 |
+| --topic <String: topic>                          | 操作的 topic 名称。              |
+
+#### 消费者命令行操作
+
+```shell
+[root@server7kafka]$ bin/kafka-console-consumer.sh [option]
+```
+
+| 参数                                               | 描述                         |
+| ------------------------------------------------ | -------------------------- |
+| --bootstrap-server <String: server toconnect to> | 连接的 Kafka Broker 主机名称和端口号。 |
+| --topic <String: topic>                          | 操作的 topic 名称。              |
+| --from-beginning                                 | 从头开始消费。                    |
+| --group <String: consumer group id>              | 指定消费者组名称。                  |
 
 ### 启动脚本
 
@@ -2487,7 +3093,9 @@ case $1 in
 esac
 ```
 
-### Sender#run()
+### 生产者
+
+#### Sender线程run方法
 
 ```java
 /**
@@ -2553,7 +3161,7 @@ public void run() {
 }
 ```
 
-### 拦截器的执行
+#### 拦截器的执行
 
 ```java
 public ProducerRecord<K, V> onSend(ProducerRecord<K, V> record) {
@@ -2577,7 +3185,7 @@ public ProducerRecord<K, V> onSend(ProducerRecord<K, V> record) {
 }
 ```
 
-### 分区选择
+#### 分区策略
 
 ```java
 private int partition(ProducerRecord<K, V> record, byte[] serializedKey, byte[] serializedValue, Cluster cluster) {
@@ -2609,7 +3217,7 @@ public int partition(String topic, Object key, byte[] keyBytes, Object value, by
 }
 ```
 
-### 校验发送消息大小
+#### 校验发送消息大小
 
 ```java
 private void ensureValidRecordSize(int size) {
@@ -2628,7 +3236,7 @@ private void ensureValidRecordSize(int size) {
 }
 ```
 
-### 缓冲区
+#### 缓冲区
 
 向缓冲区发送数据，双端队列，内存默认 32m，默认 16k 一个批次
 
@@ -2720,7 +3328,7 @@ public RecordAppendResult append(TopicPartition tp,
 }
 ```
 
-tryAppend()
+`tryAppend`方法
 
 ```java
 public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers, Callback callback, long now) {
