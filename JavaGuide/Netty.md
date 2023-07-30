@@ -416,7 +416,7 @@ public ChannelFuture bind(final SocketAddress localAddress, final ChannelPromise
 private void invokeBind(SocketAddress localAddress, ChannelPromise promise) {
     if (invokeHandler()) {
         try {
-            // 反射调用bind()，其调用的是 DefaultChannelPipeline.HeadContext#bind
+            // 其调用的是实现类 DefaultChannelPipeline.HeadContext#bind
             ((ChannelOutboundHandler) handler()).bind(this, localAddress, promise);
         } catch (Throwable t) {
             notifyOutboundHandlerException(t, promise);
@@ -696,7 +696,7 @@ protected void doBeginRead() throws Exception {
 
 #### ioRatio控制什么？设置为100有何作用？
 
-#### selectedKyes优化
+#### selectedKeys优化
 
 #### 在何处区分不同事件类型
 
