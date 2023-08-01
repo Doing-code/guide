@@ -1,8 +1,309 @@
 # Netty
 
-## nio
+## NIO基础
+
+### 三大组件
+
+- Channel：类似于stream（InputStream、OutputStream），但Channel是读写数据的双向通道。可以从channel将数据读入buffer，也可以将buffer的数据写入channel。而像stream要么是输入、要么是输出。channel比stream更为底层。
+  
+  常见的Channel：
+  
+  - FileChannel：文件传输。
+  
+  - DatagramChannel：UDP网络传输。
+  
+  - SocketChannel：TCP网络传输，客户端与服务端都会用到。
+  
+  - ServerSocketChannel：TCP网络传输，专用于服务器端。
+
+- Buffer：buffer则用来缓冲读写数据。
+  
+  常见的buffer有：
+  
+  - ByteBuffer
+    
+    - MappedByteBuffer
+    
+    - DirectByteBuffer
+    
+    - HeapByteBuffer
+
+- Selector：Selector的作用就是配合一个线程来管理多个channel，获取多个channel上发生的事件。
+
+### Buffer
+
+##### 基本使用
+
+```java
+try(RandomAccessFile file = new RandomAccessFile("file", "rw")) {
+    FileChannel fileChannel = file.getChannel();
+    // 准备缓冲区
+    ByteBuffer buffer = ByteBuffer.allocate(10);
+    int len;
+    // 1、从fileChannel读取数据，向buffer写入
+    while ((len = fileChannel.read(buffer)) != -1) {
+        System.out.println("读取到字节数: " + len);
+
+        // 2、切换 buffer 读模式
+        buffer.flip();
+
+        // 是否还有剩余未读数据
+        while (buffer.hasRemaining()) {
+            // 3、从buffer读取数据
+            System.out.println((char) buffer.get());
+        }
+        // 4、切换 buffer 写模式
+        buffer.clear();
+    }
+} catch (Exception e) {
+    e.printStackTrace();
+}
+```
+
+##### ByteBuffer结构
+
+ByteBuffer有三个重要的属性：
+
+- capacity：缓冲区容量。
+
+- position：写入位置/读取位置。
+
+- limit：写入限制/读取限制。
+
+初始化时三者的状态：
+
+![img.png](../image/netty_nio基础_bytebuffer_属性_初始化.png)
+
+写模式下，position时写入位置，limit等于capacity：
+
+![img.png](../image/netty_nio基础_bytebuffer_属性_写模式.png)
+
+读模式下（调用flip()方法），position切换为读取位置，limit切换为读取限制：
+
+![img.png](../image/netty_nio基础_bytebuffer_属性_flip.png)
+
+读取4个字节后，状态为：
+
+![img.png](../image/netty_nio基础_bytebuffer_属性_读取字节.png)
+
+clear动作发生后，其状态为：
+
+![img.png](../image/netty_nio基础_bytebuffer_属性_clear.png)
+
+如果是调用compact()，表示将未读完的部分向前压缩，然后切换至写模式。其状态为：
+
+![img.png](../image/netty_nio基础_bytebuffer_属性_compact.png)
+
+##### 粘包半包
+
+粘包：多条数据合并为一条数据发送。
+
+半包：数据被截断。（受限于服务器缓冲区大小）
+
+### 文件编程
+
+FileChannel只能工作在阻塞模式下。且不能直接获取FileChannel，必须通过FileInputStream、FileOutputStream或者来获取FileChannel。
+
+- 通过FileInputStream获取到的channel只能读。
+
+- 通过FileOutputStream获取到的channel只能写。
+
+- 通过RandomAccessFile获取到的channel是否读写，根据构造RandomAccessFile时的读写模式决定。
+
+Path & Files。
+
+### 网络编程
+
+#### 处理消息边界
+
+- 一种思路是固定消息长度，数据包大小一样，服务器按照预定长度读取，缺点是浪费带宽。
+
+- 另一种思路是按照分隔符拆分，缺点是效率低。
+
+- TLV格式，即Type类型、Length长度、Value数据，类型和长度已知的情况下，就可以方便获取消息大小。分配何时的buffer，缺点是buffer需提前分配，如果内容过大，则会影响服务端的吞吐量。
+  
+  - HTTP 1.0是TLV格式。
+  
+  - HTTP 2.0是LTV格式
+
+> 个人理解：可以参考Redis的数据结构的对象头实现。
+
+### 零拷贝
+
+#### 传统IO
+
+传统IO将一个文件通过socket写出。
+
+```java
+RandomAccessFile file = new RandomAccessFile("file", "r");
+byte[] buf = new  byte[1024];
+file.read(buf);
+
+Socket socket = ...;
+socket.getOutputStream().write(buf);
+```
+
+其内部工作流程如下：
+
+![img.png](../image/nio_零拷贝.png)
+
+1. Java本身并不具备IO读写能力，因此read方法调用后，要从Java程序的用户态切换至内核态，去调用操作系统（Kernel）的读能力。将数据读入内核缓冲区。这期间用户线程阻塞，操作系统使用DMA（Direct Memory Access）来实现文件读，期间不会使用CPU。
+
+> DMA可以理解为硬件单元，用来解放CPU，完成文件IO。
+
+2. 从内核态切换至用户态，将数据从内核换成功能区读入用户缓冲区（即 `byte[] buf`），期间CPU会参与拷贝，无法利用DMA。
+
+3. 调用write方法，这时将数据从用户缓冲区（`byte[] buf`）写入socket缓冲区，CPU会参与拷贝。
+
+4. Java也不具备向网卡写数据的能力，因此需要从用户态切换至内核态。调用操作系统的写能力，调用DMA将socket缓冲区的数据写入网卡，不会使用CPU。
+
+可以看到，Java的IO实际不是物理设备级别的读写，而是缓存的复制。底层的真正读写是操作系统来完成的。
+
+- 用户态与和内核态的切换发生了三次。
+
+- 数据拷贝发生了四次。
+
+#### NIO优化
+
+- ByteBuffer.allocate(10)：HeadByteBuffer，使用Java堆内存。
+
+- ByteBuffer.allocateDirect(10)：DirectByteBuffer，使用直接内存，即操作系统内存。
+
+![](../image/netty_nio_零拷贝.png)
+
+Java可以使用DirectByteBuffer将堆外内存映射到JVM内存中来直接访问使用。
+
+减少了一次内核缓冲区-用户缓冲区的数据拷贝。用户态和内核态切换次数没有减少。
+
+#### NIO进一步优化
+
+底层采用 Linux 2.1 后提供的sendFile方法。在Java中对应着Channel的transferTo/transferFrom方法。
+
+![](../image/netty_nio_零拷贝_进一步优化.png)
+
+1. Java调用transferTo()方法后，要从Java程序的用户态切换至内核态，使用DMA将数据读入内核缓冲区。不会使用CPU。
+
+2. 数据从内核缓冲区传输到socket缓冲区，CPU会参与拷贝。
+
+3. 最后使用DMA将socket缓冲区的数据写入网卡，不会使用CPU。
+
+只发生了一次用户态和内核态的切换。数据拷贝了三次。
+
+在 Linux 2.4 中又进一步优化为：
+
+![](../image/netty_nio_零拷贝_优化2.png)
+
+1. Java调用transferTo()方法后，要从Java程序的用户态切换至内核态，使用DMA将数据读入内核缓冲区。不会使用CPU。
+   
+   - 只会将一些offset和length信息拷贝到socket缓冲区，几乎无消耗。
+
+2. 使用DMA将内核缓冲区的数据写入网卡，不会使用CPU。
+
+整个过程只发生了一次用户态和内核态的切换，数据拷贝了两次。所谓`零拷贝`，并不是真正无拷贝，**而是不会拷贝重复数据到JVM内存中**。
+
+零拷贝的优点：
+
+- 不利用CPU计算，减少PCU缓存伪共享。
+
+- 零拷贝适合小文件传输。。
+
+- 更少的用户态和内核态的切换。
 
 ## 入门
+
+### 入门程序
+
+#### server
+
+```java
+public class Server {
+
+    public static void main(String[] args) throws InterruptedException {
+        new ServerBootstrap()
+                .group(new NioEventLoopGroup())
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new ChannelInitializer<NioSocketChannel>() {
+                    @Override
+                    // 连接建立后，会触发
+                    protected void initChannel(NioSocketChannel ch) throws Exception {
+                        ch.pipeline().addLast(new StringDecoder());
+                        ch.pipeline().addLast(new SimpleChannelInboundHandler() {
+                            @Override
+                            public void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
+                                System.out.println(msg);
+                                ctx.channel().writeAndFlush(Unpooled.copiedBuffer("你好，我是服务端", CharsetUtil.UTF_8));
+                            }
+                        });
+                    }
+                }).bind(8080);
+    }
+}
+```
+
+#### client
+
+```java
+public class Client {
+
+    public static void main(String[] args) throws InterruptedException {
+        new Bootstrap()
+                .group(new NioEventLoopGroup())
+                .channel(NioSocketChannel.class)
+                .handler(new ChannelInitializer<NioSocketChannel>() {
+                    @Override
+                    // 连接建立后，会触发
+                    protected void initChannel(NioSocketChannel ch) throws Exception {
+                        ch.pipeline().addLast(new StringEncoder());
+                        ch.pipeline().addLast(new ChannelInboundHandlerAdapter() {
+                            @Override
+                            // 读事件触发，服务端接收客户端请求i
+                            public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                                ByteBuf byteBuf=(ByteBuf)msg;
+                                System.out.println("服务端发来消息"+byteBuf.toString(CharsetUtil.UTF_8));
+                            }
+                        });
+                    }
+                })
+                .connect(new InetSocketAddress("localhost", 8080))
+                .sync()
+                .channel()
+                .writeAndFlush("hello world");
+
+    }
+}
+```
+
+### 概念
+
+- 将Channel理解为数据的通道。
+
+- 将msg理解为传输的数据，最开始输入为ByteBuffer，但经过pipeline处理后，会变成其它类型对象，最后输出又变为ByteBuffer。
+
+- 将handler理解为数据的处理工序（如编解码）。
+  
+  - 工序可能会有多个（handler），多个工序串起来就是pipeline。pipeline负责发布事件（注册、连接、读、读取完成...）传播给每个handler（流水线传播，由上一个handler传递给下一个handler）。handler堆自己感兴趣的事件进行处理（重写感兴趣的事件处理方法）。
+  
+  - handler分为Inbound（入站）和Outbound（出栈）。
+
+- 将EventLoop理解为处理数据的工人。
+  
+  - EventLoop可以管理多个channel的io操作，并且一旦EventLoop负责了某个channel，就要负责到底（绑定）。
+  
+  - EventLoop既可以执行io操作，也可以进行任务处理，每个EventLoop都有一个任务队列，队列可以存放多个channel的待处理任务，任务分为普通任务、定时任务。
+  
+  - EventLoop按照pipeline顺序，依次执行每个handler，也可也给每个handler指定不同的EventLoop。
+
+### 组件
+
+#### EventLoop
+
+#### Channel
+
+#### Future&Promise
+
+#### Handler&Pipeline
+
+#### ByteBuf
 
 ## 进阶
 
@@ -35,6 +336,40 @@ selectionKey.interestOps(SelectionKey.OP_ACCEPT);
 
 // 5、绑定端口号
 serverSocketChannel.bind(new InetSocketAddress(8080));
+
+while(true) {
+    selector.select();
+    Iterator<SelectionKey> keys = selector.selectedKeys().iterator();
+    while(keys.hasNext()) {
+        SelectionKey key = keys.next();
+        keys.remove();
+
+        if (key.isAcceptable()) {
+            ServerSocketChannel channel = (ServerSocketChannel)key.channel();
+            SocketChannel sc = channel.accept();
+            sc.configureBlocking(false);
+            SelectionKey scKey = sc.register(selector, 0);
+            scKey.interestOps(SelectionKey.OP_READ);
+        }
+        if (key.isReadable()) {
+            try {
+                SocketChannel channel = (SocketChannel)key.channel();
+                ByteBuffer buffer = ByteBuffer.allocate(16);
+                // 如果客户端正常断开，也会触发读事件，但会返回-1
+                int read = channel.read(buffer);
+                if (read == -1) {
+                   key.cancel();
+                   continue;
+                }
+                buffer.flip();
+                ......
+            } catch(Exception e) {
+                // 客户端断开会触发服务端的读事件，异常断开会抛异常，需要将下线的客户端在Selector取消注册
+                key.cancel();
+            }
+        }
+    }
+}
 ```
 
 Netty的启动程序如下所示：
@@ -44,9 +379,9 @@ new ServerBootstrap()
     // NioEventLoopGroup 内部包含 nio 线程
     .group(new NioEventLoopGroup())
     .channel(NioServerSocketChannel.class)
-    .childHandler(new ChannelInitializer<NioServerSocketChannel>() {
+    .childHandler(new ChannelInitializer<NioSocketChannel>() {
         @Override
-        protected void initChannel(NioServerSocketChannel ch) throws Exception {
+        protected void initChannel(NioSocketChannelch) throws Exception {
             ch.pipeline().addLast(new SimpleChannelInboundHandler() {
                 @Override
                 protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
@@ -1950,7 +2285,7 @@ public class ServerBootstrap extends AbstractBootstrap<ServerBootstrap, ServerCh
                 /*
                 这里的register()和前面注册NioServerSocketChannel时调用的方法是一样的
                 在其内部注册完成后会调用自定义启动引导类时定义的
-                    `.childHandler(new ChannelInitializer<NioServerSocketChannel>() {}`初始化逻辑
+                    `.childHandler(new ChannelInitializer<NioSocketChannel>() {}`初始化逻辑
                     （即触发新的SocketChannel上的初始化事件）
                 register()做了两件事：
                     步骤5. 将SocketChannel注册至selector。
@@ -2395,6 +2730,14 @@ static {
 }
 ```
 
+### 何时触发写事件？
+
+> https://www.cnblogs.com/binlovetech/p/16453634.html
+
+OP_READ 事件的注册是在 NioSocketChannel 被注册到对应的 Reactor 中时就会注册。而 OP_WRITE 事件只会在 Socket 缓冲区满的时候才会被注册。
+
+当 Socket 缓冲区再次变得可写时，要记得取消 OP_WRITE 事件的监听。否则的话就会一直被通知。
+
 ### SocketUtils.accept(javaChannel())
 
 ```java
@@ -2411,3 +2754,25 @@ public static SocketChannel accept(final ServerSocketChannel serverSocketChannel
     }
 }
 ```
+
+### ChannelHandler
+
+ChannelHandler并不处理事件，而由其子类代为处理：ChannelInboundHandler拦截和处理入站事件，ChannelOutboundHandler拦截和处理出站事件。
+
+ChannelHandler和ChannelHandlerContext通过组合或继承的方式关联到一起成对使用。
+
+事件通过ChannelHandlerContext主动调用如fireXXX()和write(msg)等方法，将事件传播到下一个处理器。
+
+注意：入站事件在ChannelPipeline双向链表中由头到尾正向传播，出站事件则方向相反。
+
+当客户端连接到服务器时，Netty新建一个ChannelPipeline处理其中的事件，而一个ChannelPipeline中含有若干ChannelHandler。如果每个客户端连接都新建一个ChannelHandler实例，当有大量客户端时，服务器将保存大量的ChannelHandler实例。
+
+为此，Netty提供了`@Sharable`注解，如果一个ChannelHandler状态无关，那么可将其标注为`@Sharable`，如此，服务器只需保存一个实例就能处理所有客户端的事件。
+
+### ChannelPipeline
+
+在Netty里，`Channel`是通讯的载体，而`ChannelHandler`负责Channel中的逻辑处理。
+
+那么`ChannelPipeline`是什么呢？我觉得可以理解为ChannelHandler的容器：一个Channel包含一个ChannelPipeline，所有ChannelHandler都会注册到ChannelPipeline中，并按顺序组织起来。
+
+在Netty中，`ChannelEvent`是数据或者状态的载体，例如传输的数据对应`MessageEvent`，状态的改变对应`ChannelStateEvent`。当对Channel进行操作时，会产生一个ChannelEvent，并发送到`ChannelPipeline`。ChannelPipeline会选择一个ChannelHandler进行处理。这个ChannelHandler处理之后，可能会产生新的ChannelEvent，并流转到下一个ChannelHandler。
