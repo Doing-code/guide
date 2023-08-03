@@ -497,6 +497,8 @@ Netty中的Future与JDK中的同名，但Netty的Future继承自JDK的Future，�
 
 Promise可以理解为结果容器。
 
+Netty中线程间的通信方式就是用的Promise。
+
 #### Handler&Pipeline
 
 ChannelHandler用来处理Channel上的IO事件，分为入站、出站两种。所有的ChannelHandler被串起来就是Pipeline。
@@ -698,9 +700,141 @@ Unpooled是一个工具类，提供非池化的ByteBuf创建、阻塞、复制�
 
 ### 粘包半包
 
+- 粘包：顾名思义就是不同的数据包粘在一起了，接收端一次接受到了多个数据包，而且不保证是多个完整数据包的集合，也许其中某个数据包是不完整的。
+
+- 半包：顾名思义就是数据包不完整，只有一半。其实就是数据在传输接收过程中，接收端一次接收没有接收到完整的数据包，需要经过多次接收才能得到完整数据包。
+
+如果没有一个好的协议规范，半包和粘包在TCP数据传输中是很普遍的问题，它们不是两个孤立的问题，彼此相伴相生。
+
+#### 现象分析
+
+粘包：
+
+- 现象：发送`adb`、`def`，接收`abcdef`。
+
+- 原因：
+  
+  - 应用层：接收方ByteBuf设置过大（Netty接收缓冲区默认1024）
+  
+  - 滑动窗口：假设发送方256bytes表示一个完整报文，但由于接收方处理不及时且窗口大小足够大，者256bytes字节就会缓冲在接收方的滑动窗口中，当滑动窗口缓冲了多个报文就会粘包。
+  
+  - Nagle算法：会造成粘包。
+
+半包：
+
+- 现象：发送`abcdef`，接收`adb`、`def`。
+
+- 原因：
+  
+  - 应用层：接收方ByteBuf小于实际发送数据量。
+  
+  - 滑动窗口：假设接收方的窗口只剩余128bytes，而发送方的报文大小是256bytes，这时窗口放不下，只能先发送128bytes，等待ack后才能发送剩余部分，这就造成了半包。
+  
+  - MSS限制：当发送的数据超过MSS限制后，会将数据切片发送，就会造成半包。
+
+> MSS (Maximum Segment Size)，最大报文长度。TCP payload的最大值，TCP协议定义的一个选项，MSS是TCP用来限制应用层最大的发送字节数。
+> 
+> 最大传输单元（Maximum Transmission Unit，MTU）限制的是**数据链路层的payload,也就是上层协议的大小**,例如IP,ICMP等。
+
+本质是因为TCP是流式协议，消息无边界。
+
+#### 解决
+
+- 短链接：能解决半包，但粘包还是会存在。缺点是每次以`连接-断开`为一个消息边界。频繁的连接断开影响性能。
+
+- 定长解码器：能够解决粘包半包。缺点是占用字节过多，不满定长字节数的会补全bit位。
+
+- 行解码器：能够解决粘包半包。缺点是遍历字节查找分隔符。效率低。
+
+- LTC解码器：`LengthFieldBasedFrameDecoder`。
+
 ### 协议设计与解析
 
+#### 自定义协议
+
+自定义协议要素：
+
+- 魔数：用来判断是否是无效数据包。
+
+- 版本号：支持协议的升级。
+
+- 序列化算法：消息正文采用哪种序列化方式。例如：ProtoBuf、hessian。
+
+- 指令类型：具体功能，跟业务相关。例如：登录、注册...
+
+- 请求序号：提供给异步能力。
+
+- 正文长度
+
+- 消息正文
+
 ## 优化
+
+### 参数调优
+
+**默认配置类：DefaultChannelConfig。**
+
+#### 客户端连接超时
+
+- 属于SocketChannel参数`CONNECT_TIMEOUT_MILLIS`。
+
+- 用于在客户端建立连接时，如果在指定时间内无法连接，则抛出timeout异常。
+
+- `SO_TIMEOUT`主要用在阻塞IO。阻塞IO中accept、read等操作都是无限等待的，如果不希望一直阻塞，可以使用`SO_TIMEOUT`调整超时时间。
+
+```java
+// 客户端 SocketChannel 参数用 .option(xxx, xxx) 设置
+
+// 服务端
+    // ServerSocketChannel 用 .option(xxx, xxx) 设置
+    // SockerChannel 用 childOption(xxx, xxx) 设置
+```
+
+#### SO_BACKLOG
+
+控制全连接队列的大小。服务端参数。
+
+如果是Windows系统默认SO_BACKLOG为200，否则为128。
+
+Netty与Linux中`proc/ysy/net/core/somaxconn`值比较，结果取较小的值。
+
+#### ulimit -n
+
+属于操作系统参数
+
+#### TCP_NODELAY
+
+属于SocketChannel参数，即Nagle算法，默认值为false，开启了Nagle算法。建议设置true关闭Nagle。
+
+#### SO_SENDBUF&SO_RCVBUF
+
+决定了滑动窗口的上限。
+
+- SO_SENDBUF属于SocketChannel参数。
+
+- SO_RCVBUF既可用于SocketChannel，也能用于ServerSocketChannel。建议设置到ServerSocketChannel上。
+
+- SO_SNDBUF：TCP发送缓冲区的**容量上限**；
+
+- SO_RCVBUF：TCP接受缓冲区的**容量上限**；
+
+`SO_SNDBUF`和`SO_RCVBUF`只是规定了读写缓冲区大小的上限，在实际使用未达到上限前，`SO_SNDBUF`和`SO_RCVBUF`是不起作用的。
+
+一个TCP连接占用的内存相当于读写缓冲区实际占用内存大小之和。
+
+#### ALLOCATOR
+
+SocketChannel参数。allocator（分配器）。
+
+用于分配ByteBuf，ctx.alloc()。
+
+#### RCVBUF_ALLOCATOR
+
+SocketChannel参数。
+
+控制Netty接收缓冲区大小。
+
+负责入站数据的分配，决定入站缓冲区的大小（可动态调整），同一采用direct直接内存。具体池化或非池化由allocator决定。
 
 ## 源码
 
@@ -2730,6 +2864,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                 return;
             }
             final ChannelPipeline pipeline = pipeline();
+            // ByteBuf的分配器，负责池化还是非池化，默认PooledByteBufAllocator
             final ByteBufAllocator allocator = config.getAllocator();
             final RecvByteBufAllocator.Handle allocHandle = recvBufAllocHandle();
             allocHandle.reset(config);
@@ -2738,7 +2873,9 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
             boolean close = false;
             try {
                 do {
+                    // 负责创建ByteBuf，此处是io事件，会创建直接内存bytebuf
                     byteBuf = allocHandle.allocate(allocator);
+                    // 将socketChannel数据写入缓存
                     allocHandle.lastBytesRead(doReadBytes(byteBuf));
                     if (allocHandle.lastBytesRead() <= 0) {
                         // nothing was read. release the buffer.
@@ -2790,6 +2927,350 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
 
 ## 附录
 
+### ChannelHandler概念
+
+ChannelHandler并不处理事件，而由其子类代为处理：ChannelInboundHandler拦截和处理入站事件，ChannelOutboundHandler拦截和处理出站事件。
+
+ChannelHandler和ChannelHandlerContext通过组合或继承的方式关联到一起成对使用。
+
+事件通过ChannelHandlerContext主动调用如fireXXX()和write(msg)等方法，将事件传播到下一个处理器。
+
+注意：入站事件在ChannelPipeline双向链表中由头到尾正向传播，出站事件则方向相反。
+
+当客户端连接到服务器时，Netty新建一个ChannelPipeline处理其中的事件，而一个ChannelPipeline中含有若干ChannelHandler。如果每个客户端连接都新建一个ChannelHandler实例，当有大量客户端时，服务器将保存大量的ChannelHandler实例。
+
+为此，Netty提供了`@Sharable`注解，如果一个ChannelHandler状态无关，那么可将其标注为`@Sharable`，如此，服务器只需保存一个实例就能处理所有客户端的事件。
+
+### ChannelPipeline概念
+
+在Netty里，`Channel`是通讯的载体，而`ChannelHandler`负责Channel中的逻辑处理。
+
+那么`ChannelPipeline`是什么呢？我觉得可以理解为ChannelHandler的容器：一个Channel包含一个ChannelPipeline，所有ChannelHandler都会注册到ChannelPipeline中，并按顺序组织起来。
+
+在Netty中，`ChannelEvent`是数据或者状态的载体，例如传输的数据对应`MessageEvent`，状态的改变对应`ChannelStateEvent`。当对Channel进行操作时，会产生一个ChannelEvent，并发送到`ChannelPipeline`。ChannelPipeline会选择一个ChannelHandler进行处理。这个ChannelHandler处理之后，可能会产生新的ChannelEvent，并流转到下一个ChannelHandler。
+
+### @Shareable
+
+在保证线程安全的情况下，可以使用`@Shareable`共享handler。父类如果不支持`@Shareable`，那么同样子类也无法使用。
+
+### 心跳机制
+
+在Netty中，实现心跳机制的关键是`IdleStateHandler`。
+
+```java
+public class IdleStateHandler extends ChannelDuplexHandler {
+    public IdleStateHandler(
+            int readerIdleTimeSeconds,
+            int writerIdleTimeSeconds,
+            int allIdleTimeSeconds) {
+
+        this(readerIdleTimeSeconds, writerIdleTimeSeconds, allIdleTimeSeconds,
+             TimeUnit.SECONDS);
+    }
+
+    public IdleStateHandler(
+            long readerIdleTime, long writerIdleTime, long allIdleTime,
+            TimeUnit unit) {
+        this(false, readerIdleTime, writerIdleTime, allIdleTime, unit);
+    }
+    ......
+}
+```
+
+- `readerIdleTimeSeconds`：读超时. 即当在指定的时间间隔内没有从 Channel 读取到数据时, 会触发一个 READER_IDLE 的 IdleStateEvent 事件.
+
+- `writerIdleTimeSeconds`:：写超时. 即当在指定的时间间隔内没有数据写入到 Channel 时, 会触发一个 WRITER_IDLE 的 IdleStateEvent 事件.
+
+- `allIdleTimeSeconds`：读/写超时. 即当在指定的时间间隔内没有读或写操作时, 会触发一个 ALL_IDLE 的 IdleStateEvent 事件。
+1. 当调用pipeline().addLast()方法添加ChannelHandler时，会触发handlerAdded()方法。IdleStateHandler重写了handlerAdded()方法，所以当添加IdleStateHandler时，其内部handlerAdded()就会得到执行。
+
+```java
+// 源码入口
+ch.pipeline().addLast(new IdleStateHandler(1, 1, 1));
+
+// 调用：io.netty.channel.DefaultChannelPipeline#addLast
+public final ChannelPipeline addLast(ChannelHandler... handlers) {
+    return addLast(null, handlers);
+}
+public final ChannelPipeline addLast(EventExecutorGroup executor, ChannelHandler... handlers) {
+    ObjectUtil.checkNotNull(handlers, "handlers");
+
+    for (ChannelHandler h: handlers) {
+        if (h == null) {
+            break;
+        }
+        addLast(executor, null, h);
+    }
+
+    return this;
+}
+public final ChannelPipeline addLast(EventExecutorGroup group, String name, ChannelHandler handler) {
+    final AbstractChannelHandlerContext newCtx;
+    synchronized (this) {
+        checkMultiplicity(handler);
+
+        newCtx = newContext(group, filterName(name, handler), handler);
+
+        addLast0(newCtx);
+
+        // If the registered is false it means that the channel was not registered on an eventLoop yet.
+        // In this case we add the context to the pipeline and add a task that will call
+        // ChannelHandler.handlerAdded(...) once the channel is registered.
+        if (!registered) {
+            newCtx.setAddPending();
+            callHandlerCallbackLater(newCtx, true);
+            return this;
+        }
+
+        EventExecutor executor = newCtx.executor();
+        if (!executor.inEventLoop()) {
+            callHandlerAddedInEventLoop(newCtx, executor);
+            return this;
+        }
+    }
+    callHandlerAdded0(newCtx);
+    return this;
+}
+private void callHandlerAdded0(final AbstractChannelHandlerContext ctx) {
+    try {
+        // 
+        ctx.callHandlerAdded();
+    } catch (Throwable t) {
+        ......
+    }
+}
+
+// 调用：io.netty.channel.AbstractChannelHandlerContext#callHandlerAdded
+final void callHandlerAdded() throws Exception {
+    // We must call setAddComplete before calling handlerAdded. Otherwise if the handlerAdded method generates
+    // any pipeline events ctx.handler() will miss them because the state will not allow it.
+    if (setAddComplete()) {
+        // 触发实现类的handlerAdded()方法
+        handler().handlerAdded(this);
+    }
+}
+```
+
+2. 进入`IdleStateHandler`查看其`handlerAdded()`逻辑：
+
+```java
+// 调用：io.netty.handler.timeout.IdleStateHandler#handlerAdded
+public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+    if (ctx.channel().isActive() && ctx.channel().isRegistered()) {
+        // channelActive() event has been fired already, which means this.channelActive() will
+        // not be invoked. We have to initialize here instead.
+        initialize(ctx);
+    } else {
+        // channelActive() event has not been fired yet.  this.channelActive() will be invoked
+        // and initialization will occur there.
+    }
+}
+
+private void initialize(ChannelHandlerContext ctx) {
+    // Avoid the case where destroy() is called before scheduling timeouts.
+    // See: https://github.com/netty/netty/issues/143
+    switch (state) {
+    case 1:
+    case 2:
+        return;
+    default:
+         break;
+    }
+
+    state = 1;
+    initOutputChanged(ctx);
+
+    lastReadTime = lastWriteTime = ticksInNanos();
+    if (readerIdleTimeNanos > 0) {
+        readerIdleTimeout = schedule(ctx, new ReaderIdleTimeoutTask(ctx),
+                readerIdleTimeNanos, TimeUnit.NANOSECONDS);
+    }
+    if (writerIdleTimeNanos > 0) {
+        writerIdleTimeout = schedule(ctx, new WriterIdleTimeoutTask(ctx),
+                writerIdleTimeNanos, TimeUnit.NANOSECONDS);
+    }
+    if (allIdleTimeNanos > 0) {
+        allIdleTimeout = schedule(ctx, new AllIdleTimeoutTask(ctx),
+                allIdleTimeNanos, TimeUnit.NANOSECONDS);
+    }
+}
+
+Future<?> schedule(ChannelHandlerContext ctx, Runnable task, long delay, TimeUnit unit) {
+    return ctx.executor().schedule(task, delay, unit);
+}
+```
+
+观察到其内部使用定时任务实现心跳机制。当构造对象传入的参数 > 0 时候，就创建一个定时任务。
+
+Netty心跳机制总结：
+
+- IdleStateHandler实现心跳检测功能，当服务器和客户端没有任务读写，并且超过设置事件，会触发handler的userEventTriggered方法，用户可以在这个方法中实现自己的逻辑。
+
+- IdleStateHandler的实现基于EventLoop的定时任务，每次读写都会记录一个最后读/写事件，定时任务执行的时候，根据最后读写事件与间隔时间的差值来判断是否执行。
+
+- 内部有3 个定时任务，分别对应读，写，读/写事件，通常我们监听读/写事件就足够。
+
+- IdleStateHandler 内部考虑了极端情况，例如客户端接收缓慢问题，一次接收数据的事件超过了我们设置的最长等待时间。Netty通过构造方法中 observeOutput 属性来决定是否对出站缓冲区的情况进行判断。
+
+- 如果observeOutput = true情况，并且出现出站缓慢，Netty将不认为是空闲，也不会执行定时任务，除非是第一次写或者读/写事件，第一次无论如何也会触发，因为第一次无法判断是出站缓慢还是空闲。
+
+- 出站缓慢可能造成OOM，所以当我们应用出现OOM之类，并且写空闲极少发生，使用了observeOutput = true，那么可能需要注意是不是出站速度过慢导致的。
+
+既然会记录最后读/写事件，猜想IdleStateHandler是否直接或间接实现了ChannelInboundHandler、ChannelOutboundHandler（入站、出站）接口。那么也就会有对应的channelReadComplete()、write()。那么读/写耗时时间也应该在这两个方法中执行记录操作。
+
+#### IdleStateHandler源码
+
+```java
+/*
+  其父类的继承关系：public class ChannelDuplexHandler extends ChannelInboundHandlerAdapter implements ChannelOutboundHandler
+*/
+public class IdleStateHandler extends ChannelDuplexHandler {
+
+    // 读/写事件任务
+    private final class AllIdleTimeoutTask extends AbstractIdleTask {
+
+        AllIdleTimeoutTask(ChannelHandlerContext ctx) {
+            super(ctx);
+        }
+
+        @Override
+        protected void run(ChannelHandlerContext ctx) {
+
+            long nextDelay = allIdleTimeNanos;
+            if (!reading) {
+                nextDelay -= ticksInNanos() - Math.max(lastReadTime, lastWriteTime);
+            }
+            if (nextDelay <= 0) {
+                // Both reader and writer are idle - set a new timeout and
+                // notify the callback.
+                allIdleTimeout = schedule(ctx, this, allIdleTimeNanos, TimeUnit.NANOSECONDS);
+
+                boolean first = firstAllIdleEvent;
+                firstAllIdleEvent = false;
+
+                try {
+                    if (hasOutputChanged(ctx, first)) {
+                        return;
+                    }
+
+                    IdleStateEvent event = newIdleStateEvent(IdleState.ALL_IDLE, first);
+                    channelIdle(ctx, event);
+                } catch (Throwable t) {
+                    ctx.fireExceptionCaught(t);
+                }
+            } else {
+                // Either read or write occurred before the timeout - set a new
+                // timeout with shorter delay.
+                allIdleTimeout = schedule(ctx, this, nextDelay, TimeUnit.NANOSECONDS);
+            }
+        }
+    }
+
+    // 写事件任务
+    private final class WriterIdleTimeoutTask extends AbstractIdleTask {
+
+        WriterIdleTimeoutTask(ChannelHandlerContext ctx) {
+            super(ctx);
+        }
+
+        @Override
+        protected void run(ChannelHandlerContext ctx) {
+
+            long lastWriteTime = IdleStateHandler.this.lastWriteTime;
+            long nextDelay = writerIdleTimeNanos - (ticksInNanos() - lastWriteTime);
+            if (nextDelay <= 0) {
+                // Writer is idle - set a new timeout and notify the callback.
+                writerIdleTimeout = schedule(ctx, this, writerIdleTimeNanos, TimeUnit.NANOSECONDS);
+
+                boolean first = firstWriterIdleEvent;
+                firstWriterIdleEvent = false;
+
+                try {
+                    if (hasOutputChanged(ctx, first)) {
+                        return;
+                    }
+
+                    IdleStateEvent event = newIdleStateEvent(IdleState.WRITER_IDLE, first);
+                    channelIdle(ctx, event);
+                } catch (Throwable t) {
+                    ctx.fireExceptionCaught(t);
+                }
+            } else {
+                // Write occurred before the timeout - set a new timeout with shorter delay.
+                writerIdleTimeout = schedule(ctx, this, nextDelay, TimeUnit.NANOSECONDS);
+            }
+        }
+    }
+
+    // 读事件任务
+    private final class ReaderIdleTimeoutTask extends AbstractIdleTask {
+
+        ReaderIdleTimeoutTask(ChannelHandlerContext ctx) {
+            super(ctx);
+        }
+
+        @Override
+        protected void run(ChannelHandlerContext ctx) {
+            long nextDelay = readerIdleTimeNanos;
+            if (!reading) {
+                nextDelay -= ticksInNanos() - lastReadTime;
+            }
+
+            if (nextDelay <= 0) {
+                // Reader is idle - set a new timeout and notify the callback.
+                readerIdleTimeout = schedule(ctx, this, readerIdleTimeNanos, TimeUnit.NANOSECONDS);
+
+                boolean first = firstReaderIdleEvent;
+                firstReaderIdleEvent = false;
+
+                try {
+                    IdleStateEvent event = newIdleStateEvent(IdleState.READER_IDLE, first);
+                    channelIdle(ctx, event);
+                } catch (Throwable t) {
+                    ctx.fireExceptionCaught(t);
+                }
+            } else {
+                // Read occurred before the timeout - set a new timeout with shorter delay.
+                readerIdleTimeout = schedule(ctx, this, nextDelay, TimeUnit.NANOSECONDS);
+            }
+        }
+    }
+
+    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+        if (readerIdleTimeNanos > 0 || allIdleTimeNanos > 0) {
+            reading = true;
+            firstReaderIdleEvent = firstAllIdleEvent = true;
+        }
+        ctx.fireChannelRead(msg);
+    }
+
+    public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
+        if ((readerIdleTimeNanos > 0 || allIdleTimeNanos > 0) && reading) {
+            lastReadTime = ticksInNanos();
+            reading = false;
+        }
+        ctx.fireChannelReadComplete();
+    }
+
+    private final ChannelFutureListener writeListener = new ChannelFutureListener() {
+        @Override
+        public void operationComplete(ChannelFuture future) throws Exception {
+            lastWriteTime = ticksInNanos();
+            firstWriterIdleEvent = firstAllIdleEvent = true;
+        }
+    };
+
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+        // Allow writing with void promise if handler is only configured for read timeout events.
+        if (writerIdleTimeNanos > 0 || allIdleTimeNanos > 0) {
+            ctx.write(msg, promise.unvoid()).addListener(writeListener);
+        } else {
+            ctx.write(msg, promise);
+        }
+    }
+}
+```
+
 ### Java nio  事件
 
 Java NIO事件针对于服务器端而言。
@@ -2802,7 +3283,7 @@ Java NIO事件针对于服务器端而言。
 
 - 可写事件（`OP_WRITE`）：当一个通道可写入数据时，会触发可写事件。通常用于服务器端向客户端发送数据。当该事件触发时，可以使用 `SelectionKey.isWritable()` 方法来判断哪些连接可以写入数据，并使用对应的 `SocketChannel` 向客户端发送数据。
 
-### ByteBuf头尾释放源码
+### ByteBuf头尾释放内存源码
 
 ```java
 public class DefaultChannelPipeline implements ChannelPipeline {
@@ -3238,25 +3719,3 @@ public static SocketChannel accept(final ServerSocketChannel serverSocketChannel
     }
 }
 ```
-
-### ChannelHandler概念
-
-ChannelHandler并不处理事件，而由其子类代为处理：ChannelInboundHandler拦截和处理入站事件，ChannelOutboundHandler拦截和处理出站事件。
-
-ChannelHandler和ChannelHandlerContext通过组合或继承的方式关联到一起成对使用。
-
-事件通过ChannelHandlerContext主动调用如fireXXX()和write(msg)等方法，将事件传播到下一个处理器。
-
-注意：入站事件在ChannelPipeline双向链表中由头到尾正向传播，出站事件则方向相反。
-
-当客户端连接到服务器时，Netty新建一个ChannelPipeline处理其中的事件，而一个ChannelPipeline中含有若干ChannelHandler。如果每个客户端连接都新建一个ChannelHandler实例，当有大量客户端时，服务器将保存大量的ChannelHandler实例。
-
-为此，Netty提供了`@Sharable`注解，如果一个ChannelHandler状态无关，那么可将其标注为`@Sharable`，如此，服务器只需保存一个实例就能处理所有客户端的事件。
-
-### ChannelPipeline概念
-
-在Netty里，`Channel`是通讯的载体，而`ChannelHandler`负责Channel中的逻辑处理。
-
-那么`ChannelPipeline`是什么呢？我觉得可以理解为ChannelHandler的容器：一个Channel包含一个ChannelPipeline，所有ChannelHandler都会注册到ChannelPipeline中，并按顺序组织起来。
-
-在Netty中，`ChannelEvent`是数据或者状态的载体，例如传输的数据对应`MessageEvent`，状态的改变对应`ChannelStateEvent`。当对Channel进行操作时，会产生一个ChannelEvent，并发送到`ChannelPipeline`。ChannelPipeline会选择一个ChannelHandler进行处理。这个ChannelHandler处理之后，可能会产生新的ChannelEvent，并流转到下一个ChannelHandler。
