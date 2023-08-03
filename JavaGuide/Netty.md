@@ -427,6 +427,12 @@ static void invokeChannelRead(final AbstractChannelHandlerContext next, Object m
 
 #### Channel
 
+Netty中的Channel与JDK中的Channel作用相当，是对I/O操作的封装。如read()、write()、connect()、bind()等，是Netty中核心对象。而NioServerSocketChannel、NioSocketChannel就是其具体实现。
+
+Channel的状态改变都会触发相应事件传递到Pipeline中，被ChannelHandler处理。
+
+常见的触发事件：channelRegistered、channelRead、channelActive...
+
 Channel主要作用：
 
 - close()：关闭channel。
@@ -500,6 +506,8 @@ Promise可以理解为结果容器。
 Netty中线程间的通信方式就是用的Promise。
 
 #### Handler&Pipeline
+
+handler是控制socket io的各个生命周期的业务实现。
 
 ChannelHandler用来处理Channel上的IO事件，分为入站、出站两种。所有的ChannelHandler被串起来就是Pipeline。
 
