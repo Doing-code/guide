@@ -1236,10 +1236,19 @@ Heap
 
 ```txt
 虚拟机参数：
-    -XX:ParallelGCThreads=n ~ -XX:ConcGCThreads=threads   // 控制线程数（ConcGCThreads设置为ParallelGCThreads的四分之一）
-    -XX:CMSInitiatingOccupancyFraction=percent   // 执行 CMS 的内存占比，比如 percen=80（80%），当老年代内存占用达到80%时就执行一次垃圾回收。预留一些空间给浮动垃圾
-    -XX:+CMSScavengeBeforeRemark  // 重新标记之前，先执行一次新生代垃圾回收
+# 控制线程数（ConcGCThreads设置为ParallelGCThreads的四分之一）
+-XX:ParallelGCThreads=n ~ -XX:ConcGCThreads=threads   
+
+# 执行 CMS 的内存占比，比如 percen=80（80%）
+# 当老年代内存占用达到80%时就执行一次垃圾回收。预留一些空间给浮动垃圾
+
+-XX:CMSInitiatingOccupancyFraction=percent   
+-XX:+CMSScavengeBeforeRemark  # 重新标记之前，先执行一次新生代垃圾回收
 ```
+
+> 说明：-XX:CMSInitiatingOccupancyFraction=50%，假设堆内存为`-Xmx2048m`，新生代内存为`-XX:MaxNewSize=786m`
+> 
+> 当老年代空间使用的阈值达到50%才进行一次CMS垃圾回收。而这里的占比指的是：在老年代占用率达到50%之后运行，其中老年代的大小是堆的大小减去新一代的大小（2048 - 786 = 1262m），所以老年代占用内存达到631m就会触发老年代GC。默认percent=68。
 
 ![](../image/jvm_垃圾回收_响应时间优先.png)
 
