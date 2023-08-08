@@ -29,40 +29,42 @@
 - [ ] xxl-job
 - [ ] devops
 
-[comment]: <> (## 文档)
+## 系统性能指标
 
-[comment]: <> (| 文档     | 视频     | 时长     |)
+### QPS
 
-[comment]: <> (| -------- | -------- | -------- |)
+QPS（Query Per Second）：每秒查询率。指的是单位时间内查询或访问服务器的次数。是对一个特定的查询服务器在规定时间内所处理流量多少的衡量标准。
 
-[comment]: <> (| Dubbo | `https://www.bilibili.com/video/BV1ns411c7jV/` | 4h17' |)
+### TPS
 
-[comment]: <> (| HashMap | `https://www.bilibili.com/video/BV1nJ411J7AA/` | 3h54' |)
+TPS（Transaction Per Second）：每秒事务数。指的是单位时间内系统处理的事务数。一个事务量里可以包含多次查询。当多次查询或访问服务器时，一个TPS相当于多个QPS；当只查询或访问一次时，一个TPS则等价于一个QPS。如，访问一个页面会请求服务器2次，一次访问，产生一个"T"，产生2个"Q"。
 
-[comment]: <> (| JavaGuide |  |  |)
+一个事务是指一个客户机向服务器发送请求然后服务器做出反应的过程。即客户机在发送请求时开始计时，收到服务器响应后结束计时，以此来计算使用的时间和完成的事务个数。
 
-[comment]: <> (| JUC | `1：https://www.bilibili.com/video/BV16J411h7Rd/` <br/> `2：https://www.bilibili.com/video/BV1ar4y1x727/` | 32h36' <br/>24h18'  |)
+TPS = 总请求数 / 总时间
 
-[comment]: <> (| JVM | `https://www.bilibili.com/video/BV1yE411Z7AP/` | 17h35' |)
+若想满足TPS在1200~1500的话，总时间为2h，那么有 总请求数 = 1200 * 2 * 3600 = 8,640,000
 
-[comment]: <> (| Kafka | `https://www.bilibili.com/video/BV1vr4y1677k/` | 12h57' |)
+则满足每小时8,640,000的总请求数是一个相当高的要求，需要一台高性能的服务器来实现。以下是一个中高配置的参考值：
 
-[comment]: <> (| Linux | `https://www.bilibili.com/video/BV1WY4y1H7d3/` | 20h33' |)
+- CPU: 2 x Intel Xeon Gold 6230 20-Core 2.1GHz
 
-[comment]: <> (| MyBatis |  |  |)
+- 内存: 128GB DDR4 ECC RAM
 
-[comment]: <> (| MySQL | `https://www.bilibili.com/video/BV1Kr4y1i7ru/` | 29h52' |)
+- 存储: 1TB NVMe SSD (可考虑使用 RAID 配置)
 
-[comment]: <> (| Netty | `https://www.bilibili.com/video/BV1py4y1E7oA/` | 23h47' |)
+- 网络: 千兆以太网适配器
 
-[comment]: <> (| Redis | `1：https://www.bilibili.com/video/BV1cr4y1671t/` <br/> `2：https://www.bilibili.com/video/BV13R4y1v7sP/` | 42h46' <br/> 42h06' |)
+- ......
 
-[comment]: <> (| RocketMQ | `https://www.bilibili.com/video/BV1cf4y157sz/` | 19h20' |)
+### RT
 
-[comment]: <> (| SpringBoot | `https://www.bilibili.com/video/BV19K4y1L7MT/` | 26h12' |)
+RT（Response Time）：响应时间。指的是执行一个请求从开始到最后收到响应数据所花费的总体时间。即从客户端发起请求到收到服务器响应结果的时间。
 
-[comment]: <> (| Zookeeper | `https://www.bilibili.com/video/BV1to4y1C7gw/` | 5h52' |)
+### 并发量
 
-[comment]: <> (| SpringCloud | `https://www.bilibili.com/video/BV18E411x7eT/` | 25h36' |)
+并发量指的是系统同时能处理的请求数，在同一个时间段内对系统发起的请求数量。（可以理解为系统的负载能力）
 
-[comment]: <> (|  |  | 249h479'（一天8h，32天） |)
+### 吞吐量
+
+吞吐量指的是系统处理客户端请求数量的总和。吞吐率是单位时间内的吞吐量。系统吞吐量越低，系统承载压力的能力越差。
