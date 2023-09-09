@@ -16,15 +16,16 @@
 - [x] [Zookeeper](JavaGuide/Zookeeper.md)
 
 ## 待办
-- [ ] 需重新梳理 JavaGuide 
+
+- [x] 需重新梳理 JavaGuide 
 - [ ] Spring Cloud
-- [ ] Nginx
-- [ ] Tomcat
-- [ ] ElasticSearch
+- [x] Nginx
+- [x] Tomcat
+- [x] Elasticsearch
 - [ ] Flume
-- [ ] Jenkins
+- [x] Jenkins
 - [ ] HTTP、HTTPS、Websocket、TCP
-- [ ] MongoDB
+- [x] MongoDB
 - [ ] Kubernetes
 - [ ] xxl-job
 - [ ] devops
