@@ -18,14 +18,15 @@
 ## 待办
 
 - [x] 需重新梳理 JavaGuide 
-- [ ] Spring Cloud
 - [x] Nginx
 - [x] Tomcat
 - [x] Elasticsearch
-- [ ] Flume
 - [x] Jenkins
-- [ ] HTTP、HTTPS、Websocket、TCP
+- [x] RocketMQ
 - [x] MongoDB
+- [ ] Flume
+- [ ] Spring Cloud
+- [ ] HTTP、HTTPS、Websocket、TCP
 - [ ] Kubernetes
 - [ ] xxl-job
 - [ ] devops
