@@ -221,7 +221,173 @@ static class Item {
 
 #### 完全背包问题
 
-#### 零钱兑换问题
+`完全背包问题` 和 `01背包问题` 两者大同小异，唯一的区别就是：
+
+- `01背包问题` 每件物品只有一个，即只能取一次。
+
+- 而 `完全背包问题` 每件物品可以重复取。
+
+```java
+/**
+ * <pre>
+ 1. 假定背包容量为10g，要求取走不超过背包容量的物品
+ 2. 每次可以不拿或全拿，每件物品可以重复取，问最高价值是多少?
+
+    编号   重量(g)   价值(元)
+    1      2        3     青铜(c)
+    2      3        4     白银(s)
+    3      4        5     黄金(a)
+
+    0   1   2   3   4    5    6
+ 1  0   0   c   c   cc   cc   ccc      青铜
+ 2  0   0   c   s   s    sc   ss       白银
+ 3  0   0   c   s   a    a    ac       黄金
+
+ 其递推公式为：
+ if (装不下) {
+    dp[i][j] = dp[i-1][j]
+ } else { 装得下
+    // 当前背包最大价值 = max(上一次最大价值, 当前物品价值 + 放入当前物品之前的背包容量最大价值)
+    dp[i][j] = max(dp[i-1][j], item.value + dp[i-1][j-item.weight])
+ }
+ *
+ * @param items    物品数组
+ * @param capacity 容量
+ * @return 最大价值
+ */
+public int select(Item[] items, int capacity) {
+    int [] dp = new int[capacity + 1];
+    Item item0 = items[0];
+    // 特殊处理第0行数据
+    for (int j = 0; j < capacity + 1; j++) {
+        // 背包容量装得下第0行物品
+        if (j >= item0.weight) {
+            dp[j] = dp[j - item0.weight] + item0.value;
+        }
+    }
+
+    for (int i = 1; i < items.length; i++) {
+        for (int j = capacity; j > 0; j--) {
+            // 装得下
+            if (j >= items[i].weight) {
+                dp[j] = Integer.max(dp[j], items[i].value + dp[j - items[i].weight]);
+            }
+        }
+    }
+    return dp[capacity];
+}
+
+static class Item {
+    /**编号*/
+    private int index;
+    /**物品名称*/
+    private String name;
+    /**重量(g)*/
+    private int weight;
+    /**价值*/
+    private int value;
+
+    public Item(int index, String name, int weight, int value) {
+        this.index = index;
+        this.name = name;
+        this.weight = weight;
+        this.value = value;
+    }
+}
+```
+
+#### 零钱兑换问题--最少组成
+
+```java
+/**
+<pre>
+  面值   0   1   2   3     4     5
+    1   0   1   11  111   1111  11111
+    2   0   1   2   21    22    221
+    5   0   1   2   21    22    1
+
+ 总金额    -   类比为背包容量
+ 硬币面值  -   类比为物品重量
+ 硬币个数  -   类比为物品价值，固定为1，（因为是求最少组成总金额的硬币数量）
+
+ 递推公式如下：
+ if (装得下) {
+     上次硬币组成个数,   剩余容量能装下的最小个数+1  （个数固定为1）
+    dp[j] = Integer.min(dp[j], dp[j - coins[i]] + 1);
+    // dp[i][j] = max(dp[i-1][j], dp[i-1][j-item.weight] + 1)
+ } else {
+    保留上次个数不变
+    dp[i][j] = dp[i-1][j]
+ }
+
+ * @param coins  面值种类
+ * @param amount 总金额
+ * @return 最少组成总金额的硬币数量
+ */
+public int coinChange(int[] coins, int amount) {
+    int[] dp = new int[amount + 1];
+    // 特殊处理第0行数据，可以用Arrays.fill进行优化，赋初始值
+    Arrays.fill(dp, amount + 1);
+    dp[0] = 0;
+
+    for (int coin : coins) {
+        for (int j = coin; j < amount + 1; j++) {
+            dp[j] = Integer.min(dp[j], dp[j - coin] + 1);
+        }
+    }
+    return dp[amount] < amount ? dp[amount] : -1;
+}
+```
+
+#### 零钱兑换问题--多少种组合
+
+```java
+/**
+ <pre>
+ 面值     0       1       2       3       4       5   （总金额 - 类比为背包容量）
+   1     1       1       11      111     1111    11111
+
+   2     1       1       11      111     1111    11111
+                         2       21      211     2111
+                                         22      221
+
+   5     1       1       11      111     1111    11111
+                         2       21      211     2111
+                                         22      221
+                                                 5
+    i: 币种，j: 列（总金额）
+                                                   上一次组合种类：1 + 剩余容量的组合种类
+      eg: 总金额为3，面值有1、2，共有多少种组合： dp[i][j] = dp[i-1][j] + dp[i][j-coin]
+
+ if (放得下) {
+    dp[i][j] = dp[i-1][j] + dp[i][j-coin]
+ } else { 放不下
+    dp[i][j] = dp[i-1][j]
+ }
+
+ * @param coins     面值种类
+ * @param amount    总金额
+ * @return 多少种组合
+ */
+public int change(int[] coins, int amount) {
+    int[] dp = new int[amount + 1];
+    dp[0] = 1;
+    for (int j = 1; j < amount + 1; j++) {
+        if (j >= coins[0]) {
+            dp[j] = dp[j - coins[0]];
+        }
+    }
+    for (int i = 1; i < coins.length; i++) {
+        for (int j = 1; j < amount + 1; j++) {
+            // 容量放得下
+            if (j >= coins[i]) {
+                dp[j] = dp[j] + dp[j - coins[i]];
+            }
+        }
+    }
+    return dp[amount];
+}
+```
 
 #### 钢条切割问题
 
