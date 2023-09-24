@@ -391,7 +391,102 @@ public int change(int[] coins, int amount) {
 
 #### 钢条切割问题
 
+```java
+/**
+ <pre>
+ 钢条切割问题：怎么个切法能够构成最大价值.
+
+ 钢条长度： 0    1   2   3   4   5   6   7   8   9   10
+ 钢条价值： 0    1   5   8   9   10  17  17  20  24  30
+
+ 假定钢条长3m：
+    0   1   2   3   4
+ 1      1   11  111 1111
+ 价值：  1   2   3   4
+
+ 2      1   11  111 1111
+            2   21  211
+                    22
+ 价值：  1   5   6   10
+
+ 3      1   11  111 1111
+            2   21  211
+                3   22
+                    31
+ ... ...
+
+ if (放得下) {
+                 上一次最大价值 ,   当前物品价值 + 剩余容量能装下的最大价值
+    dp[i][j] = max(dp[i-1][j], 当前物品价值 + dp[i][j-物品重量])
+ } else { 放不下
+    dp[i][j] = dp[i-1][j]
+ }
+
+ * @param values 价值数组 - 钢条长度(物品重量)
+ *               钢条长度： 0    1   2   3   4   5   6   7   8   9   10   （索引）
+ *               钢条价值： 0    1   5   8   9   10  17  17  20  24  30
+ * @param n 钢条长度
+ * @return 最大价值
+ */
+public int cut(int[] values, int n) {
+    int[] dp = new int[n + 1];
+    for (int i = 1; i < values.length; i++) {
+        for (int j = 1; j < n + 1; j++) {
+            if (j >= i) {
+                dp[j] = Integer.max(dp[j], values[i] + dp[j - i]);
+            }
+        }
+    }
+    return dp[n];
+}
+```
+
 #### 最长公共子串
+
+```java
+/**
+
+ 最长公共字串：abcdeoma  opcdeima  则两个字符串的最长公共字串为3，（连续的子串）
+
+    b   c   d   e   i   m   a
+ c  0   1   0   0   0   0   0
+ d  0   0   2   0   0   0   0
+ e  0   0   0   3   0   0   0
+ o  0   0   0   0   0   0   0
+ m  0   0   0   0   0   1   0
+ a  0   0   0   0   0   0   2
+
+ if (字符相同) {
+    dp[i][j] = dp[i-1][j-1] + 1
+ } else {
+    dp[i][j] = 0
+ }
+
+ * @param a 串A
+ * @param b 串B
+ * @return 最长公共字串
+ */
+public int lcs(String a, String b) {
+    int[][] dp = new int[b.length()][a.length()];
+    int max = 0;
+    for (int i = 0; i < b.length(); i++) {
+        for (int j = 0; j < a.length(); j++) {
+            if (a.charAt(j) == b.charAt(i)) {
+                // 特殊处理0行或0列，如果为0行或0列，则dp[i - 1][j - 1] 索引为负数
+                if (i == 0 || j == 0) {
+                    dp[i][j] = 1;
+                } else {
+                    dp[i][j] = dp[i - 1][j - 1] + 1;
+                }
+                max = Integer.max(max, dp[i][j]);
+            } else {
+                dp[i][j] = 0;
+            }
+        }
+    }
+    return max;
+}
+```
 
 #### 最长公共子序列
 
