@@ -6,9 +6,9 @@
 
 ## 互联网
 
-- [ ] [互联网是如何工作的?](JavaGuide/互联网是如何工作的.md)
-- [ ] [什么是HTTP?](JavaGuide/什么是HTTP.md)
-- [ ] 浏览器是如何工作的?
+- [x] [互联网是如何工作的?](JavaGuide/互联网是如何工作的.md)
+- [x] [什么是HTTP?](JavaGuide/什么是HTTP.md)
+- [x] [浏览器是如何工作的?](https://web.dev/articles/howbrowserswork?hl=zh-cn)
 - [ ] DNS是如何工作的?
 - [ ] 什么是域名?
 - [ ] 什么是托管?
