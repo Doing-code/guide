@@ -10,8 +10,8 @@
 - [x] [什么是HTTP?](JavaGuide/什么是HTTP.md)
 - [x] [浏览器是如何工作的?](https://web.dev/articles/howbrowserswork?hl=zh-cn)
 - [x] [DNS是如何工作的?](JavaGuide/DNS是如何工作的.md)
-- [ ] 什么是域名?
-- [ ] 什么是托管?
+- [x] [什么是域名?](JavaGuide/什么是域名.md)
+- [x] 什么是托管? — 云服务器
 
 ## 操作系统和基本知识
 
