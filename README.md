@@ -15,17 +15,17 @@
 
 ## 操作系统和基本知识
 
-- [ ] 终端用法
+- [x] [终端用法](https://developer.mozilla.org/zh-CN/docs/Learn/Tools_and_testing/Understanding_client-side_tools/Command_line)
 - [ ] 操作系统通常如何工作
-- [ ] 进程管理
-- [ ] 线程与并发
-- [ ] 基本的终端命令
-- [ ] 内存管理
-- [ ] 进程间通信
-- [ ] I/O管理
-- [ ] POSIX 基础
-- [ ] 基本的网络概念
-- [ ] [`Linux`](JavaGuide/Linux_命令速查.md)
+- [x] [进程管理](https://medium.com/@akhandmishra/operating-system-process-and-process-management-108d83e8ce60)
+- [x] [线程与并发](https://www.javatpoint.com/concurrency-in-operating-system)
+- [x] [基本的终端命令](https://www.hostinger.com/tutorials/linux-commands)
+- [x] [内存管理](https://www.geeksforgeeks.org/memory-management-in-operating-system/)
+- [x] [进程间通信](https://www.geeksforgeeks.org/inter-process-communication-ipc/)
+- [x] [I/O管理](https://www.tutorialspoint.com/operating_system/os_io_hardware.htm)
+- [x] [POSIX 基础](https://www.baeldung.com/linux/posix)
+- [x] [基本的网络概念](https://aws.amazon.com/cn/what-is/computer-networking/)
+- [x] [`Linux`](JavaGuide/Linux_命令速查.md)
 
 ### `网络通信协议 `
 
@@ -40,33 +40,26 @@
 
 ### Java
 
-- [ ] [`Java核心`](JavaGuide/JavaGuide.md)
-
-- [ ] [`数据结构与算法`](JavaGuide/DataStructureAndAlgorithms.md)
-
-- [ ] [`JVM`](JavaGuide/JVM.md)
-
-- [ ] [`并发编程`](JavaGuide/JUC.md)
-
-- [ ] [`Spring`](https://github.com/Doing-code/SpringFramework)
-
-- [ ] `SpringMVC`
-
-- [ ] [`MyBatis`](https://github.com/Doing-code/MyBatisFramework)
-
-- [ ] [`SpringBoot`](JavaGuide/SpringBoot.md)
-
-- [ ] [`SpringCloud`](README.md#微服务组件)
-
-- [ ] [网络编程之Netty](JavaGuide/Netty.md)
+- [x] [`Java核心`](JavaGuide/JavaGuide.md)
+- [x] [`数据结构与算法`](JavaGuide/DataStructureAndAlgorithms.md)
+- [x] [`JVM`](JavaGuide/JVM.md)
+- [x] [`并发编程`](JavaGuide/JUC.md)
+- [x] [`Spring`](https://github.com/Doing-code/SpringFramework)
+- [x] [`SpringMVC`](JavaGuide/SpringMVC.md)
+- [x] [`MyBatis`](https://github.com/Doing-code/MyBatisFramework)
+- [x] [`SpringBoot`](JavaGuide/SpringBoot.md)
+- [x] [`SpringCloud`](README.md#微服务组件)
+- [x] [网络编程之Netty](JavaGuide/Netty.md)
 
 ### Python
 
 ### Go
 
+### Vue
+
 ## 版本控制系统
 
-- [ ] [`Git`](JavaGuide/Git_命令速查.md)
+- [x] [`Git`](JavaGuide/Git_命令速查.md)
 
 ## 仓库托管服务
 
@@ -77,7 +70,7 @@
 ## 关系型数据库
 
 - [ ] `PostgreSQL`
-- [ ] [`MySQL`](JavaGuide/MySQL.md)
+- [x] [`MySQL`](JavaGuide/MySQL.md)
 - [ ] `Oracle`
 
 ## NoSQL 数据库
@@ -106,7 +99,7 @@
 ## 缓存
 
 - [ ] CDN
-- [ ] [`Redis`](JavaGuide/Redis.md)
+- [x] [`Redis`](JavaGuide/Redis.md)
 - [ ] Memcached
 
 ## Web安全知识
@@ -137,7 +130,7 @@
 
 ## CI / CD
 
-- [ ] [Jenkins](JavaGuide/Jenkins.md)
+- [x] [Jenkins](JavaGuide/Jenkins.md)
 
 ## 设计与开发原则
 
@@ -155,13 +148,13 @@
 
 ## 搜索引擎
 
-- [ ] [`Elasticsearch`](JavaGuide/Elasticsearch.md)
+- [x] [`Elasticsearch`](JavaGuide/Elasticsearch.md)
 - [ ] Solr
 
 ## 消息代理
 
-- [ ] [`Kafka`](JavaGuide/Kafka.md)
-- [ ] [`RocketMQ`](JavaGuide/RocketMQ.md)
+- [x] [`Kafka`](JavaGuide/Kafka.md)
+- [x] [`RocketMQ`](JavaGuide/RocketMQ.md)
 
 ## 容器化与虚拟化
 
@@ -178,14 +171,14 @@
 ``
 ## 网页服务器
 
-- [ ] [`Nginx`](JavaGuide/Nginx.md)
+- [x] [`Nginx`](JavaGuide/Nginx.md)
 - [ ] Apache
 - [ ] Caddy
-- [ ] [`Tomcat`](JavaGuide/Tomcat.md)
+- [x] [`Tomcat`](JavaGuide/Tomcat.md)
 
 ## `微服务组件`
 
-- [ ] [Nacos](JavaGuide/Nacos源码分析.md)
+- [x] [Nacos](JavaGuide/Nacos源码分析.md)
 - [ ] OpenFeign
 - [ ] Ribbon
 - [ ] [Sentinel](JavaGuide/Sentinel源码分析.md)
@@ -194,8 +187,8 @@
 
 ## `分布式组件 `
 
-- [ ] [Zookeeper](JavaGuide/Zookeeper.md)
-- [ ] [Dubbo](JavaGuide/Dubbo.md)
+- [x] [Zookeeper](JavaGuide/Zookeeper.md)
+- [x] [Dubbo](JavaGuide/Dubbo.md)
 
 ## 项目构建
 
