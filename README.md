@@ -27,12 +27,12 @@
 - [x] [基本的网络概念](https://aws.amazon.com/cn/what-is/computer-networking/)
 - [x] [`Linux`](JavaGuide/Linux_命令速查.md)
 
-### `网络通信协议 `
+### `网络通信协议`
 
-- [ ] UDP
-- [ ] TCP
-- [ ] HTTP
-- [ ] HTTPS
+- [x] [UDP](JavaGuide/网络通信协议.md#UDP)
+- [x] [TCP](JavaGuide/网络通信协议.md#TCP)
+- [x] [HTTP](JavaGuide/网络通信协议.md#HTTP)
+- [x] [HTTPS](https://www.cloudflare.com/zh-cn/learning/ssl/what-is-https/)
 
 ## 学习一门编程语言
 
@@ -41,7 +41,7 @@
 ### Java
 
 - [x] [`Java核心`](JavaGuide/JavaGuide.md)
-- [x] [`数据结构与算法`](JavaGuide/DataStructureAndAlgorithms.md)
+- [ ] [`数据结构与算法`](JavaGuide/DataStructureAndAlgorithms.md)
 - [x] [`JVM`](JavaGuide/JVM.md)
 - [x] [`并发编程`](JavaGuide/JUC.md)
 - [x] [`Spring`](https://github.com/Doing-code/SpringFramework)
