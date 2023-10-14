@@ -53,6 +53,8 @@
 
 ### Python
 
+- [x] [Python3小时快速入门](JavaGuide/Python3小时快速入门.md)
+
 ### Go
 
 ### Vue
