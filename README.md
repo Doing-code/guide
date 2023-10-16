@@ -57,6 +57,8 @@
 
 ### Go
 
+- [x] [Golang8小时转职](JavaGuide/Golang8小时转职.md)
+
 ### Vue
 
 ## 版本控制系统
@@ -71,36 +73,56 @@
 
 ## 关系型数据库
 
-- [ ] `PostgreSQL`
+- [x] [`PostgreSQL`](https://www.postgresql.org/docs/current/sql-syntax-lexical.html)
 - [x] [`MySQL`](JavaGuide/MySQL.md)
-- [ ] `Oracle`
+- [x] [`Oracle`](https://docs.oracle.com/en/database/oracle/oracle-database/23/cncpt/tables-and-table-clusters.html#GUID-096986C4-9AD7-401D-BA6D-EF6CD4B494FE)
+
+> PostgreSQL、Oracle、SQL Server 因工作中不常使用，仅作为开发时查阅文档。目前 MySQL 作为主力数据库开发
 
 ## NoSQL 数据库
 
-- [ ] [`MongoDB`](JavaGuide/MongoDB.md)
-- [ ] RethinkDB
-- [ ] CouchDB
-- [ ] DynamoDB
+> MongoDB roadmap: `https://roadmap.sh/mongodb`
+
+- [x] [`MongoDB`](JavaGuide/MongoDB.md)
+- [ ] RethinkDB - 实时数据库
+- [ ] CouchDB - 文档数据库
+- [ ] DynamoDB - Key-Value 数据库
 
 ## 扩展数据库
 
 - [ ] 数据库规范化
 
-- [ ] 索引及其工作机制
+- [x] [索引及其工作机制](https://www.freecodecamp.org/news/database-indexing-at-a-glance-bb50809d48bd/)
 
 ## 学习 API
 
+> gRPC 可以直接使用服务的 IP 地址和端口号进行通信。可以不用注册中心。但是对于分布式系统，使用注册中心可以提供更好地服务发现和管理。gRPC 的官方推荐使用的注册中心是 etcd 或 Consul。如果您使用 Kubernetes，也可以使用 Kubernetes 自带的服务发现和负载均衡功能。
+
+- [x] [gRPC](https://grpc.io/docs/what-is-grpc/introduction/)
+
 ### 身份验证
 
-- [ ] Cookie
-- [ ] `OAuth`
-- [ ] 基本验证
-- [ ] Token验证
-- [ ] JWT
+> Cookie：在客户端设备存储状态信息（小文本文件，唯一标识用户的会话），一般用于客户端/服务器，因为HTTP是无状态的。如Cookie记录用户登录状态，请求服务器时携带Cookie（又服务器生成，并将其附加到要返回给客户端的响应 cookie）。
+>
+> OAuth：开放的授权标准，任何人都可以实现它。OAuth 是 REST/API 的委托授权框架。它使应用程序能够在不泄露用户密码的情况下获得对用户数据的有限访问（范围）。
+>
+> Basic authentication（基本身份认证）：基本身份验证是HTTP规范的一部分，但不应将基本身份验证与标准用户名和密码身份验证混淆。它是如何工作的？答案是：由服务器的响应来控制（`WWW-Authenticate`）。
+>
+> Token认证：基于token的身份验证是一种允许用户验证其身份的协议。使用基于令牌的身份验证系统，访问者只需验证一次凭据。作为回报，他们将获得一个令牌，允许在您定义的时间段内进行访问。
+>
+> JWT（JSON Web Token）：JWT是基于token的身份认证的方案。
+>
+> 授权在 OAuth 中体现，授权是验证您有权访问的过程。而身份验证是验证身份的过程。
+
+- [x] [Cookie](https://zh.wikipedia.org/wiki/Cookie)
+- [X] [`OAuth`](https://developer.okta.com/blog/2017/06/21/what-the-heck-is-oauth#enter-openid-connect)
+- [x] [基本验证](https://roadmap.sh/guides/http-basic-authentication)
+- [x] [Token认证](https://www.okta.com/identity-101/what-is-token-based-authentication/)
+- [x] [JWT](https://jwt.io/introduction)
 
 ## 缓存
 
-- [ ] CDN
+- [x] [CDN](JavaGuide/什么是CDN.md)
 - [x] [`Redis`](JavaGuide/Redis.md)
 - [ ] Memcached
 
@@ -179,6 +201,8 @@
 - [x] [`Tomcat`](JavaGuide/Tomcat.md)
 
 ## `微服务组件`
+
+> Nacos: https://zhuanlan.zhihu.com/p/527746095
 
 - [x] [Nacos](JavaGuide/Nacos源码分析.md)
 - [ ] OpenFeign
