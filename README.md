@@ -172,11 +172,17 @@
 
 ## CI / CD
 
+> DevOps：Development 和 Operations 的合成词。continuous integration（CI，持续集成（测试）），continuous delivery（CD，持续交付（部署））
+
 - [x] [Jenkins](JavaGuide/Jenkins.md)
 
 ## 设计与开发原则
 
-- [ ] `设计模式`
+> 常见的设计模式有：代理模式、模板方法模式、策略模式、责任链模式（典型的有Sentinel的限流机制，责任链调用，只要不满足任一调用链，就不允许访问。（请求从一端进入，并不断从一个对象传递到另一个对象，直到找到合适的处理程序））
+> 
+> 领域驱动设计 和 测试驱动开发 现阶段有点难以理解（实习岗位），等到后面有机会接触到架构的机会再进行补充
+
+- [x] [`设计模式`](https://github.com/kamranahmedse/design-patterns-for-humans)
 - [ ] `领域驱动设计`
 - [ ] 测试驱动开发
 
