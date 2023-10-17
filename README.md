@@ -2,6 +2,8 @@
 
 这份文档基本涵盖了 Java 开发所需的技能。高亮部分表示应聘 Java 中级（3-5年），在岗位招聘中所具备的能力。
 
+尽管罗列了这么多的文档，但如果不涉及到实际应用的话，也是很难消化的，最快消化的方式是带入生产环境，或者带入面试场景。
+
 > Java 核心知识包括：Java基础知识、IO、多线程、集合、网络编程等。
 
 ## 互联网
@@ -130,21 +132,21 @@
 
 ## Web安全知识
 
-> MD5：MD5（message-digest algorithm 消息摘要算法）哈希算法**是一种单向加密函数**。它接受任意长度的消息作为输入，并返回固定长度（128位）的摘要值作为输出，用于验证原始消息。不安全，会产生加密碰撞。
-> 
-> SHA：Secure Hash Algorithm（安全散列算法），其中最常见的就是 SHA-256、SHA-512，数字表示输出的摘要长度。
+> **MD5**：MD5（message-digest algorithm 消息摘要算法）哈希算法是**一种单向加密函数**。它接受任意长度的消息作为输入，并返回固定长度（128位）的摘要值作为输出，用于验证原始消息。不安全，会产生加密碰撞。
 >
-> scrypt：密钥派生函数，加密算法。被用在密码货币的工作量证明算法上。
+> **SHA**：Secure Hash Algorithm（安全散列算法），其中最常见的就是 SHA-256、SHA-512，数字表示输出的摘要长度。
 >
-> bcrypt：是一种密码哈希函数。
+> **scrypt**：密钥派生函数，加密算法。被用在密码货币的工作量证明算法上。
 >
-> 内容安全政策：Content Security Policy，它是基于 HTTP header（`Content-Security-Policy: policy`） 实现的，策略（policy）参数是一个包含了各种描述你的 CSP 策略指令的字符串。
+> **bcrypt**：是一种密码哈希函数。
 >
-> CORS：Cross-Origin Resource Sharing（跨源资源共享）是一种基于 HTTP 头的机制，使得浏览器允许这些源（`https://domain-a.com`）访问加载自己的资源(`https://domain-b.com/data.json`)
+> **内容安全政策**：Content Security Policy，它是基于 HTTP header（`Content-Security-Policy: policy`） 实现的，策略（policy）参数是一个包含了各种描述你的 CSP 策略指令的字符串。
 >
-> SSL/TLS：是一种加密安全协议，但大多数现代 Web 浏览器已彻底不再支持 SSL，因其存在多个已知漏洞。SSL 是另一个称为 TLS（传输层安全性）的协议的直接前身。如今提供“SSL”的任何供应商提供的几乎肯定都是 TLS 保护。
+> **CORS**：Cross-Origin Resource Sharing（跨源资源共享）是一种基于 HTTP 头的机制，使得浏览器允许这些源（`https://domain-a.com`）访问加载自己的资源(`https://domain-b.com/data.json`)
 >
-> OWASP：Open Web Application Security Project（开放 Web 应用程序安全项目）。是一个在线社区，它生成 Web 应用程序安全领域的免费文章、方法、文档、工具和技术。**「暂时不对其深入」**
+> **SSL/TLS**：是一种加密安全协议，但大多数现代 Web 浏览器已彻底不再支持 SSL，因其存在多个已知漏洞。SSL 是另一个称为 TLS（传输层安全性）的协议的直接前身。如今提供“SSL”的任何供应商提供的几乎肯定都是 TLS 保护。
+>
+> **OWASP**：Open Web Application Security Project（开放 Web 应用程序安全项目）。是一个在线社区，它生成 Web 应用程序安全领域的免费文章、方法、文档、工具和技术。**「暂时不对其深入」**
 
 - [x] [MD5](https://zh.wikipedia.org/wiki/MD5)
 - [x] [SHA](https://zh.wikipedia.org/wiki/SHA-2)
@@ -188,13 +190,23 @@
 
 ## 架构模式
 
-- [ ] 单体应用
-- [ ] 微服务
-- [ ] SOA
-- [ ] 无服务化
-- [ ] 服务网格
+> **分布式结构**：根据业务功能对系统进行拆分，每个业务模块作为独立项目开发，称为一个服务。
+> 
+> **微服务**：一种经过良好架构设计的**分布式**架构方案（本质还是分布式架构，只不过是最佳实践），拆分粒度更细，做到单一职责。
+>
+> **serverless**：无服务器是一种云计算应用程序开发和执行模型，使开发人员能够构建和运行应用程序代码，而无需配置或管理服务器或后端基础设施。“serverless”描述了服务器对开发人员是不可见的。使用云服务提供商的无服务器平台。
+>
+> **Service Mesh**：可简单理解为用于管理和保护微服务之间的通信，并提供负载平衡、服务发现和可观察性等功能。
+
+- [x] [单体应用](https://datamify.medium.com/monolithic-architecture-advantages-and-disadvantages-e71a603eec89)
+- [x] [微服务](https://smartbear.com/learn/api-design/microservices/)
+- [ ] [SOA](https://docs.oasis-open.org/soa-rm/soa-ra/v1.0/soa-ra.html)
+- [ ] [无服务化](https://www.ibm.com/topics/serverless)
+- [ ] [服务网格](https://www.nginx.com/blog/what-is-a-service-mesh/)
 
 ## 搜索引擎
+
+> 现在都是 ELK 一套组合拳，Solr 可以等到将内存扩大后再进行对其的深入。
 
 - [x] [`Elasticsearch`](JavaGuide/Elasticsearch.md)
 - [ ] Solr
@@ -206,7 +218,9 @@
 
 ## 容器化与虚拟化
 
-- [ ] [`Docker`](JavaGuide/Docker.md)
+> Kubernetes 速学课程：https://www.youtube.com/watch?v=s_o8dwzRlu4
+
+- [x] [`Docker`](JavaGuide/Docker.md)
 - [ ] LXC
 - [ ] `Kubernetes`
 
