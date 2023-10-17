@@ -1,6 +1,6 @@
 # roadmap
 
-这份文档基本涵盖了 Java 开发所需的技能。高亮部分表示应聘 Java 中级（3-5年），在岗位招聘中所具备的能力。如果学习到新的组件技术，也会在第一时间进行更新到此文档。
+这份文档基本涵盖了 Java 开发所需的技能。高亮部分表示应聘 Java 中级（3-5年），在岗位招聘中所具备的能力。
 
 > Java 核心知识包括：Java基础知识、IO、多线程、集合、网络编程等。
 
@@ -122,35 +122,53 @@
 
 ## 缓存
 
+> Memcached：类似于 HashMap，key-value存储结构，只支持 string 类型，且内存淘汰仅 lru（least recently used 最少最近使用）
+
 - [x] [CDN](JavaGuide/什么是CDN.md)
 - [x] [`Redis`](JavaGuide/Redis.md)
-- [ ] Memcached
+- [x] [Memcached](https://github.com/memcached/memcached/wiki/Commands#storage-commands)
 
 ## Web安全知识
 
-- [ ] MD5
+> MD5：MD5（message-digest algorithm 消息摘要算法）哈希算法**是一种单向加密函数**。它接受任意长度的消息作为输入，并返回固定长度（128位）的摘要值作为输出，用于验证原始消息。不安全，会产生加密碰撞。
+> 
+> SHA：Secure Hash Algorithm（安全散列算法），其中最常见的就是 SHA-256、SHA-512，数字表示输出的摘要长度。
+>
+> scrypt：密钥派生函数，加密算法。被用在密码货币的工作量证明算法上。
+>
+> bcrypt：是一种密码哈希函数。
+>
+> 内容安全政策：Content Security Policy，它是基于 HTTP header（`Content-Security-Policy: policy`） 实现的，策略（policy）参数是一个包含了各种描述你的 CSP 策略指令的字符串。
+>
+> CORS：Cross-Origin Resource Sharing（跨源资源共享）是一种基于 HTTP 头的机制，使得浏览器允许这些源（`https://domain-a.com`）访问加载自己的资源(`https://domain-b.com/data.json`)
+>
+> SSL/TLS：是一种加密安全协议，但大多数现代 Web 浏览器已彻底不再支持 SSL，因其存在多个已知漏洞。SSL 是另一个称为 TLS（传输层安全性）的协议的直接前身。如今提供“SSL”的任何供应商提供的几乎肯定都是 TLS 保护。
+>
+> OWASP：Open Web Application Security Project（开放 Web 应用程序安全项目）。是一个在线社区，它生成 Web 应用程序安全领域的免费文章、方法、文档、工具和技术。**「暂时不对其深入」**
 
-- [ ] SHA
-
-- [ ] scrypt
-
-- [ ] bcrypt
-
-- [ ] `HTTPS`
-
-- [ ] 内容安全政策
-
-- [ ] CORS
-
-- [ ] SSL/TLS
-
-- [ ] OWASP 安全风险
+- [x] [MD5](https://zh.wikipedia.org/wiki/MD5)
+- [x] [SHA](https://zh.wikipedia.org/wiki/SHA-2)
+- [x] [scrypt](https://zh.wikipedia.org/wiki/Scrypt)
+- [x] [bcrypt](https://auth0.com/blog/hashing-in-action-understanding-bcrypt/)
+- [x] [`HTTPS`](https://zhuanlan.zhihu.com/p/43789231)
+- [x] [内容安全政策](https://developer.mozilla.org/zh-CN/docs/Web/HTTP/CSP)
+- [x] [CORS](https://developer.mozilla.org/zh-CN/docs/Web/HTTP/CORS)
+- [x] [SSL/TLS](https://en.wikipedia.org/wiki/Transport_Layer_Security)
+- [x] [OWASP 安全风险](https://github.com/OWASP/ASVS)
 
 ## 测试
 
-- [ ] 集成测试
-- [ ] 单元测试
-- [ ] 功能测试
+> 集成测试：集成测试主要测试软件模块之间的交互和协作。
+>
+> 单元测试：单元测试是由开发人员在应用程序的开发（编码阶段）期间完成的。单元测试隔离一段代码并验证其正确性。单元可以是单独的功能、方法、过程、模块或对象。
+>
+> 功能测试：功能测试的目的是通过提供适当的输入、根据功能需求验证输出来测试软件应用程序的每个功能。功能测试主要涉及黑盒测试，不关心应用程序的源代码。此测试检查用户界面、API、数据库、安全性、客户端/服务器通信以及被测应用程序的其他功能。测试可以手动或使用自动化完成。
+
+- [x] [什么是软件测试](JavaGuide/什么是软件测试.md)
+- [x] [软件测试教程](https://www.guru99.com/software-testing.html)
+- [x] [集成测试](https://www.guru99.com/integration-testing.html)
+- [x] [单元测试](https://www.guru99.com/unit-testing-guide.html)
+- [x] [功能测试](https://www.guru99.com/functional-testing.html)
 
 ## CI / CD
 
