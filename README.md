@@ -28,6 +28,7 @@
 - [x] [POSIX 基础](https://www.baeldung.com/linux/posix)
 - [x] [基本的网络概念](https://aws.amazon.com/cn/what-is/computer-networking/)
 - [x] [`Linux`](JavaGuide/Linux_命令速查.md)
+- [x] [`Shell`](JavaGuide/Linux_Shell.md)
 
 ### `网络通信协议`
 
