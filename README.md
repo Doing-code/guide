@@ -203,7 +203,7 @@
 >
 > **serverless**：无服务器是一种云计算应用程序开发和执行模型，使开发人员能够构建和运行应用程序代码，而无需配置或管理服务器或后端基础设施。“serverless”描述了服务器对开发人员是不可见的。使用云服务提供商的无服务器平台。
 >
-> **Service Mesh**：可简单理解为用于管理和保护微服务之间的通信，并提供负载平衡、服务发现和可观察性等功能。
+> **Service Mesh**：可简单理解为用于管理和保护微服务之间的通信，并提供负载平衡、服务发现和可观察性等功能。常见的有 Istio。
 
 - [x] [单体应用](https://datamify.medium.com/monolithic-architecture-advantages-and-disadvantages-e71a603eec89)
 - [x] [微服务](https://smartbear.com/learn/api-design/microservices/)
