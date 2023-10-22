@@ -39,7 +39,7 @@
 - [x] [UDP](JavaGuide/网络通信协议.md#UDP)
 - [x] [TCP](JavaGuide/网络通信协议.md#TCP)
 - [x] [HTTP](JavaGuide/网络通信协议.md#HTTP)
-- [x] [HTTPS](https://www.cloudflare.com/zh-cn/learning/ssl/what-is-https/)
+- [x] [HTTPS](https://zhuanlan.zhihu.com/p/43789231)
 
 ## 学习一门编程语言
 

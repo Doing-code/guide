@@ -3423,8 +3423,1410 @@ cronjob.batch "pc-cronjob" deleted
 
 ## Service
 
+Service是外部程序访问pod服务的统一入口。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200408194716912-1626783758946.png)
+
+Service在很多情况下只是一个概念，真正起作用的其实是kube-proxy服务进程，每个Node节点上都运行着一个kube-proxy服务进程。
+
+当创建Service的时候会通过api-server向etcd写入创建的service的信息，而kube-proxy会基于监听的机制发现这种Service的变动，然后它会将最新的Service信息转换成对应的访问规则。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200509121254425.png)
+
+```shell script
+[root@node1 ~]# ipvsadm -Ln
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port           Forward Weight ActiveConn InActConn
+TCP  10.97.97.97:80 rr
+  -> 10.244.1.39:80               Masq    1      0          0
+  -> 10.244.1.40:80               Masq    1      0          0
+  -> 10.244.2.33:80               Masq    1      0          0
+```
+
+如上`10.97.97.97:80`是service提供的访问入口，kube-proxy会基于rr（轮询）的策略，将请求分发到其中一个pod上去。
+
+kube-proxy目前支持三种工作模式：userspace、iptables、ipvs。
+
+- userspace
+
+    userspace模式下，kube-proxy会为Service暴露一个监听端口，当发向Cluster IP的请求被Iptables规则重定向到kube-proxy监听的端口上，kube-proxy根据LB算法选择一个提供服务的Pod并和其建立链接，以将请求转发到Pod上。
+    
+    该模式下，kube-proxy充当了一个四层负责均衡器的角色。由于kube-proxy运行在userspace中，在进行转发处理时会增加内核和用户空间之间的数据拷贝，虽然比较稳定，但是效率比较低。
+    
+    ![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200509151424280.png)
+
+- iptables
+
+    iptables模式下，kube-proxy为service负责的每个Pod创建对应的iptables规则，发向Cluster IP的请求会被重定向到一个Pod IP。
+    
+    该模式下kube-proxy不再承担四层负责均衡器的角色，只负责创建iptables规则。该模式的优点是较userspace模式效率更高，但不能提供灵活的LB策略，当Pod不可用时也无法进行重试。
+    
+    ![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200509152947714.png)
+
+- ipvs
+
+    ipvs模式和iptables类似，kube-proxy监控Pod的变化并创建相应的ipvs规则。ipvs相对iptables转发效率更高。除此以外，ipvs支持更多的LB算法。
+    
+    ![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200509153731363.png)
+    
+如果需要使用ipvs模式则必须安装ipvs内核模块，否则会降级为iptables。
+
+```shell script
+# 开启ipvs模块
+
+# 修改mode: "ipvs"
+[root@k8s-master01 ~]# kubectl edit cm kube-proxy -n kube-system
+
+[root@k8s-master01 ~]# kubectl delete pod -l k8s-app=kube-proxy -n kube-system
+
+# 测试ipvs模块是否开启成功
+[root@node1 ~]# ipvsadm -Ln
+```
+
+### Service配置项
+
+```yaml
+kind: Service    # 资源类型
+apiVersion: v1   # 资源版本
+metadata:        # 元数据
+  name: service  # 资源名称
+  namespace: dev # 命名空间
+spec:       # 描述
+  selector: # 标签选择器，用于确定当前service代理哪些pod
+    app: nginx
+  type: NodePort # Service类型，指定service的访问方式
+  clusterIP:     # 虚拟服务的ip地址
+  sessionAffinity: # session亲和性，支持ClientIP、None两个选项
+  ports:           # 端口信息
+    - protocol: TCP 
+      port: 3017       # service端口
+      targetPort: 5003 # pod端口
+      nodePort: 31122  # 主机端口
+```
+
+`spec.type`属性值的说明：
+
+- ClusterIP：默认值，它是Kubernetes系统自动分配的虚拟IP，只能在集群内部访问。
+
+- NodePort：将Service通过指定的Node上的端口暴露给外部，通过此方法，就可以在集群外部访问服务。
+
+- LoadBalancer：使用外接负载均衡器完成到服务的负载分发，注意此模式**需要外部云环境支持**。
+
+- ExternalName： 把集群外部的服务引入集群内部，直接使用。
+
+### Service示例
+
+#### 前置
+
+创建`deployment.yaml`：
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment      
+metadata:
+  name: pc-deployment
+  namespace: dev
+spec: 
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-pod
+  template:
+    metadata:
+      labels:
+        app: nginx-pod
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.17.1
+        ports:
+        - containerPort: 80
+```
+
+创建pod控制器
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f deployment.yaml
+deployment.apps/pc-deployment created
+
+# 查看pod详情
+[root@k8s-master01 ~]# kubectl get pods -n dev -o wide --show-labels
+NAME                             READY   STATUS     IP            NODE     LABELS
+pc-deployment-66cb59b984-8p84h   1/1     Running    10.244.1.39   node1    app=nginx-pod
+pc-deployment-66cb59b984-vx8vx   1/1     Running    10.244.2.33   node2    app=nginx-pod
+pc-deployment-66cb59b984-wnncx   1/1     Running    10.244.1.40   node1    app=nginx-pod
+
+# 为了方便后面的测试，修改下三台nginx的index.html页面（三台修改的IP地址不一致）
+# kubectl exec -it pc-deployment-66cb59b984-8p84h -n dev /bin/sh
+# echo "10.244.1.39" > /usr/share/nginx/html/index.html
+
+#修改完毕之后，访问测试
+[root@k8s-master01 ~]# curl 10.244.1.39
+10.244.1.39
+[root@k8s-master01 ~]# curl 10.244.2.33
+10.244.2.33
+[root@k8s-master01 ~]# curl 10.244.1.40
+10.244.1.40
+```
+
+#### ClusterIP
+
+创建`service-clusterip.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-clusterip
+  namespace: dev
+spec:
+  selector:
+    app: nginx-pod
+  clusterIP: 10.97.97.97 # service的ip地址，如果不写，默认会生成一个
+  type: ClusterIP
+  ports:
+  - port: 80       # Service端口       
+    targetPort: 80 # pod端口
+```
+
+创建service
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f service-clusterip.yaml
+service/service-clusterip created
+
+# 查看service
+[root@k8s-master01 ~]# kubectl get svc -n dev -o wide
+NAME                TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service-clusterip   ClusterIP   10.97.97.97   <none>        80/TCP    13s   app=nginx-pod
+
+# 查看service的详细信息，其中有一个Endpoints列表，里面就是当前service可以负载到的服务入口
+[root@k8s-master01 ~]# kubectl describe svc service-clusterip -n dev
+Name:              service-clusterip
+Namespace:         dev
+Labels:            <none>
+Annotations:       <none>
+Selector:          app=nginx-pod
+Type:              ClusterIP
+IP:                10.97.97.97
+Port:              <unset>  80/TCP
+TargetPort:        80/TCP
+Endpoints:         10.244.1.39:80,10.244.1.40:80,10.244.2.33:80
+Session Affinity:  None
+Events:            <none>
+
+# 查看ipvs的映射规则
+[root@k8s-master01 ~]# ipvsadm -Ln
+TCP  10.97.97.97:80 rr
+  -> 10.244.1.39:80               Masq    1      0          0
+  -> 10.244.1.40:80               Masq    1      0          0
+  -> 10.244.2.33:80               Masq    1      0          0
+
+# 访问10.97.97.97:80观察效果
+[root@k8s-master01 ~]# curl 10.97.97.97:80
+10.244.2.33
+```
+
+##### Endpoint
+
+Endpoint是kubernetes中的一个资源对象，存储在etcd中，用来记录一个service对应的所有pod的访问地址，它是根据service配置文件中selector描述产生的。
+
+一个Service由一组Pod组成，这些Pod的访问入口通过Endpoints暴露出来。换句话说，service和pod之间的联系是通过endpoints实现的。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200509191917069.png)
+
+```shell script
+# 查看Endpoint
+[root@k8s-master01 ~]# kubectl get endpoints -n dev -o wide
+```
+
+##### 负载策略
+
+对Service的访问被分发到具体的pod。Kubernetes提供两种负载策略：
+
+- 如果不定义，默认使用kube-proxy的策略，如随机、轮询等。
+
+- 基于客户端地址的会话保持模式，即来自同一个客户端发起的所有请求都会转发到固定的一个Pod上（粘性）。此模式可以使在spec中添加`sessionAffinity: ClientIP`选项。
+
+```shell script
+# 查看ipvs的映射规则【rr 轮询】
+[root@k8s-master01 ~]# ipvsadm -Ln
+TCP  10.97.97.97:80 rr
+  -> 10.244.1.39:80               Masq    1      0          0
+  -> 10.244.1.40:80               Masq    1      0          0
+  -> 10.244.2.33:80               Masq    1      0          0
+
+# 循环访问测试
+[root@k8s-master01 ~]# while true;do curl 10.97.97.97:80; sleep 5; done;
+10.244.1.40
+10.244.1.39
+10.244.2.33
+10.244.1.40
+10.244.1.39
+10.244.2.33
+
+# 修改分发策略 -> sessionAffinity: ClientIP，删除service，再重新创建
+
+# 查看ipvs规则【persistent 代表持久】
+[root@k8s-master01 ~]# ipvsadm -Ln
+TCP  10.97.97.97:80 rr persistent 10800
+  -> 10.244.1.39:80               Masq    1      0          0
+  -> 10.244.1.40:80               Masq    1      0          0
+  -> 10.244.2.33:80               Masq    1      0          0
+
+# 循环访问测试
+[root@k8s-master01 ~]# while true;do curl 10.97.97.97; sleep 5; done;
+10.244.2.33
+10.244.2.33
+10.244.2.33
+
+# 删除service
+[root@k8s-master01 ~]# kubectl delete -f service-clusterip.yaml
+service "service-clusterip" deleted
+```
+
+#### Headless
+
+有时你并不需要负载均衡，也不需要单独的 Service IP。你可以使用 Headless Services 与其他服务发现机制交互，而不必绑定到 Kubernetes 的实现。也就是自定义实现负责策略（如DNS负载等）。
+
+如果想要访问Service，只能通过Service的域名进行查询。
+
+创建`service-headless.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-headless
+  namespace: dev
+spec:
+  selector:
+    app: nginx-pod
+  clusterIP: None   # 将clusterIP设置为None，即可创建 headless Service
+  type: ClusterIP
+  ports:
+  - port: 80    
+    targetPort: 80
+```
+
+创建service
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f service-headless.yaml
+service/service-headless created
+
+# 查看 service， 发现CLUSTER-IP未分配
+[root@k8s-master01 ~]# kubectl get svc service-headless -n dev -o wide
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE   SELECTOR
+service-headless   ClusterIP   None         <none>        80/TCP    11s   app=nginx-pod
+
+# 查看service详情
+[root@k8s-master01 ~]# kubectl describe svc service-headless  -n dev
+Name:              service-headless
+Namespace:         dev
+Labels:            <none>
+Annotations:       <none>
+Selector:          app=nginx-pod
+Type:              ClusterIP
+IP:                None
+Port:              <unset>  80/TCP
+TargetPort:        80/TCP
+Endpoints:         10.244.1.39:80,10.244.1.40:80,10.244.2.33:80
+Session Affinity:  None
+Events:            <none>
+
+# 查看域名的解析情况
+[root@k8s-master01 ~]# kubectl exec -it pc-deployment-66cb59b984-8p84h -n dev /bin/sh
+/ # cat /etc/resolv.conf
+nameserver 10.96.0.10
+search dev.svc.cluster.local svc.cluster.local cluster.local
+
+[root@k8s-master01 ~]# dig @10.96.0.10 service-headless.dev.svc.cluster.local
+service-headless.dev.svc.cluster.local. 30 IN A 10.244.1.40
+service-headless.dev.svc.cluster.local. 30 IN A 10.244.1.39
+service-headless.dev.svc.cluster.local. 30 IN A 10.244.2.33
+```
+
+#### NodePort
+
+NodePort的工作原理其实就是将service的**端口映射**到Node的一个端口上，然后就可以从集群外部通过 `NodeIp:NodePort` 来访问service了。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200620175731338.png)
+
+创建`service-nodeport.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-nodeport
+  namespace: dev
+spec:
+  selector:
+    app: nginx-pod
+  type: NodePort    # service类型
+  ports:
+  - port: 80
+    nodePort: 30002 # 指定绑定的node的端口(默认的取值范围是：30000-32767), 如果不指定，会默认分配
+    targetPort: 80
+```
+
+创建service
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f service-nodeport.yaml
+service/service-nodeport created
+
+[root@k8s-master01 ~]# kubectl get svc -n dev -o wide
+NAME               TYPE       CLUSTER-IP      EXTERNAL-IP   PORT(S)       SELECTOR
+service-nodeport   NodePort   10.105.64.191   <none>        80:30002/TCP  app=nginx-pod
+
+# 访问集群中任意节点ip的30002端口，即可访问pod服务.
+```
+
+#### LoadBalancer
+
+LoadBalancer和NodePort很相似，目的都是向外部暴露一个端口，区别在于LoadBalancer会在集群的外部再封装一个负载均衡设备，而这个设备需要外部环境支持的，外部服务发送到这个设备上的请求，会被设备负载之后转发到集群中。
+
+NodePort是负载pod，而LoadBalancer是负载node节点。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200510103945494.png)
+
+#### ExternalName
+
+用于引入集群外部的服务。在集群内部访问此service就可以访问到外部的服务。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200510113311209.png)
+
+创建`service-externalname.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-externalname
+  namespace: dev
+spec:
+  type: ExternalName # service类型
+  externalName: www.baidu.com  # 域名
+```
+
+创建service
+
+```shell script
+[root@k8s-master01 ~]# kubectl  create -f service-externalname.yaml
+service/service-externalname created
+
+# 域名解析
+[root@k8s-master01 ~]# dig @10.96.0.10 service-externalname.dev.svc.cluster.local
+service-externalname.dev.svc.cluster.local. 30 IN CNAME www.baidu.com.
+www.baidu.com.          30      IN      CNAME   www.a.shifen.com.
+www.a.shifen.com.       30      IN      A       39.156.66.18
+www.a.shifen.com.       30      IN      A       39.156.66.14
+```
+
+### Ingress
+
+Ingress是对 NotePort和LoadBalancer 的补充优化，NotePort和LoadBalancer的缺点如下：
+
+- NodePort方式的缺点是端口映射会**占用**node节点的**端口**，那么当集群服务变多的时候，这个缺点就愈发明显。
+
+- LB方式的缺点是每个service需要一个LB，浪费、麻烦，并且需要kubernetes之外设备的支持。
+
+而Ingress只需要一个NodePort或者一个LB就可以满足暴露多个Service的需求。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200623092808049.png)
+
+Ingress相当于一个7层的负载均衡器，是kubernetes对反向代理的一个抽象，它的工作原理类似于Nginx，可以理解成在**Ingress**里建立诸多映射规则，**Ingress Controller**通过监听这些配置规则并转化成Nginx的反向代理配置 , 然后对外部提供服务。
+
+- ingress：kubernetes中的一个对象，作用是定义请求如何转发到service的规则。
+
+- ingress controller：具体实现反向代理及负载均衡的程序，对ingress定义的规则进行解析，根据配置的规则来实现请求转发，实现方式有很多，比如Nginx, Contour, Haproxy等。
+
+以Nginx为例简述Ingress的工作原理：
+
+1. 用户编写Ingress规则，指明哪个域名对应kubernetes集群中的哪个Service。
+
+2. Ingress控制器动态感知Ingress服务规则的变化，然后生成一段对应的Nginx反向代理配置。
+
+3. Ingress控制器会将生成的Nginx配置写入到一个运行着的Nginx服务中，并动态更新。
+
+4. 其实真正在工作的就是一个Nginx，内部配置了用户定义的请求转发规则。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200516112704764.png)
+
+#### 搭建Ingress环境
+
+```shell script
+# 创建文件夹
+[root@k8s-master01 ~]# mkdir ingress-controller
+[root@k8s-master01 ~]# cd ingress-controller/
+
+# 获取ingress-nginx，0.30版本
+[root@k8s-master01 ingress-controller]# wget https://raw.githubusercontent.com/kubernetes/ingress-nginx/nginx-0.30.0/deploy/static/mandatory.yaml
+[root@k8s-master01 ingress-controller]# wget https://raw.githubusercontent.com/kubernetes/ingress-nginx/nginx-0.30.0/deploy/static/provider/baremetal/service-nodeport.yaml
+
+# 将mandatory.yaml文件中的仓库"quay.io/kubernetes-ingress-controller/nginx-ingress-controller:0.30.0"
+#   修改为"quay-mirror.qiniu.com/kubernetes-ingress-controller/nginx-ingress-controller:0.30.0"
+
+# 创建ingress-nginx
+[root@k8s-master01 ingress-controller]# kubectl apply -f ./
+
+# 查看ingress-nginx
+[root@k8s-master01 ingress-controller]# kubectl get pod -n ingress-nginx
+NAME                                           READY   STATUS    RESTARTS   AGE
+pod/nginx-ingress-controller-fbf967dd5-4qpbp   1/1     Running   0          12h
+
+# 查看service
+[root@k8s-master01 ingress-controller]# kubectl get svc -n ingress-nginx
+NAME            TYPE       CLUSTER-IP     EXTERNAL-IP   PORT(S)                      AGE
+ingress-nginx   NodePort   10.98.75.163   <none>        80:32240/TCP,443:31335/TCP   11h
+```
+
+#### 准备Service&Pod模型
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200516102419998.png)
+
+创建`tomcat-nginx.yaml`：
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: dev
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-pod
+  template:
+    metadata:
+      labels:
+        app: nginx-pod
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.17.1
+        ports:
+        - containerPort: 80
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tomcat-deployment
+  namespace: dev
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: tomcat-pod
+  template:
+    metadata:
+      labels:
+        app: tomcat-pod
+    spec:
+      containers:
+      - name: tomcat
+        image: tomcat:8.5-jre10-slim
+        ports:
+        - containerPort: 8080
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: dev
+spec:
+  selector:
+    app: nginx-pod
+  clusterIP: None
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: tomcat-service
+  namespace: dev
+spec:
+  selector:
+    app: tomcat-pod
+  clusterIP: None
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+```
+
+创建Service&Pod
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f tomcat-nginx.yaml
+
+# 查看
+[root@k8s-master01 ~]# kubectl get svc -n dev
+NAME             TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE
+nginx-service    ClusterIP   None         <none>        80/TCP     48s
+tomcat-service   ClusterIP   None         <none>        8080/TCP   48s
+```
+
+#### HTTP代理
+
+创建`ingress-http.yaml`：
+
+```yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-http
+  namespace: dev
+spec:
+  rules:
+  - host: nginx.itheima.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: nginx-service
+          servicePort: 80
+  - host: tomcat.itheima.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: tomcat-service
+          servicePort: 8080
+```
+
+创建Ingress
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f ingress-http.yaml
+ingress.extensions/ingress-http created
+
+# 查看
+[root@k8s-master01 ~]# kubectl get ing ingress-http -n dev
+NAME           HOSTS                                  ADDRESS   PORTS   AGE
+ingress-http   nginx.itheima.com,tomcat.itheima.com             80      22s
+
+# 查看详情
+[root@k8s-master01 ~]# kubectl describe ing ingress-http  -n dev
+...
+Rules:
+Host                Path  Backends
+----                ----  --------
+nginx.itheima.com   / nginx-service:80 (10.244.1.96:80,10.244.1.97:80,10.244.2.112:80)
+tomcat.itheima.com  / tomcat-service:8080(10.244.1.94:8080,10.244.1.95:8080,10.244.2.111:8080)
+...
+
+# 查看ingress-http Service，其中包含对外暴露的端口
+[root@k8s-master01 ~]# kubectl get svc -n ingress-http
+```
+
+分别访问`tomcat.itheima.com:32240`和`nginx.itheima.com:32240`查看效果。
+
+#### HTTPS代理
+
+创建证书
+
+```shell script
+# 生成证书
+[root@k8s-master01 ~]# openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 -keyout tls.key -out tls.crt -subj "/C=CN/ST=BJ/L=BJ/O=nginx/CN=itheima.com"
+
+# 创建密钥
+[root@k8s-master01 ~]# kubectl create secret tls tls-secret --key tls.key --cert tls.crt
+```
+
+创建`ingress-https.yaml`：
+
+```yaml
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: ingress-https
+  namespace: dev
+spec:
+  tls:
+    - hosts:
+      - nginx.itheima.com
+      - tomcat.itheima.com
+      secretName: tls-secret # 指定秘钥
+  rules:
+  - host: nginx.itheima.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: nginx-service
+          servicePort: 80
+  - host: tomcat.itheima.com
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: tomcat-service
+          servicePort: 8080
+```
+
+创建Ingress
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f ingress-https.yaml
+ingress.extensions/ingress-https created
+
+# 查看
+[root@k8s-master01 ~]# kubectl get ing ingress-https -n dev
+NAME            HOSTS                                  ADDRESS         PORTS     AGE
+ingress-https   nginx.itheima.com,tomcat.itheima.com   10.104.184.38   80, 443   2m42s
+
+# 查看详情
+[root@k8s-master01 ~]# kubectl describe ing ingress-https -n dev
+...
+TLS:
+  tls-secret terminates nginx.itheima.com,tomcat.itheima.com
+Rules:
+Host              Path Backends
+----              ---- --------
+nginx.itheima.com  /  nginx-service:80 (10.244.1.97:80,10.244.1.98:80,10.244.2.119:80)
+tomcat.itheima.com /  tomcat-service:8080(10.244.1.99:8080,10.244.2.117:8080,10.244.2.120:8080)
+...
+
+# 查看ingress-https Service，其中包含对外暴露的端口
+[root@k8s-master01 ~]# kubectl get svc -n ingress-https
+```
+
 ## 数据存储
+
+Kubernetes引入了Volume（数据卷）的概念，用于持久化保存容器的数据。
+
+Volume是Pod中能够被多个容器访问的共享目录，它被定义在Pod上，然后被一个Pod里的多个容器挂载到具体的文件目录下，kubernetes通过Volume实现同一个Pod中不同容器之间的数据共享以及数据的持久化存储。
+
+Volume的生命容器不与Pod中单个容器的生命周期相关，当容器终止或者重启时，Volume中的数据也不会丢失。
+
+常见的Volume类型有：
+
+- 简单存储：EmptyDir、HostPath、NFS。
+
+- 高级存储：PV、PVC。
+
+- 配置存储：ConfigMap、Secret。
+
+### 简单存储
+
+#### EmptyDir
+
+EmptyDir是最基础的Volume类型，一个EmptyDir就是Host上的一个空目录。
+
+EmptyDir是在Pod被分配到Node时创建的，kubernetes会自动分配一个目录，当Pod销毁时， EmptyDir中的数据也会被永久删除。EmptyDir用途如下：
+
+- 临时空间，例如用于某些应用程序运行时所需的临时目录，且无须永久保留。
+
+- 一个容器需要从另一个容器中获取数据的目录（多容器共享目录）。
+
+案例：nginx容器负责向Volume中写日志，busybox中通过命令将日志内容读到控制台。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200413174713773.png)
+
+创建一个`volume-emptydir.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-emptydir
+  namespace: dev
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.17.1
+    ports:
+    - containerPort: 80
+    volumeMounts:  # 将logs-volume 挂载到nginx容器中，对应的目录为 /var/log/nginx
+    - name: logs-volume
+      mountPath: /var/log/nginx
+  - name: busybox
+    image: busybox:1.30
+    command: ["/bin/sh","-c","tail -f /logs/access.log"] # 初始命令，动态读取指定文件中内容
+    volumeMounts:  # 将logs-volume 挂载到busybox容器中，对应的目录为 /logs
+    - name: logs-volume
+      mountPath: /logs
+  volumes: # 声明volume， name为logs-volume，类型为emptyDir
+  - name: logs-volume
+    emptyDir: {}
+```
+
+创建Pod
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f volume-emptydir.yaml
+pod/volume-emptydir created
+
+# 查看pod
+[root@k8s-master01 ~]# kubectl get pods volume-emptydir -n dev -o wide
+NAME                  READY   STATUS    RESTARTS   AGE      IP       NODE   ...... 
+volume-emptydir       2/2     Running   0          97s   10.42.2.9   node1  ......
+
+# 通过podIp访问nginx
+[root@k8s-master01 ~]# curl 10.42.2.9
+
+# 通过kubectl logs命令查看指定容器的标准输出
+[root@k8s-master01 ~]# kubectl logs -f volume-emptydir -n dev -c busybox
+10.42.1.0 - - [27/Jun/2021:15:08:54 +0000] "GET / HTTP/1.1" 200 612 "-" "curl/7.29.0" "-"
+```
+
+#### HostPath
+
+EmptyDir中数据不会被持久化，而HostPath会将数据持久化主机上。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200413214031331.png)
+
+创建一个`volume-hostpath.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-hostpath
+  namespace: dev
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.17.1
+    ports:
+    - containerPort: 80
+    volumeMounts:
+    - name: logs-volume
+      mountPath: /var/log/nginx
+  - name: busybox
+    image: busybox:1.30
+    command: ["/bin/sh","-c","tail -f /logs/access.log"]
+    volumeMounts:
+    - name: logs-volume
+      mountPath: /logs
+  volumes:
+  - name: logs-volume
+    hostPath: 
+      path: /root/logs  # 节点物理路径
+      type: DirectoryOrCreate  # 目录存在就使用，不存在就先创建后使用
+
+# 更多 type 属性的配置值
+      # DirectoryOrCreate 目录存在就使用，不存在就先创建后使用
+      # Directory         目录必须存在
+      # FileOrCreate      文件存在就使用，不存在就先创建后使用
+      # File              文件必须存在 
+      # Socket            unix套接字必须存在
+      # CharDevice        字符设备必须存在
+      # BlockDevice       块设备必须存在
+```
+
+创建pod
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f volume-hostpath.yaml
+pod/volume-hostpath created
+
+# 查看Pod
+[root@k8s-master01 ~]# kubectl get pods volume-hostpath -n dev -o wide
+NAME                  READY   STATUS    RESTARTS   AGE   IP             NODE   ......
+pod-volume-hostpath   2/2     Running   0          16s   10.42.2.10     node1  ......
+
+[root@k8s-master01 ~]# curl 10.42.2.10
+
+# 在Pod所在的节点执行如下命令
+[root@node1 ~]# ls /root/logs/
+access.log  error.log
+```
+
+#### NFS
+
+> 可以理解为，由原先的本地存储，变为第三方存储
+
+NFS是一个网络文件存储系统，可以搭建一台NFS服务器，然后将Pod中的数据存储到NFS系统上。可以避免node节点发生故障，pod转移到其它节点上，导致数据持久化不可用。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200413215133559.png)
+
+但是搭建 NFS 环境需要准备一台 nfs 服务器，这一块搭建比较简单，就不搭建了，用到的时候再讨论。
+
+### 高级存储
+
+高级存储就是屏蔽了底层存储实现的细节，方便使用。kubernetes引入PV和PVC两种高级存储资源对象。
+
+- PV（Persistent Volume 持久化卷）：是对底层的共享存储的一种抽象。一般情况下PV由kubernetes管理员进行创建和配置，它与底层具体的共享存储技术有关，并通过插件完成与共享存储的对接。
+
+- PVC（Persistent Volume Claim 持久卷声明）：是用户对于存储需求的一种声明。换句话说，PVC其实就是用户向kubernetes系统发出的一种资源需求申请。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200514194111567.png)
+
+#### PV
+
+PV是存储资源的抽象。可配置项如下所示：
+
+```yaml
+apiVersion: v1  
+kind: PersistentVolume
+metadata:
+  name: pv2
+spec:
+  nfs:        # 存储类型，底层实际存储的类型
+  capacity:   # 存储能力，目前只支持存储空间的设置
+    storage: 2Gi
+  # 访问模式，用于描述用户应用对存储资源的访问权限（底层不同的存储类型可能支持的访问模式不同）
+  #   ReadWriteOnce（RWO）：读写权限，但是只能被单个节点挂载
+  #   ReadOnlyMany（ROX）： 只读权限，可以被多个节点挂载
+  #   ReadWriteMany（RWX）：读写权限，可以被多个节点挂载
+  accessModes: 
+  # 存储类别：未设定类别的PV则只能与不请求任何类别的PVC进行绑定，而具有特定类别的PV只能与请求该类别的PVC进行绑定
+  storageClassName: 
+  # 回收策略，当PV不再被使用了之后，对其的处理方式（底层不同的存储类型可能支持的回收策略不同）
+  #   Retain（保留）：保留数据，需要管理员手工清理数据
+  #   Recycle（回收）：清除 PV 中的数据，效果相当于执行 rm -rf /thevolume/*
+  #   Delete（删除）：与 PV 相连的后端存储完成 volume 的删除操作，当然这常见于云服务商的存储服务
+  persistentVolumeReclaimPolicy: 
+```
+
+但是搭建环境需要准备一台 nfs 服务器，这一块搭建比较简单，就不搭建了，用到的时候再讨论。
+
+#### PVC
+
+配置项
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc
+  namespace: dev
+spec:
+  accessModes:      # 访问模式, 用于描述用户应用对存储资源的访问权限
+  selector:         # 采用标签对PV选择, Label Selector
+  storageClassName: # 存储类别
+  resources:        # 资源请求, 描述对存储资源的请求
+    requests:
+      storage: 5Gi
+```
+
+依赖PV，搭建环境需要准备一台 nfs 服务器，这一块搭建比较简单，就不搭建了，用到的时候再讨论。
+
+#### 生命周期
+
+一个 PV 的生命周期中，可能会处于4中不同的阶段：
+
+- Available（可用）： 表示可用状态，还未被任何 PVC 绑定。
+
+- Bound（已绑定）： 表示 PV 已经被 PVC 绑定。
+
+- Released（已释放）： 表示 PVC 被删除，但是资源还未被集群重新声明。
+
+- Failed（失败）： 表示该 PV 的自动回收失败。
+
+PV和PVC之间遵循以下生命周期：
+
+- **资源供应**：管理员手动创建底层存储和PV。
+
+- **资源绑定**：用户创建PVC，kubernetes负责根据PVC的声明去寻找PV，并绑定。
+
+    - 在用户定义PVC之后，系统将根据PVC对存储资源的请求，在已存在的PV中选择一个满足条件的。
+    
+        - 如果找到，就将该PV与用户定义的PVC进行绑定，用户的应用就可以使用这个PVC了。
+        
+        - 如果找不到，PVC则会无限期处于Pending状态，直到等到系统管理员创建了一个符合其要求的PV。
+    
+    - PV一旦绑定到某个PVC上，就会被这个PVC独占，不能再与其他PVC进行绑定了。
+    
+- **资源使用**：用户可在pod中像volume一样使用pvc。Pod使用Volume的定义，将PVC挂载到容器内的某个路径进行使用。
+
+- **资源释放**：用户删除pvc来释放pv。
+
+    - 当存储资源使用完毕后，用户可以删除PVC，与该PVC绑定的PV将会被标记为“已释放”，但还不能立刻与其他PVC进行绑定。需要将历史数据清理之后该pv才能被使用。
+
+- **资源回收**：kubernetes根据pv设置的回收策略进行资源的回收。
+
+    - 对于PV，管理员可以设定回收策略，用于设置与之绑定的PVC释放资源之后如何处理遗留数据的问题。只有PV的存储空间完成回收，才能供新的PVC绑定和使用。
+    
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200515002806726.png)
+
+### 配置存储
+
+> 用于存储配置信息
+
+#### ConfigMap
+
+创建`configmap.yaml`：
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: configmap
+  namespace: dev
+data:
+  info: # <map[string]string>
+    username:admin
+    password:123456
+```
+
+创建ConfigMap
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f configmap.yaml
+configmap/configmap created
+
+# 查看configmap详情
+[root@k8s-master01 ~]# kubectl describe cm configmap -n dev
+Name:         configmap
+Namespace:    dev
+Labels:       <none>
+Annotations:  <none>
+
+Data
+====
+info:
+----
+username:admin
+password:123456
+
+Events:  <none>
+```
+
+创建`pod-configmap.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-configmap
+  namespace: dev
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.17.1
+    volumeMounts: # 将 configmap 挂载到目录
+    - name: config
+      mountPath: /configmap/config
+  volumes:        # 引用 configmap
+  - name: config
+    configMap:
+      name: configmap
+```
+
+创建pod
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f pod-configmap.yaml
+pod/pod-configmap created
+
+# 查看pod
+[root@k8s-master01 ~]# kubectl get pod pod-configmap -n dev
+NAME            READY   STATUS    RESTARTS   AGE
+pod-configmap   1/1     Running   0          6s
+
+# 进入容器
+# key--->文件 value---->文件中的内容
+[root@k8s-master01 ~]# kubectl exec -it pod-configmap -n dev /bin/sh
+# cd /configmap/config/
+# ls
+info
+# more info
+username:admin
+password:123456
+```
+
+#### Secret
+
+Secret用于存储敏感信息配置，如密钥、密码、证书等。
+
+```shell script
+[root@k8s-master01 ~]# echo -n 'admin' | base64 #准备username
+YWRtaW4=
+[root@k8s-master01 ~]# echo -n '123456' | base64 #准备password
+MTIzNDU2
+```
+
+创建`secret.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret
+  namespace: dev
+type: Opaque
+data:
+  username: YWRtaW4=
+  password: MTIzNDU2
+```
+
+创建Secret
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f secret.yaml
+secret/secret created
+
+# 查看secret详情
+[root@k8s-master01 ~]# kubectl describe secret secret -n dev
+Name:         secret
+Namespace:    dev
+Labels:       <none>
+Annotations:  <none>
+Type:  Opaque
+Data
+====
+password:  6 bytes
+username:  5 bytes
+```
+
+创建`pod-secret.yaml`：
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-secret
+  namespace: dev
+spec:
+  containers:
+  - name: nginx
+    image: nginx:1.17.1
+    volumeMounts: # 将 secret 挂载到目录
+    # name 必须与下面的卷名匹配
+    - name: config
+      mountPath: /secret/config
+  # Secret 数据通过一个卷暴露给该 Pod 中的容器
+  volumes:
+  - name: config
+    secret:
+      # Secret 配置中定义的 name
+      secretName: secret
+```
+
+创建pod
+
+```shell script
+[root@k8s-master01 ~]# kubectl create -f pod-secret.yaml
+pod/pod-secret created
+
+# 查看pod
+[root@k8s-master01 ~]# kubectl get pod pod-secret -n dev
+NAME            READY   STATUS    RESTARTS   AGE
+pod-secret      1/1     Running   0          2m28s
+
+# 进入容器，查看secret信息，发现已经自动解码了
+[root@k8s-master01 ~]# kubectl exec -it pod-secret /bin/sh -n dev
+/ # ls /secret/config/
+password  username
+/ # more /secret/config/username
+admin
+/ # more /secret/config/password
+123456
+```
 
 ## 安全认证
 
+对Kubernetes的客户端进行认证和鉴权。
+
+在Kubernetes集群中，客户端通常有两类：
+
+- User Account：一般是独立于kubernetes之外的其他服务管理的用户账号。
+
+- Service Account：kubernetes管理的账号，用于为Pod中的服务进程在访问Kubernetes时提供身份标识。
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200520102949189.png)
+
+ApiServer是访问及管理资源对象的唯一入口。任何一个请求访问ApiServer，都要经过下面三个流程：
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200520103942580.png)
+
+### 认证
+
+> 识别并认证客户端身份
+
+Kubernetes提供3种客户端身份认证方式：
+
+- HTTP Base认证：通过用户名+密码的方式认证。
+
+    - 这种认证方式是把“用户名:密码”用base64算法进行编码后的字符串放在HTTP请求中的Header Authorization域里发送给服务端。服务端收到后进行解码，获取用户名及密码，然后进行用户身份认证的过程。
+
+- HTTP Token认证：通过一个Token来识别合法用户。
+
+    - 这种认证方式是用Token来表明客户身份的一种方式。每个Token对应一个用户名，当客户端发起API调用请求时，需要在HTTP Header里放入Token，API Server接到Token后会跟服务器中保存的token进行比对，然后进行用户身份认证的过程。
+
+- HTTPS证书认证：基于CA根证书签名的双向数字证书认证方式。
+
+    - 这种认证方式是安全性最高的一种方式，但是同时也是操作起来最麻烦的一种方式。
+    
+    ![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200518211037434.png)
+
+https认证大致分为3个过程：
+
+1. 证书申请和下发。
+
+    - HTTPS通信双方的服务器向CA机构申请证书，CA机构下发根证书、服务端证书及私钥给申请者。
+
+2. 客户端和服务端的双向认证。
+
+    - 客户端向服务器端发起请求，服务端下发自己的证书给客户端
+    
+    - 客户端接收到证书后，通过私钥解密证书，在证书中获得服务端的公钥
+    
+    - 客户端利用服务器端的公钥认证证书中的信息，如果一致，则认可这个服务器
+    
+    - 客户端发送自己的证书给服务器端，服务端接收到证书后，通过私钥解密证书
+    
+    - 在证书中获得客户端的公钥，并用该公钥认证证书信息，确认客户端是否合法
+
+3. 服务端和客户端进行通信。
+
+    - 服务器端和客户端协商好加密方案后，客户端会产生一个随机的秘钥并加密，然后发送到服务器端。
+    
+    - 服务器端接收这个秘钥后，双方接下来通信的所有内容都通过该随机秘钥加密。
+
+Kubernetes允许同时配置多种认证方式，只要其中任意一个方式认证通过即可。
+
+### 授权
+
+通过认证就可以知道请求用户是谁，然后Kubernetes会根据事先定义的授权策略来决定用户是否有权限访问，这个过程就称为授权。
+
+每个发送到ApiServer的请求都带上了用户和资源的信息：比如发送请求的用户、请求的路径、请求的动作等。授权就是根据这些信息和授权策略进行比较，如果符合策略，则认为授权通过，否则会返回错误。
+
+API Server目前支持以下几种授权策略：
+
+- AlwaysDeny：表示拒绝所有请求，一般用于测试。
+
+- AlwaysAllow：允许接收所有请求，相当于集群不需要授权流程（Kubernetes默认的策略）。
+
+- ABAC：基于属性的访问控制，表示使用用户配置的授权规则对用户请求进行匹配和控制。
+
+- Webhook：通过调用外部REST服务对用户进行授权。
+
+- Node：是一种专用模式，用于对kubelet发出的请求进行访问控制。
+
+- RBAC（Role-Based Access Control）：基于角色的访问控制（给哪些对象授予了哪些权限）（kubeadm安装方式下的默认选项）。
+
+由于是通过kubeadm安装的，所以仅说明RBAC授权策略。
+
+其中涉及到了下面几个概念：
+
+- 对象：User、Groups、ServiceAccount。
+
+- 角色：代表着一组定义在资源上的可操作动作(权限)的集合。
+
+- 绑定：将定义好的角色跟用户绑定在一起
+
+![](https://gitee.com/yooome/golang/raw/main/21-k8s%E8%AF%A6%E7%BB%86%E6%95%99%E7%A8%8B/Kubenetes.assets/image-20200519181209566.png)
+
+RBAC引入了4个顶级资源对象：
+
+- Role、ClusterRole：角色，用于指定一组权限。
+
+- RoleBinding、ClusterRoleBinding：角色绑定，用于将角色（权限）赋予给对象。
+
+#### Role&ClusterRole
+
+一个角色就是一组权限的集合，这里的权限都是许可形式的（白名单）。
+
+```yaml
+# Role只能对命名空间内的资源进行授权，需要指定 nameapce
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  namespace: dev
+  name: authorization-role
+rules:
+- apiGroups: [""]  # 支持的API组列表,"" 空字符串，表示核心API群 【eg: "","apps", "autoscaling", "batch"】
+  resources: ["pods"] # 支持的资源对象列表, 【eg: "services"、”pods“ ...】
+  # 【"get", "list", "watch", "create", "update", "patch", "delete", "exec"】
+  verbs: ["get", "watch", "list"] # 允许的对资源对象的操作方法列表, 
+
+---
+
+# ClusterRole可以对集群范围内资源、跨namespaces的范围资源、非资源类型进行授权
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: authorization-clusterrole
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+```
+
+#### RoleBinding&ClusterRoleBinding
+
+用来把一个角色绑定到一个目标对象上，绑定目标可以是User、Group或者ServiceAccount。
+
+```yaml
+# RoleBinding可以将同一namespace中的 subject 绑定到某个Role下，则此subject即具有该Role定义的权限
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: authorization-role-binding
+  namespace: dev
+subjects:
+- kind: User
+  name: heima
+  apiGroup: rbac.authorization.k8s.io
+roleRef: # 引用 role
+  kind: Role
+  name: authorization-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+
+# ClusterRoleBinding在整个集群级别和所有namespaces将特定的 subject 与ClusterRole绑定，授予权限
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+ name: authorization-clusterrole-binding
+subjects:
+- kind: User
+  name: heima
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: authorization-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+```
+
+#### 示例: RoleBinding引用ClusterRole进行授权
+
+虽然ClusterRole是集群角色，但因为使用的是RoleBinding，所以目标对象智能读取namespace内的资源。
+
+常用的做法就是，集群管理员为集群范围预定义好一组角色（ClusterRole），然后在多个命名空间中重复使用这些ClusterRole。这样可以大幅提高授权管理工作效率，也使得各个命名空间下的基础性授权规则与使用体验保持一致。
+
+1. 创建账号
+
+```shell script
+[root@k8s-master01 pki]# cd /etc/kubernetes/pki/
+[root@k8s-master01 pki]# (umask 077;openssl genrsa -out devman.key 2048)
+
+# 用apiserver的证书去签署，签名申请，申请的用户是devman,组是devgroup
+[root@k8s-master01 pki]# openssl req -new -key devman.key -out devman.csr -subj "/CN=devman/O=devgroup"  
+
+# 签署证书
+[root@k8s-master01 pki]# openssl x509 -req -in devman.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out devman.crt -days 3650
+
+# 设置集群、用户、上下文信息，安全端口默认是6443，--server=https://NodeIP:6443
+[root@k8s-master01 pki]# kubectl config set-cluster kubernetes --embed-certs=true --certificate-authority=/etc/kubernetes/pki/ca.crt --server=https://192.168.109.100:6443
+
+[root@k8s-master01 pki]# kubectl config set-credentials devman --embed-certs=true --client-certificate=/etc/kubernetes/pki/devman.crt --client-key=/etc/kubernetes/pki/devman.key
+
+[root@k8s-master01 pki]# kubectl config set-context devman@kubernetes --cluster=kubernetes --user=devman
+
+# 切换账户到devman
+[root@k8s-master01 pki]# kubectl config use-context devman@kubernetes
+Switched to context "devman@kubernetes".
+
+# 查看dev下pod，发现没有权限
+[root@k8s-master01 pki]# kubectl get pods -n dev
+Error from server (Forbidden): pods is forbidden: User "devman" cannot list resource "pods" in API group "" in the namespace "dev"
+
+# 切换到admin账户
+[root@k8s-master01 pki]# kubectl config use-context kubernetes-admin@kubernetes
+Switched to context "kubernetes-admin@kubernetes".
+```
+
+2. 创建ClusterRole和RoleBinding，为devman用户授权
+
+```yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  # namespace: dev
+  name: dev-clusterrole
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "watch", "list"]
+  
+---
+
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1beta1
+metadata:
+  name: authorization-role-binding
+  namespace: dev
+subjects:
+- kind: User
+  name: devman
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: dev-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+```
+
+```shell script
+[root@k8s-master01 pki]# kubectl create -f dev-role.yaml
+role.rbac.authorization.k8s.io/dev-clusterrole created
+rolebinding.rbac.authorization.k8s.io/authorization-role-binding created
+```
+
+3. 切换账户，再次验证
+
+```shell script
+# 切换账户到devman
+[root@k8s-master01 pki]# kubectl config use-context devman@kubernetes
+Switched to context "devman@kubernetes".
+
+# 再次查看
+[root@k8s-master01 pki]# kubectl get pods -n dev
+NAME                                 READY   STATUS             RESTARTS   AGE
+nginx-deployment-66cb59b984-8wp2k    1/1     Running            0          4d1h
+nginx-deployment-66cb59b984-dc46j    1/1     Running            0          4d1h
+nginx-deployment-66cb59b984-thfck    1/1     Running            0          4d1h
+
+# 切回admin账户
+[root@k8s-master01 pki]# kubectl config use-context kubernetes-admin@kubernetes
+Switched to context "kubernetes-admin@kubernetes".
+```
+
+### 准入控制
+
+通过了认证和授权之后，还需要经过准入控制处理通过之后，apiServer才会处理这个请求。
+
+准入控制是一个可配置的控制器列表，可通过`--admission-control`参数进行设置。
+
+可配置的Admission Control准入控制如下：
+
+- AlwaysAdmit：允许所有请求。
+
+- AlwaysDeny：禁止所有请求，一般用于测试。
+
+- AlwaysPullImages：在启动容器之前总去下载镜像。
+
+- DenyExecOnPrivileged：它会拦截所有想在Privileged Container上执行命令的请求。
+
+- ImagePolicyWebhook：这个插件将允许后端的一个Webhook程序来完成admission controller的功能。
+
+- Service Account：实现ServiceAccount实现了自动化。
+
+- SecurityContextDeny：这个插件将使用SecurityContext的Pod中的定义全部失效。
+
+- ResourceQuota：用于资源配额管理目的，观察所有请求，确保在namespace上的配额不会超标。
+
+- LimitRanger：用于资源限制管理，作用于namespace上，确保对Pod进行资源限制。
+
+- InitialResources：为未设置资源请求与限制的Pod，根据其镜像的历史资源的使用情况进行设置。
+
+- NamespaceLifecycle：如果尝试在一个不存在的namespace中创建资源对象，则该创建请求将被拒绝。当删除一个namespace时，系统将会删除该namespace中所有对象。
+
+- DefaultStorageClass：为了实现共享存储的动态供应，为未指定StorageClass或PV的PVC尝试匹配默认的StorageClass，尽可能减少用户在申请PVC时所需了解的后端存储细节。
+
+- DefaultTolerationSeconds：这个插件为那些没有设置forgiveness tolerations并具有notready:NoExecute和unreachable:NoExecute两种taints的Pod设置默认的“容忍”时间，为5min。
+
+- PodSecurityPolicy：这个插件用于在创建或修改Pod时决定是否根据Pod的security context和可用的PodSecurityPolicy对Pod的安全策略进行控制。
+
+
 ## 可视化界面
+
+kubernetes提供了一个基于web的用户界面（Dashboard）
