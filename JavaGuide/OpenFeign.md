@@ -103,10 +103,12 @@ class FeignClientsRegistrar implements ImportBeanDefinitionRegistrar, ResourceLo
 
         // 遍历所有的接口，封装BeanDefinition，然后注册到Spring IOC容器.
 		for (BeanDefinition candidateComponent : candidateComponents) {
+            // 断是否是带有注解的 Bean
 			if (candidateComponent instanceof AnnotatedBeanDefinition) {
-				// verify annotated class is an interface
+				// 判断是否是接口
 				AnnotatedBeanDefinition beanDefinition = (AnnotatedBeanDefinition) candidateComponent;
 				AnnotationMetadata annotationMetadata = beanDefinition.getMetadata();
+                // @FeignClient 只能指定在接口上
 				Assert.isTrue(annotationMetadata.isInterface(), "@FeignClient can only be specified on an interface");
 
                 // 获取每个接口中定义的元数据信息，即 @FeignClient 注解中配置的属性值，例如：value,name,path,url等
@@ -392,6 +394,7 @@ public class ReflectiveFeign extends Feign {
   @Override
   public <T> T newInstance(Target<T> target) {
     /*
+        根据接口类和 Contract 协议解析方式，解析接口类上的方法和注解（@RequestMapping...），转换成内部的 MethodHandler 处理方式
         这里的 target 为 HardCodedTarget，包含了该feign客户端的接口类型，name，url等
         用 ParseHandlersByName 创建方法名和MethodHandler的映射map
     */
