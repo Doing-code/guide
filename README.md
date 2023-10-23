@@ -226,21 +226,27 @@
 ## 容器化与虚拟化
 
 - [x] [`Docker`](JavaGuide/Docker.md)
-- [ ] LXC
-- [ ] `Kubernetes`
+- [ ] LXC -- Linux Containers
+- [x] `Kubernetes`
 
 ## GraphQL
 
 - [ ] Apollo
 - [ ] Relay Modern
 
-## Websockets
-``
+## WebSockets
+
+## Server Sent Events（服务器发送事件）
+
 ## 网页服务器
+
+> Nginx使用C开发的；Caddy是Go开发的。Apache侧重于 HTTP Server，而Tomcat可以认为是Apache的补充，其侧重于Servlet。
+>
+> Nginx和Caddy提供的功能都是类似的
 
 - [x] [`Nginx`](JavaGuide/Nginx.md)
 - [ ] Apache
-- [ ] Caddy
+- [x] [Caddy](https://caddyserver.com/docs/getting-started)
 - [x] [`Tomcat`](JavaGuide/Tomcat.md)
 
 ## `微服务组件`
