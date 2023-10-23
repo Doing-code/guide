@@ -269,7 +269,7 @@
 
 ## 项目构建
 
-- [ ] `Maven`
+- [x] [`Maven`](JavaGuide/Maven快速入门.md)
 
 ## 定时任务
 
