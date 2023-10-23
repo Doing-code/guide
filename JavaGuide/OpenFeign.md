@@ -592,8 +592,11 @@ public class FeignBlockingLoadBalancerClient implements Client {
 						loadBalancerClientFactory.getInstances(serviceId, LoadBalancerLifecycle.class),
 						RequestDataContext.class, ResponseData.class, ServiceInstance.class);
 		supportedLifecycleProcessors.forEach(lifecycle -> lifecycle.onStart(lbRequest));
-
+        
+        // 这个方法做了两件事：先找到负载均衡策略（默认轮询），再按负载均衡策略挑选实例
         // 使用负载均衡客户端根据服务名选择一个服务实例
+        // 如果使用的是Nacos，则 choose 方法内部会调用 NacosLoadBalancer#choose 方法获取到服务列表
+        // 然后根据负载策略选择最优实例
 		ServiceInstance instance = loadBalancerClient.choose(serviceId, lbRequest);
 		org.springframework.cloud.client.loadbalancer.Response<ServiceInstance> lbResponse = new DefaultResponse(
 				instance);
@@ -660,6 +663,8 @@ final class LoadBalancerUtils {
 
 ### 总结
 
+> Ribbon：也进入了维护状态，停止更新了，但是Spring官方推出了一个新的组件 LoadBalancer。
+
 OpenFeign的源码体量相对较小，但想要用一篇文章来深入也不太现实，都是挑执行链路上的核心点进行剖析。
 
 OpenFeign的底层原理大致如下：
@@ -672,10 +677,10 @@ OpenFeign的底层原理大致如下：
 
 4. 接口被调用时被动态代理类逻辑拦截，将 `@FeignClient` 请求信息通过编码器生成 Request。
 
-5. 由 Ribbon 进行负载均衡，挑选出一个健康的 Server 实例。
+5. 由 Ribbon（Loadbalancer） 进行负载均衡，挑选出一个健康的 Server 实例。
 
 6. 通过 Client 携带 Request 调用远端服务，返回请求响应。
 
 7. 通过解码器生成 Response 返回客户端，将信息流解析成为接口返回数据。
 
-如果使用的注册中心是`Nacos`，则`Nacos`会适配 Ribbon，当 Ribbon 获取可用服务时，实际上调用的是`Nacos`的组件。
+如果使用的注册中心是`Nacos`，则`Nacos`会适配 Loadbalancer，当 Loadbalancer 获取可用服务时，实际上调用的是`NacosLoadBalancer`组件。

@@ -252,15 +252,17 @@
 ## `微服务组件`
 
 > Nacos: https://zhuanlan.zhihu.com/p/527746095
+>
+> 负载均衡组件的Ribbon停止更新了，推荐使用 Loadbalancer，Spring官方提供的。
 
 - [x] [Nacos](JavaGuide/Nacos源码分析.md)
-- [ ] OpenFeign
-- [ ] Ribbon
+- [x] [OpenFeign](JavaGuide/OpenFeign.md)
+- [x] [Loadbalancer](https://blog.51cto.com/knifeedge/5807620)
 - [ ] [Sentinel](JavaGuide/Sentinel源码分析.md)
-- [ ] Gateway
+- [x] [Gateway](JavaGuide/Gateway.md)
 - [ ] Seata
 
-## `分布式组件 `
+## `分布式组件`
 
 - [x] [Zookeeper](JavaGuide/Zookeeper.md)
 - [x] [Dubbo](JavaGuide/Dubbo.md)
