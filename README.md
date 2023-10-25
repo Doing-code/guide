@@ -258,7 +258,7 @@
 - [x] [Nacos](JavaGuide/Nacos源码分析.md)
 - [x] [OpenFeign](JavaGuide/OpenFeign.md)
 - [x] [Loadbalancer](https://blog.51cto.com/knifeedge/5807620)
-- [ ] [Sentinel](JavaGuide/Sentinel源码分析.md)
+- [x] [Sentinel](JavaGuide/Sentinel源码分析.md)
 - [x] [Gateway](JavaGuide/Gateway.md)
 - [ ] Seata
 
