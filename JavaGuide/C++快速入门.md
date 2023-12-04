@@ -2,6 +2,246 @@
 
 ## C++ 基础
 
+### 变量
+
+```c++
+// 数据类型 变量名 = 初始值;
+int age = 18;
+```
+
+### 常量
+
+常量是不可以修改的。
+
+```c++
+// 常量定义方式一
+// #define 常量名 常量值
+#define day 7
+
+// 常量定义方式二
+// const 数据类型 常量名 = 常量值
+const int month = 12;
+```
+
+### 关键字
+
+|            |              |                  |             |          |
+|------------|--------------|------------------|-------------|----------|
+| asm        | do           | if               | return      | typedef  |
+| auto       | double       | inline           | short       | typeid   |
+| bool       | dynamic_cast | int              | signed      | typename |
+| break      | else         | long             | sizeof      | union    |
+| case       | enum         | mutable          | static      | unsigned |
+| catch      | explicit     | namespace        | static_cast | using    |
+| char       | export       | new              | struct      | virtual  |
+| class      | extern       | operator         | switch      | void     |
+| const      | false        | private          | template    | volatile |
+| const_cast | float        | protected        | this        | wchar_t  |
+| continue   | for          | public           | throw       | while    |
+| default    | friend       | register         | true        |          |
+| delete     | goto         | reinterpret_cast | try         |          |
+
+### 标识符命名规则
+
+给标识符命名时，争取做到见名知意的效果，方便自己和他人的阅读。
+
+- 标识符不能是关键字。
+
+- 标识符只能由字母、数字、下划线组成。
+
+- 第一个字符必须为字母或下划线。
+
+- 标识符中字母区分大小写。
+
+### 基本数据类型
+
+| **数据类型**        | **占用空间**                            | 取值范围                         |
+|-----------------|-------------------------------------|------------------------------|
+| short(短整型)      | 2字节                                 | (-2^15 ~ 2^15-1)             |
+| int(整型)         | 4字节                                 | (-2^31 ~ 2^31-1)             |
+| long(长整形)       | Windows为4字节，Linux为4字节(32位)，8字节(64位) | (-2^31 ~ 2^31-1)             |
+| long long(长长整形) | 8字节                                 | (-2^63 ~ 2^63-1)             |
+|                 |                                     |                              |
+| float           | 4字节                                 | 7位有效数字                       |
+| double          | 8字节                                 | 15～16位有效数字                   |
+|                 |                                     |                              |
+| char            | 1字节                                 |                              |
+|                 |                                     |                              |
+| bool            | 字节                                  | true- 真（本质是1），false- 假（本质是0） |
+
+### 转义字符
+
+| **转义字符** | **含义**                     | **ASCII**码值（十进制） |
+|----------|----------------------------|------------------|
+| \a       | 警报                         | 007              |
+| \b       | 退格(BS) ，将当前位置移到前一列         | 008              |
+| \f       | 换页(FF)，将当前位置移到下页开头         | 012              |
+| **\n**   | **换行(LF) ，将当前位置移到下一行开头**   | **010**          |
+| \r       | 回车(CR) ，将当前位置移到本行开头        | 013              |
+| **\t**   | **水平制表(HT)  （跳到下一个TAB位置）** | **009**          |
+| \v       | 垂直制表(VT)                   | 011              |
+| **\\\\** | **代表一个反斜线字符"\"**           | **092**          |
+| \'       | 代表一个单引号（撇号）字符              | 039              |
+| \"       | 代表一个双引号字符                  | 034              |
+| \?       | 代表一个问号                     | 063              |
+| \0       | 数字0                        | 000              |
+| \ddd     | 8进制转义字符，d范围0~7             | 3位8进制            |
+| \xhh     | 16进制转义字符，h范围0~9，a~f，A~F    | 3位16进制           |
+
+### 字符串型
+
+```c++
+// C风格字符串
+// char 变量名[] = "字符串值"
+char str1[] = "hello world";
+
+// C++风格字符串
+// string  变量名 = "字符串值"
+string str = "hello world";
+```
+
+### 标准输入
+
+用于从键盘获取数据。
+
+语法：`cin >> 变量`。
+
+```c++
+// 整型输入
+int a = 0;
+cout << "请输入整型变量：" << endl;
+cin >> a;
+cout << a << endl;
+```
+
+### 运算符
+
+| **运算符** | **术语** | **示例**      | **结果**                        |
+|---------|--------|-------------|-------------------------------|
+| +       | 正号     | +3          | 3                             |
+| -       | 负号     | -3          | -3                            |
+| +       | 加      | 10 + 5      | 15                            |
+| -       | 减      | 10 - 5      | 5                             |
+| *       | 乘      | 10 * 5      | 50                            |
+| /       | 除      | 10 / 5      | 2                             |
+| %       | 取模(取余) | 10 % 3      | 1                             |
+| ++      | 前置递增   | a=2; b=++a; | a=3; b=3;                     |
+| ++      | 后置递增   | a=2; b=a++; | a=3; b=2;                     |
+| --      | 前置递减   | a=2; b=--a; | a=1; b=1;                     |
+| --      | 后置递减   | a=2; b=a--; | a=1; b=2;                     |
+|         |        |             |                               |
+| =       | 赋值     | a=2; b=3;   | a=2; b=3;                     |
+| +=      | 加等于    | a=0; a+=2;  | a=2;                          |
+| -=      | 减等于    | a=5; a-=3;  | a=2;                          |
+| *=      | 乘等于    | a=2; a*=2;  | a=4;                          |
+| /=      | 除等于    | a=4; a/=2;  | a=2;                          |
+| %=      | 模等于    | a=3; a%2;   | a=1;                          |
+|         |        |             |                               |
+| ==      | 相等于    | 4 == 3      | 0                             |
+| !=      | 不等于    | 4 != 3      | 1                             |
+| <       | 小于     | 4 < 3       | 0                             |
+| \>      | 大于     | 4 > 3       | 1                             |
+| <=      | 小于等于   | 4 <= 3      | 0                             |
+| \>=     | 大于等于   | 4 >= 1      | 1                             |
+|         |        |             |                               |
+| !       | 非      | !a          | 如果a为假，则!a为真；  如果a为真，则!a为假。    |
+| &&      | 与      | a && b      | 如果a和b都为真，则结果为真，否则为假。          |
+| \|\|    | 或      | a \|\| b    | 如果a和b有一个为真，则结果为真，二者都为假时，结果为假。 |
+
+### 流程控制
+
+#### 选择
+
+```c++
+int main() {
+    int age = 10;
+    if (age > 10) {
+        
+    } else if (age > 20) {
+        
+    } else {
+        
+    }
+    
+    int b = 20;
+    int c = 0;
+    
+    // 三目运算
+    c = a > b ? a : b;
+    cout << "c = " << c << endl;
+    
+    switch(age) {
+        case age == 10:
+            break;
+ 
+        case age == 20:
+            break;
+        
+        default:
+            break;
+    }
+}
+```
+
+#### 循环
+
+```c++
+int main() {
+    int num = 0;
+    while (num < 10) {
+        cout << "num = " << num << endl;
+        num++;
+    }
+    
+    int size = 0;
+    do {
+        cout << size << endl;
+        size++;
+    } while (size < 10);
+    
+    for (int i = 0; i < 10; i++) {
+        if (i == 5) {
+            continue;
+        }
+        if (i == 8) {
+            break;
+        }
+        cout << i << endl;
+    }
+}
+```
+
+continue 并没有使整个循环终止，而 break 会跳出循环。
+
+#### goto
+
+可以无条件跳转语句。
+
+语法：`goto 标记`。
+
+如果标记的名称存在，执行到goto语句时，会跳转到标记的位置。
+
+```c++
+int main() {
+
+    cout << "1" << endl;
+
+    goto FLAG;
+    cout << "2" << endl;
+    cout << "3" << endl;
+    cout << "4" << endl;
+    FLAG:
+
+    cout << "5" << endl;
+
+    return 0;
+}
+```
+
+上述逻辑会跳过`2、3、4`的打印输出。
+
+在程序中不建议使用goto语句，以免造成程序流程混乱。
+
 ### 数组
 
 #### 二维数组定义方式
@@ -3829,12 +4069,374 @@ int main() {
 
 #### 常用遍历算法
 
+```c++
+/**
+ * 遍历容器
+ * beg   开始迭代器
+ * end   结束迭代器
+ * _func 函数或者函数对象
+ */
+for_each(iterator beg, iterator end, _func);
+
+/**
+ * 搬运容器到另一个容器中
+ * beg1  源容器开始迭代器
+ * end1  源容器结束迭代器
+ * beg2  目标容器开始迭代器
+ * _func 函数或者函数对象
+ */
+transform(iterator beg1, iterator end1, iterator beg2, _func);
+```
+
+示例：
+
+```c++
+#include <iostream>
+#include <functional>
+#include <algorithm>
+#include <vector>
+
+using namespace std;
+
+// 普通函数
+void print01(int val) {
+    cout << val << " ";
+}
+
+// 函数对象
+class print02 {
+public:
+    void operator()(int val) {
+        cout << val << " ";
+    }
+};
+
+class TransForm {
+public:
+    int operator()(int val) {
+        return val;
+    }
+};
+
+int main() {
+    vector<int> v;
+    for (int i = 0; i < 10; i++) {
+        v.push_back(i);
+    }
+
+    // 遍历
+    for_each(v.begin(), v.end(), print01);
+    cout << endl;
+    for_each(v.begin(), v.end(), print02());
+    cout << endl;
+
+    // 容器元素转移
+    // 目标容器
+    vector<int> vTarget;
+    // 目标容器需要提前开辟空间
+    vTarget.resize(v.size());
+
+    transform(v.begin(), v.end(), vTarget.begin(), TransForm());
+
+    for_each(vTarget.begin(), vTarget.end(), print02());
+
+    return 0;
+}
+```
+
+搬运的目标容器必须要提前开辟空间，否则无法正常搬运。
+
 #### 常用查找算法
+
+```c++
+/**
+ * 查找元素，按值查找元素，找到返回指定位置迭代器，找不到返回结束迭代器位置
+ * beg   开始迭代器
+ * end   结束迭代器
+ * value 查找的元素
+ */
+find(iterator beg, iterator end, value);
+
+/**
+ * 按条件查找元素，按值查找元素，找到返回指定位置迭代器，找不到返回结束迭代器位置
+ * beg   开始迭代器
+ * end   结束迭代器
+ * _Pred 函数或者谓词（返回bool类型的仿函数）
+ */
+find_if(iterator beg, iterator end, _Pred);
+
+/**
+ * 查找相邻重复元素，返回相邻元素的第一个位置的迭代器
+ * beg 开始迭代器
+ * end 结束迭代器
+ */
+adjacent_find(iterator beg, iterator end);
+
+/**
+ * 查找指定的元素，查到返回true，否则false
+ * beg   开始迭代器
+ * end   结束迭代器
+ * value 查找的元素
+ */
+binary_search(iterator beg, iterator end, value);
+
+/**
+ * 统计元素出现次数
+ * beg   开始迭代器
+ * end   结束迭代器
+ * value 统计的元素
+ * 
+ * 统计自定义数据类型时候，需要配合重载 `operator==`
+ */
+count(iterator beg, iterator end, value);
+
+/**
+ * 按条件统计元素出现次数
+ * beg   开始迭代器
+ * end   结束迭代器
+ * _Pred 谓词
+ */
+count_if(iterator beg, iterator end, _Pred);
+```
+
+二分查找法查找效率很高，值得注意的是查找的容器中元素必须的有序序列。
+
+示例：
+
+```c++
+#include <iostream>
+#include <functional>
+#include <algorithm>
+#include <vector>
+
+using namespace std;
+
+class Student : public error_code {
+public:
+    Student(int age) {
+        this->m_Age = age;
+    }
+
+    bool operator==(const Student &p) const {
+        if (this->m_Age == p.m_Age) {
+            return true;
+        }
+        return false;
+    }
+
+    int m_Age;
+};
+
+class CustomType1 {
+public:
+    bool operator()(Student &p)
+    {
+        return p.m_Age > 20;
+    }
+};
+
+int main() {
+    vector<Student> v;
+
+    //创建数据
+    Student p1(10);
+    Student p2(20);
+    Student p3(30);
+    Student p4(40);
+
+    v.push_back(p1);
+    v.push_back(p2);
+    v.push_back(p3);
+    v.push_back(p4);
+
+    // 1、查找元素
+    vector<Student>::iterator it1 = find(v.begin(), v.end(), p2);
+    if (it1 == v.end()) {
+        cout << "No" << endl;
+    } else {
+        cout << "Yes" << endl;
+    }
+
+    // 2、按条件查找元素
+    auto it2 = find_if(v.begin(), v.end(), CustomType1());
+    if (it2 == v.end()) {
+        cout << "No" << endl;
+    } else {
+        cout << "Yes" << endl;
+    }
+
+    // 3、查找相邻重复元素
+    auto it3 = adjacent_find(v.begin(), v.end());
+    if (it3 == v.end()) {
+        cout << "No" << endl;
+    } else {
+        cout << "Yes" << endl;
+    }
+
+    // 4、查找指定的元素
+    bool ret = binary_search(v.begin(), v.end(),p2);
+    if (ret) {
+        cout << "Yes" << endl;
+    } else {
+        cout << "No" << endl;
+    }
+
+    // 5、统计元素出现次数
+    int num1 = count(v.begin(), v.end(), p2);
+    cout << "count: " << num1 << endl;
+
+    // 6、按条件统计元素出现次数
+    int num2 = count_if(v.begin(), v.end(), CustomType1());
+    cout << "count: " << num2 << endl;
+
+    return 0;
+}
+```
 
 #### 常用排序算法
 
+```c++
+/**
+ * 对容器内元素进行排序
+ * beg    开始迭代器
+ * end    结束迭代器
+ * _Pred  谓词
+ * 
+ * 默认从小到大排序
+ */
+sort(iterator beg, iterator end, _Pred);
+
+/**
+ * 指定范围内的元素随机调整次序
+ * beg 开始迭代器
+ * end 结束迭代器
+ */
+random_shuffle(iterator beg, iterator end);
+
+/**
+ * 容器元素合并，并存储到另一容器中
+ * beg1  容器1开始迭代器
+ * end1  容器1结束迭代器
+ * beg2  容器2开始迭代器
+ * end2  容器2结束迭代器
+ * dest  目标容器开始迭代器
+ * 
+ * merge合并的两个容器必须的有序序列
+ */
+merge(iterator beg1, iterator end1, iterator beg2, iterator end2, iterator dest);
+
+/**
+ * 反转指定范围的元素
+ * beg 开始迭代器
+ * end 结束迭代器
+ */
+reverse(iterator beg, iterator end);
+```
+
+使用时无非就是配合重载`operator==`、`operator()`使用。就不再给出示例了，等到用到时再更行。
+
 #### 常用拷贝和替换算法
+
+```c++
+/**
+ * 将容器内指定范围的元素拷贝到另一个容器中
+ * beg  开始迭代器
+ * end  结束迭代器
+ * dest 目标起始迭代器
+ */
+copy(iterator beg, iterator end, iterator dest);
+
+/**
+ * 将容器内指定范围的旧元素修改为新元素
+ * beg      开始迭代器
+ * end      结束迭代器
+ * oldvalue 旧元素
+ * newvalue 新元素
+ */
+replace(iterator beg, iterator end, oldvalue, newvalue);
+
+/**
+ * 容器内指定范围满足条件的元素替换为新元素
+ * beg      开始迭代器
+ * end      结束迭代器
+ * _pred    谓词
+ * newvalue 要替换的新元素
+ */
+replace_if(iterator beg, iterator end, _pred, newvalue);
+
+/**
+ * 互换两个容器的元素
+ * c1 容器1
+ * c2 容器2
+ * 
+ * swap交换容器时，注意交换的容器要同种类型
+ */
+swap(container c1, container c2);
+```
 
 #### 常用算术生成算法
 
+```c++
+/**
+ * 计算容器元素累计总和
+ * beg   开始迭代器
+ * end   结束迭代器
+ * value 起始值
+ */
+accumulate(iterator beg, iterator end, value);
+
+/**
+ * 向容器中填充元素
+ * beg   开始迭代器
+ * end   结束迭代器
+ * value 填充的值
+ * 
+ * 利用fill可以将容器区间内元素填充为 指定的值
+ */
+fill(iterator beg, iterator end, value);
+```
+
 #### 常用集合算法
+
+```c++
+/**
+ * 求两个容器的交集
+ * beg1 容器1开始迭代器
+ * end1 容器1结束迭代器
+ * beg2 容器2开始迭代器
+ * end2 容器2结束迭代器
+ * dest 目标容器开始迭代器
+ * 
+ * 两个集合必须是有序序列，目标容器开辟空间需要从两个容器中取小值
+ * set_intersection 返回值是交集中最后一个元素的位置
+ */
+set_intersection(iterator beg1, iterator end1, iterator beg2, iterator end2, iterator dest);
+
+/**
+ * 求两个容器的并集
+ * beg1 容器1开始迭代器
+ * end1 容器1结束迭代器
+ * beg2 容器2开始迭代器
+ * end2 容器2结束迭代器
+ * dest 目标容器开始迭代器
+ * 
+ * 两个集合必须是有序序列，目标容器开辟空间需要两个容器相加
+ * set_union 返回值是交集中最后一个元素的位置
+ */
+set_union(iterator beg1, iterator end1, iterator beg2, iterator end2, iterator dest);
+
+/**
+ * 求两个容器的差集
+ * beg1 容器1开始迭代器
+ * end1 容器1结束迭代器
+ * beg2 容器2开始迭代器
+ * end2 容器2结束迭代器
+ * dest 目标容器开始迭代器
+ * 
+ * 目标容器开辟空间需要从两个容器取较大值
+ * set_difference 返回值是差集中最后一个元素的位置
+ */
+set_difference(iterator beg1, iterator end1, iterator beg2, iterator end2, iterator dest);
+```
+
+对于工作中模块开发，以上内容够用了。后续有时间会持续更新，异常、多线程、网路编程等。
