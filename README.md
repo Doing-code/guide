@@ -286,3 +286,23 @@
 ## 定时任务
 
 - [ ] xxl-job
+
+## 项目
+
+### Java 
+
+> 吃透项目
+
+- 自动化框架
+
+> https://github.com/karatelabs/karate
+
+- netty-socketio
+
+> https://github.com/mrniko/netty-socketio/tree/master
+
+- 数据库迁移
+
+> https://github.com/flyway/flyway
+
+- 抽奖系统
