@@ -413,3 +413,13 @@ Maven对项目构建的生命周期划分为3部分：
 ## 跳过测试
 
 ## 私服
+
+## mvn 常用命令
+
+### `install:install-file`
+
+- `添加jar到maven`
+
+```text
+mvn install:install-file -Dfile=jar路径 -DgroupId=groupId -DartifactId=artifactId -Dversion=version -Dpackaging=jar
+```
