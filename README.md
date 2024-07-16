@@ -191,6 +191,7 @@
 - [x] [单元测试](https://www.guru99.com/unit-testing-guide.html)
 - [x] [功能测试](https://www.guru99.com/functional-testing.html)
 - [x] [怎么写测试用例](JavaGuide/怎么写测试用例.md)
+- [ ] [软件测试](JavaGuide/Testing.md)
 
 ## 测试工具
 
