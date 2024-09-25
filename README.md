@@ -290,26 +290,38 @@
 
 - [x] [`Maven`](JavaGuide/Maven快速入门.md)
 
+- [ ] Gradle
+
 ## 定时任务
 
 - [ ] xxl-job
 
+## 源码解析
+
+- [X] [Spring](source/spring-framework-5.2.x/spring-context/src/main/java/org/springframework/context/support/AbstractApplicationContext.java) 入口: org.springframework.context.support.AbstractApplicationContext#refresh
+
+- [X] [MyBatis](source/mybatis-3-master/src/test/java/BaseTest.java)
+
+- [ ] SpringMVC
+
+- [ ] SpringBoot
+
+- [ ] Dubbo
+
+- [ ] Zookeeper
+
+- [ ] RocketMQ
+
+- [ ] Kafka
+
+- [ ] Nacos
+
+- [ ] Seata
+
+- [ ] Sentinel
+
 ## 项目
-
-### Java 
-
-> 吃透项目
-
-- 自动化框架
-
-> https://github.com/karatelabs/karate
-
-- netty-socketio
-
-> https://github.com/mrniko/netty-socketio/tree/master
 
 - 数据库迁移
 
 > https://github.com/flyway/flyway
-
-- 抽奖系统
