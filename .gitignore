@@ -17,3 +17,13 @@ buildNumber.properties
 .classpath
 
 .idea/
+
+# source/mybatis-3-master/src/test
+# source/spring-framework-5.2.x/spring-aop/src/test
+
+source/spring-framework-5.2.x/**/src/test
+
+source/mybatis-3-master/src/test
+source/mybatis-3-master/src/site
+
+source/nacos-develop/**/src/test
