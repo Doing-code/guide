@@ -25,5 +25,7 @@ source/spring-framework-5.2.x/**/src/test
 
 source/mybatis-3-master/src/test
 source/mybatis-3-master/src/site
+source/mybatis-3-master/.mvn
+source/mybatis-3-master/.github
 
 source/nacos-develop/**/src/test

@@ -300,7 +300,7 @@
 
 - [X] [Spring](source/spring-framework-5.2.x/spring-context/src/main/java/org/springframework/context/support/AbstractApplicationContext.java) 入口: org.springframework.context.support.AbstractApplicationContext#refresh
 
-- [X] [MyBatis](source/mybatis-3-master/src/test/java/BaseTest.java)
+- [X] [MyBatis](source/mybatis-3-master/src/main/java/org/apache/ibatis/BaseTest.java)
 
 - [ ] SpringMVC
 
