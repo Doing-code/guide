@@ -22,6 +22,7 @@ buildNumber.properties
 # source/spring-framework-5.2.x/spring-aop/src/test
 
 source/spring-framework-5.2.x/**/src/test
+source/spring-framework-5.2.x/**/src/testFixtures
 
 source/mybatis-3-master/src/test
 source/mybatis-3-master/src/site
