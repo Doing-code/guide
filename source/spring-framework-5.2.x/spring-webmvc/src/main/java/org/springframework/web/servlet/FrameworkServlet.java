@@ -527,6 +527,7 @@ public abstract class FrameworkServlet extends HttpServletBean implements Applic
 		long startTime = System.currentTimeMillis();
 
 		try {
+			// 初始化 web 环境
 			this.webApplicationContext = initWebApplicationContext();
 			initFrameworkServlet();
 		}
@@ -575,6 +576,10 @@ public abstract class FrameworkServlet extends HttpServletBean implements Applic
 						// the root application context (if any; may be null) as the parent
 						cwac.setParent(rootContext);
 					}
+					/*
+                        配置和刷新Spring容器
+                        初始化Spring IOC环境，这个方法最终会调用 refresh() 方法
+                    */
 					configureAndRefreshWebApplicationContext(cwac);
 				}
 			}
@@ -596,6 +601,7 @@ public abstract class FrameworkServlet extends HttpServletBean implements Applic
 			// support or the context injected at construction time had already been
 			// refreshed -> trigger initial onRefresh manually here.
 			synchronized (this.onRefreshMonitor) {
+				// 初始化DispatcherServlet的配置，由子类实现
 				onRefresh(wac);
 			}
 		}

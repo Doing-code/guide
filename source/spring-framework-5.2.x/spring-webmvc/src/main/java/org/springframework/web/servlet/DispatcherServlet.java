@@ -500,15 +500,15 @@ public class DispatcherServlet extends FrameworkServlet {
 	 * <p>May be overridden in subclasses in order to initialize further strategy objects.
 	 */
 	protected void initStrategies(ApplicationContext context) {
-		initMultipartResolver(context);
-		initLocaleResolver(context);
-		initThemeResolver(context);
-		initHandlerMappings(context);
-		initHandlerAdapters(context);
-		initHandlerExceptionResolvers(context);
+		initMultipartResolver(context);				// 文件上传解析器
+		initLocaleResolver(context); 				// 国际化解析器
+		initThemeResolver(context);					// 网页主题解析器
+		initHandlerMappings(context);				// 初始化 HandlerMapping
+		initHandlerAdapters(context);				// 初始化 HandlerAdapter
+		initHandlerExceptionResolvers(context);		// 处理器异常解析器
 		initRequestToViewNameTranslator(context);
-		initViewResolvers(context);
-		initFlashMapManager(context);
+		initViewResolvers(context);					// 视图解析器
+		initFlashMapManager(context);				// 重定向数据管理器
 	}
 
 	/**
@@ -1012,17 +1012,24 @@ public class DispatcherServlet extends FrameworkServlet {
 			Exception dispatchException = null;
 
 			try {
+				// 检查请求中是否有文件上传操作
 				processedRequest = checkMultipart(request);
 				multipartRequestParsed = (processedRequest != request);
 
 				// Determine handler for the current request.
+				// mappedHandler调用链，该对象封装了handler和interceptors
 				mappedHandler = getHandler(processedRequest);
+
+				// mappedHandler没找到，响应404
 				if (mappedHandler == null) {
 					noHandlerFound(processedRequest, response);
 					return;
 				}
 
 				// Determine handler adapter for the current request.
+				// 获取处理器适配器
+				// 如果是一个bean，mappedHandler.getHandler()返回的是一个对象
+				// 如果是一个method，mappedHandler.getHandler()返回的是一个方法
 				HandlerAdapter ha = getHandlerAdapter(mappedHandler.getHandler());
 
 				// Process last-modified header, if supported by the handler.
@@ -1035,18 +1042,23 @@ public class DispatcherServlet extends FrameworkServlet {
 					}
 				}
 
+				// 前置拦截器
 				if (!mappedHandler.applyPreHandle(processedRequest, response)) {
 					return;
 				}
 
 				// Actually invoke the handler.
+				// 通过处理器适配器，处理请求，反射调用
 				mv = ha.handle(processedRequest, response, mappedHandler.getHandler());
 
 				if (asyncManager.isConcurrentHandlingStarted()) {
 					return;
 				}
 
+				// 视图解析器处理
 				applyDefaultViewName(processedRequest, mv);
+
+				// 后置拦截器
 				mappedHandler.applyPostHandle(processedRequest, response, mv);
 			}
 			catch (Exception ex) {
@@ -1057,6 +1069,7 @@ public class DispatcherServlet extends FrameworkServlet {
 				// making them available for @ExceptionHandler methods and other scenarios.
 				dispatchException = new NestedServletException("Handler dispatch failed", err);
 			}
+			// 异常处理，渲染页面，执行拦截器的afterCompletion()方法
 			processDispatchResult(processedRequest, response, mappedHandler, mv, dispatchException);
 		}
 		catch (Exception ex) {
