@@ -152,9 +152,12 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 	 * @param singletonFactory the factory for the singleton object
 	 */
 	protected void addSingletonFactory(String beanName, ObjectFactory<?> singletonFactory) {
+		// 这里传入的 singletonFactory 是一个 lambda 表达式，() -> getEarlyBeanReference(beanName, mbd, bean)
+
 		Assert.notNull(singletonFactory, "Singleton factory must not be null");
 		synchronized (this.singletonObjects) {
 			if (!this.singletonObjects.containsKey(beanName)) {
+				// 添加到三级缓存中
 				this.singletonFactories.put(beanName, singletonFactory);
 				this.earlySingletonObjects.remove(beanName);
 				this.registeredSingletons.add(beanName);
@@ -224,6 +227,11 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 				if (logger.isDebugEnabled()) {
 					logger.debug("Creating shared instance of singleton bean '" + beanName + "'");
 				}
+
+				// 在单例对象创建前先做一个标记
+				// 将 beanName 放入到 singletonsCurrentlyInCreation 这个集合中
+				// 标志着这个单例 Bean 正在创建
+				// 如果同一个单例 Bean 多次被创建，这里会抛出异常
 				beforeSingletonCreation(beanName);
 				boolean newSingleton = false;
 				boolean recordSuppressedExceptions = (this.suppressedExceptions == null);
@@ -231,6 +239,8 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 					this.suppressedExceptions = new LinkedHashSet<>();
 				}
 				try {
+					// 上游传入的lambda在这里会被执行，调用 createBean 方法创建一个 Bean 后返回
+					// createBean(beanName, mbd, args)
 					singletonObject = singletonFactory.getObject();
 					newSingleton = true;
 				}
@@ -254,9 +264,12 @@ public class DefaultSingletonBeanRegistry extends SimpleAliasRegistry implements
 					if (recordSuppressedExceptions) {
 						this.suppressedExceptions = null;
 					}
+					// 创建完成后将对应的 beanName 从 singletonsCurrentlyInCreation 移除
 					afterSingletonCreation(beanName);
 				}
 				if (newSingleton) {
+					// 添加到一级缓存singletonObjects中
+					// 一级缓存中存储的是已经完全创建好了的单例 Bean
 					addSingleton(beanName, singletonObject);
 				}
 			}
