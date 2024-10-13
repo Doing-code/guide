@@ -302,7 +302,7 @@
 
 - [X] [MyBatis](source/mybatis-3-master/src/main/java/org/apache/ibatis/BaseTest.java)
 
-- [ ] SpringMVC
+- [X] [SpringMVC](source/spring-framework-5.2.x/spring-webmvc/src/main/java/org/springframework/web/servlet/DispatcherServlet.java)
 
 - [ ] SpringBoot
 
@@ -314,7 +314,7 @@
 
 - [ ] Kafka
 
-- [ ] Nacos
+- [x] Nacos 注册中心
 
 - [ ] Seata
 
