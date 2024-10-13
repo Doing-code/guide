@@ -1,0 +1,11 @@
+server:
+  port: 12032
+
+spring:
+  application:
+    name: order-service1111
+  cloud:
+    nacos:
+      discovery:
+        cluster-name: SZ
+        ephemeral: false
